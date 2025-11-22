@@ -78,7 +78,24 @@ Diese Migrations implementieren das vollständige Schema für das ibhelm Datenma
   - `search_locations(TEXT, FLOAT)` - Typo-resistente Location-Suche
   - `search_all_objects(...)` - Unified Search über Files, Tasks, Messages
 
-### 008_views.sql
+### 008_teamworkmissiveconnector_schema.sql
+- Schema `teamworkmissiveconnector` (Application State):
+  - **checkpoints** - Sync checkpoints für inkrementelle Synchronisation
+  - **queue_items** - Event Queue für async Webhook/Backfill Processing
+  - **webhook_config** - Webhook IDs und Konfiguration
+  - **processing_stats** - Hourly Processing Statistics
+- **Queue Management Functions:**
+  - `dequeue_items()` - Atomisches Dequeue mit Row-Level Locking
+  - `mark_completed()` - Item als completed markieren
+  - `mark_failed()` - Item als failed markieren mit Exponential Backoff
+  - `cleanup_old_items()` - Alte completed Items löschen
+  - `reset_stuck_items()` - Stuck Items zurücksetzen
+- **Monitoring Views:**
+  - `queue_health` - Real-time Queue Health Metrics
+  - `recent_errors` - Recent Failed Items für Debugging
+- Ersetzt file-based state management mit ACID-compliant DB Queue
+
+### 009_views.sql
 - **unified_items** - Tasks + Emails in einer View
 - **party_details** - Enriched Party View mit External System Data
 - **project_overview** - Projects mit aggregierten Counts
