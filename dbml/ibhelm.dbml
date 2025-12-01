@@ -1,0 +1,307 @@
+// =====================================
+// SCHEMA: PUBLIC (IBHELM LOGIC)
+// =====================================
+
+// --- 1. UNIFIED PERSONS (ersetzt parties) ---
+
+Table unified_persons {
+  id uuid [pk, default: `gen_random_uuid()`]
+  
+  display_name text [not null]
+  primary_email text
+  
+  preferred_contact_method varchar [note: "'email', 'phone', 'teamwork'"]
+  
+  is_internal boolean [default: false, note: "ibhelm Mitarbeiter"]
+  is_company boolean [default: false, note: "true = Firma, false = Person"]
+  
+  notes text
+  
+  db_created_at timestamp [default: `now()`]
+  db_updated_at timestamp [default: `now()`]
+  
+  Note: "Die kanonische Identität einer Person/Firma"
+}
+
+Table unified_person_links {
+  id serial [pk]
+  unified_person_id uuid [ref: > unified_persons.id, not null]
+  
+  // Source System (NUR EINE pro Zeile)
+  tw_user_id integer [ref: - tw_users.id]
+  tw_company_id integer [ref: - tw_companies.id]
+  m_contact_id integer [ref: - m_contacts.id]
+  
+  link_type varchar [
+    default: 'auto_email',
+    note: "'auto_email', 'auto_name', 'manual'"
+  ]
+  
+  linked_by uuid [note: "auth.users.id falls manual"]
+  linked_at timestamp [default: `now()`]
+  
+  Note: '''
+  CONSTRAINTS:
+  CHECK (
+    (tw_user_id IS NOT NULL)::int + 
+    (tw_company_id IS NOT NULL)::int + 
+    (m_contact_id IS NOT NULL)::int = 1
+  )
+  UNIQUE(tw_user_id) WHERE tw_user_id IS NOT NULL
+  UNIQUE(tw_company_id) WHERE tw_company_id IS NOT NULL  
+  UNIQUE(m_contact_id) WHERE m_contact_id IS NOT NULL
+  '''
+}
+
+// --- 2. PROJECT EXTENSIONS (ersetzt projects) ---
+
+Table project_extensions {
+  tw_project_id integer [pk, ref: - tw_projects.id]
+  
+  default_location_id uuid [ref: > locations.id]
+  default_cost_group_id uuid [ref: > cost_groups.id]
+  nas_folder_path text [note: "z.B. '/projects/2024-001-Neubau-XY/' für Auto-Assignment"]
+  
+  client_person_id uuid [ref: > unified_persons.id, note: "Auftraggeber"]
+  
+  internal_notes text
+  
+  db_created_at timestamp [default: `now()`]
+  db_updated_at timestamp [default: `now()`]
+  
+  Note: "1:1 Extension zu tw_projects - nur ibhelm-spezifische Daten"
+}
+
+Table project_contractors {
+  id serial [pk]
+  tw_project_id integer [ref: > tw_projects.id]
+  contractor_person_id uuid [ref: > unified_persons.id]
+  role varchar [note: "z.B. Elektroplanung, Architekt, Heizung"]
+  
+  db_created_at timestamp [default: `now()`]
+  
+  Note: "Verknüpft Umsetzungspartner mit dem Projekt (n:m)"
+}
+
+// --- 3. TASK EXTENSIONS ---
+
+Table task_extensions {
+  tw_task_id integer [pk, ref: - tw_tasks.task_id, note: "1:1 Beziehung"]
+  
+  type varchar [
+    default: 'todo',
+    note: "'todo' oder 'info_item' - Erweitert Teamwork Task um ibhelm Semantik"
+  ]
+  
+  db_created_at timestamp [default: `now()`]
+  db_updated_at timestamp [default: `now()`]
+}
+
+// --- 4. HIERARCHIEN (Orte & Kostengruppen) ---
+
+Table locations {
+  id uuid [pk, default: `gen_random_uuid()`]
+  parent_id uuid [ref: > locations.id]
+  
+  name text
+  type varchar [note: "'building', 'level', 'room'"]
+  
+  teamwork_tag_pattern varchar [note: "Regex oder Prefix für Auto-Matching, z.B. 'LOC_GEB_A_EG'"]
+  
+  path text [
+    note: '''
+    Materialized Path für effiziente Hierarchie-Queries.
+    Format: '1.5.23' oder '/gebaeude-a/eg/raum-101/'
+    Ermöglicht LIKE Queries: path LIKE '1.5.%'
+    '''
+  ]
+  path_ids uuid[] [note: "Array aller Parent-IDs für schnelle Filter"]
+  depth int [note: "0=Building, 1=Level, 2=Room"]
+
+  search_text text [
+    note: '''
+    GENERATED ALWAYS AS (
+      -- Rekursiv alle Parent-Namen konkatenieren
+      -- z.B. 'Haus A / EG / Raum 101'
+    ) STORED
+    '''
+  ]
+
+  db_created_at timestamp [default: `now()`]
+  db_updated_at timestamp [default: `now()`]
+}
+
+Table cost_groups {
+  id uuid [pk, default: `gen_random_uuid()`]
+  parent_id uuid [ref: > cost_groups.id]
+  code varchar [note: "300, 400, 410, 411.2"]
+  name text
+  
+  path text [note: "Materialized Path, z.B. '300.410.411.2'"]
+  
+  db_created_at timestamp [default: `now()`]
+  db_updated_at timestamp [default: `now()`]
+}
+
+// --- 5. FILES & CONTENT ---
+
+Table document_types {
+  id serial [pk]
+  name text [note: "Rechnung, Plan, Protokoll, Zeichnung"]
+  slug varchar [unique]
+  description text
+  
+  db_created_at timestamp [default: `now()`]
+}
+
+Table files {
+  id uuid [pk, default: `gen_random_uuid()`]
+  
+  storage_object_id uuid [
+    note: '''
+    FOREIGN KEY to storage.objects(id) - Supabase Storage Schema
+    NOT in DBML to avoid visualization errors (external schema)
+    In SQL: REFERENCES storage.objects(id) ON DELETE SET NULL
+    '''
+  ]
+  
+  filename text
+  folder_path text
+  content_hash varchar [note: "SHA256 für Deduplizierung"]
+  
+  extracted_text text [note: "Für PDF-Volltextsuche"]
+  
+  thumbnail_path text [note: "Pfad zum Thumbnail in Storage"]
+  thumbnail_generated_at timestamp [note: "NULL = noch nicht generiert"]
+  
+  document_type_id integer [ref: > document_types.id]
+  
+  source_missive_attachment_id uuid [ref: - m_attachments.id]
+  
+  file_created_at timestamp [note: "with time zone"]
+  file_modified_at timestamp [note: "with time zone"]
+  file_created_by text
+  filesystem_inode bigint
+  filesystem_access_rights jsonb
+  filesystem_attributes jsonb
+
+  auto_extracted_metadata jsonb [note: "Information extracted from filename and path"]
+
+  db_created_at timestamp [default: `now()`]
+  db_updated_at timestamp [default: `now()`]
+}
+
+// --- 6. THE GLUE (Verbindungstabellen) ---
+
+Table project_conversations {
+  m_conversation_id uuid [ref: > m_conversations.id]
+  tw_project_id integer [ref: > tw_projects.id]
+  
+  source varchar [
+    not null,
+    note: "'auto_missive', 'manual'"
+  ]
+  source_label_name varchar [note: "Original Label-Name falls auto"]
+  
+  assigned_at timestamp [default: `now()`]
+  
+  indexes {
+    (tw_project_id, m_conversation_id) [pk]
+  }
+  
+  Note: "n:m - Eine Conversation kann zu mehreren Projekten gehören"
+}
+
+
+Table project_files {
+  file_id uuid [ref: > files.id]
+  tw_project_id integer [ref: > tw_projects.id]
+  
+  assigned_at timestamp [default: `now()`]
+  
+  indexes {
+    (tw_project_id, file_id) [pk]
+  }
+  
+  Note: "n:m - Eine Datei kann in mehreren Projekten liegen"
+}
+
+Table object_locations {
+  id serial [pk]
+  location_id uuid [ref: > locations.id]
+  
+  // Polymorphe Spalten (Nur EINE darf gesetzt sein)
+  tw_task_id integer [ref: > tw_tasks.task_id]
+  m_conversation_id uuid [ref: > m_conversations.id]  // ← GEÄNDERT
+  file_id uuid [ref: > files.id]
+  
+  // Source Tracking
+  source varchar [
+    not null,
+    note: "'auto_teamwork', 'auto_missive', 'auto_path', 'manual'"  // ← auto_missive hinzugefügt
+  ]
+  source_tag_name varchar [note: "Original Tag/Label-Name falls aus Teamwork/Missive"]
+  
+  db_created_at timestamp [default: `now()`]
+  
+  Note: '''
+  CONSTRAINT check_one_object CHECK (
+    (file_id IS NOT NULL)::int + 
+    (tw_task_id IS NOT NULL)::int + 
+    (m_conversation_id IS NOT NULL)::int = 1
+  )
+  '''
+}
+
+Table object_cost_groups {
+  id serial [pk]
+  cost_group_id uuid [ref: > cost_groups.id]
+  
+  // Polymorphe Spalten (Nur EINE darf gesetzt sein)
+  tw_task_id integer [ref: > tw_tasks.task_id]
+  m_conversation_id uuid [ref: > m_conversations.id]  // ← GEÄNDERT
+  file_id uuid [ref: > files.id]
+  
+  // Source Tracking
+  source varchar [
+    not null,
+    note: "'auto_teamwork', 'auto_missive', 'auto_path', 'manual'"  // ← auto_missive hinzugefügt
+  ]
+  source_tag_name varchar [note: "Original Tag/Label-Name falls aus Teamwork/Missive"]
+  
+  db_created_at timestamp [default: `now()`]
+  
+  Note: '''
+  CONSTRAINT check_one_object CHECK (
+    (file_id IS NOT NULL)::int + 
+    (tw_task_id IS NOT NULL)::int + 
+    (m_conversation_id IS NOT NULL)::int = 1
+  )
+  '''
+}
+
+
+// =====================================
+// GHOST TABLES (Visual Reference Only)
+// Diese existieren eigentlich in anderen Schemas
+// =====================================
+
+TableGroup teamwork_ghosts [color: #cccccc] {
+  tw_companies
+  tw_projects
+  tw_tasks
+  tw_users
+}
+Table tw_companies { id int [pk] }
+Table tw_projects { id int [pk] }
+Table tw_tasks { task_id varchar [pk] }
+Table tw_users { id varchar [pk] }
+
+TableGroup missive_ghosts [color: #cccccc] {
+  m_contacts
+  m_attachments
+  m_conversations
+}
+Table m_contacts { id int [pk] }
+Table m_attachments { id uuid [pk] }
+Table m_conversations { id uuid [pk] }

@@ -1,0 +1,235 @@
+// ========================================
+// MISSIVE SCHEMA
+// Basierend auf dem SQL-Input
+// ========================================
+
+Table m_contacts {
+  id serial [pk]
+  name text
+  email varchar(500) [unique, not null]
+  db_created_at timestamp [default: `now()`]
+  db_updated_at timestamp [default: `now()`]
+}
+
+Table m_users {
+  id uuid [pk]
+  name text
+  email varchar(500)
+  contact_id integer
+  raw_data jsonb
+  db_created_at timestamp [default: `now()`]
+  db_updated_at timestamp [default: `now()`]
+}
+
+Table m_teams {
+  id uuid [pk]
+  name text [not null]
+  organization_id uuid
+  raw_data jsonb
+  db_created_at timestamp [default: `now()`]
+  db_updated_at timestamp [default: `now()`]
+}
+
+Table m_shared_labels {
+  id uuid [pk]
+  name text [not null]
+  raw_data jsonb
+  db_created_at timestamp [default: `now()`]
+  db_updated_at timestamp [default: `now()`]
+}
+
+Table m_conversations {
+  id uuid [pk]
+  subject text
+  latest_message_subject text
+  organization_id uuid
+  color varchar(50)
+  attachments_count integer [default: 0]
+  messages_count integer [default: 1]
+  drafts_count integer [default: 0]
+  send_later_messages_count integer [default: 0]
+  tasks_count integer [default: 0]
+  completed_tasks_count integer [default: 0]
+  last_activity_at timestamp
+  web_url text
+  app_url text
+  raw_data jsonb
+  team_id uuid
+  db_created_at timestamp [default: `now()`]
+  db_updated_at timestamp [default: `now()`]
+}
+
+Table m_messages {
+  id uuid [pk]
+  conversation_id uuid
+  subject text
+  preview text
+  type varchar(50)
+  email_message_id text
+  body text
+  from_contact_id integer
+  delivered_at timestamp
+  created_at timestamp
+  updated_at timestamp
+  raw_data jsonb
+  db_created_at timestamp [default: `now()`]
+  db_updated_at timestamp [default: `now()`]
+}
+
+Table m_attachments {
+  id uuid [pk]
+  message_id uuid
+  filename varchar(500)
+  extension varchar(50)
+  url text
+  media_type varchar(100)
+  sub_type varchar(100)
+  size integer
+  width integer
+  height integer
+  raw_data jsonb
+  db_created_at timestamp [default: `now()`]
+}
+
+Table m_message_recipients {
+  id serial [pk]
+  message_id uuid
+  recipient_type varchar(10) [not null]
+  contact_id integer
+}
+
+Table m_conversation_authors {
+  id serial [pk]
+  conversation_id uuid
+  contact_id integer
+}
+
+// Junction Tables
+Table m_conversation_users {
+  conversation_id uuid
+  user_id uuid
+  unassigned boolean [default: true]
+  closed boolean [default: false]
+  archived boolean [default: false]
+  trashed boolean [default: false]
+  junked boolean [default: false]
+  assigned boolean [default: false]
+  flagged boolean [default: false]
+  snoozed boolean [default: false]
+
+  indexes {
+    (conversation_id, user_id) [pk]
+  }
+}
+
+Table m_conversation_assignees {
+  conversation_id uuid
+  user_id uuid
+  
+  indexes {
+    (conversation_id, user_id) [pk]
+  }
+}
+
+Table m_conversation_labels {
+  label_id uuid
+  conversation_id uuid
+  
+  indexes {
+    (conversation_id, label_id) [pk]
+  }
+}
+
+Table m_conversation_comments {
+  id uuid [pk]
+  conversation_id uuid [not null]
+  body text
+  created_at timestamp
+  author_id uuid
+  raw_data jsonb
+  db_created_at timestamp [default: `now()`]
+  db_updated_at timestamp [default: `now()`]
+}
+
+Table m_comment_attachments {
+  id uuid [pk]
+  comment_id uuid [not null]
+  filename varchar(500)
+  extension varchar(50)
+  url text
+  media_type varchar(100)
+  sub_type varchar(100)
+  size integer
+  raw_data jsonb
+  db_created_at timestamp [default: `now()`]
+}
+
+Table m_comment_mentions {
+  id serial [pk]
+  comment_id uuid [not null]
+  user_id uuid [not null]
+  mention_index integer
+  mention_length integer
+}
+
+Table m_comment_tasks {
+  id serial [pk]
+  comment_id uuid [unique, not null]
+  description text
+  state varchar(50)
+  due_at timestamp
+  started_at timestamp
+  closed_at timestamp
+  team_id uuid
+}
+
+Table m_comment_task_assignees {
+  comment_task_id integer
+  user_id uuid
+  
+  indexes {
+    (comment_task_id, user_id) [pk]
+  }
+}
+
+// ========================================
+// RELATIONSHIPS (Missive)
+// ========================================
+
+Ref: m_users.contact_id > m_contacts.id [delete: set null]
+
+Ref: m_conversations.team_id > m_teams.id [delete: set null]
+
+Ref: m_conversation_users.conversation_id > m_conversations.id [delete: cascade]
+Ref: m_conversation_users.user_id > m_users.id [delete: cascade]
+
+Ref: m_conversation_assignees.conversation_id > m_conversations.id [delete: cascade]
+Ref: m_conversation_assignees.user_id > m_users.id [delete: cascade]
+
+Ref: m_conversation_labels.conversation_id > m_conversations.id [delete: cascade]
+Ref: m_conversation_labels.label_id > m_shared_labels.id [delete: cascade]
+
+Ref: m_messages.conversation_id > m_conversations.id [delete: cascade]
+Ref: m_messages.from_contact_id > m_contacts.id [delete: set null]
+
+Ref: m_message_recipients.message_id > m_messages.id [delete: cascade]
+Ref: m_message_recipients.contact_id > m_contacts.id [delete: set null]
+
+Ref: m_attachments.message_id > m_messages.id [delete: cascade]
+
+Ref: m_conversation_authors.conversation_id > m_conversations.id [delete: cascade]
+Ref: m_conversation_authors.contact_id > m_contacts.id [delete: set null]
+
+Ref: m_conversation_comments.conversation_id > m_conversations.id [delete: cascade]
+Ref: m_conversation_comments.author_id > m_users.id [delete: set null]
+
+Ref: m_comment_attachments.comment_id > m_conversation_comments.id [delete: cascade]
+
+Ref: m_comment_mentions.comment_id > m_conversation_comments.id [delete: cascade]
+Ref: m_comment_mentions.user_id > m_users.id [delete: cascade]
+
+Ref: m_comment_tasks.comment_id > m_conversation_comments.id [delete: cascade]
+Ref: m_comment_tasks.team_id > m_teams.id [delete: set null]
+
+Ref: m_comment_task_assignees.comment_task_id > m_comment_tasks.id [delete: cascade]
+Ref: m_comment_task_assignees.user_id > m_users.id [delete: cascade]

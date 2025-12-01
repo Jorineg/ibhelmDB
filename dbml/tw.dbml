@@ -1,0 +1,235 @@
+// ========================================
+// TEAMWORK SCHEMA
+// Basierend auf dem SQL-Input
+// ========================================
+
+Table tw_companies {
+  id integer [pk]
+  name text
+  address_one text
+  address_two text
+  city text
+  state text
+  zip text
+  country_code varchar(10)
+  phone varchar(100)
+  fax varchar(100)
+  email_one varchar(500)
+  email_two varchar(500)
+  email_three varchar(500)
+  website text
+  industry_id integer
+  logo_url text
+  can_see_private boolean
+  is_owner boolean
+  status varchar(50)
+  private_notes text
+  private_notes_text text
+  profile_text text
+  created_at timestamp
+  updated_at timestamp
+  raw_data jsonb
+  db_created_at timestamp [default: `now()`]
+  db_updated_at timestamp [default: `now()`]
+}
+
+Table tw_users {
+  id integer [pk]
+  first_name text
+  last_name text
+  email varchar(500)
+  avatar_url text
+  title text
+  company_id integer
+  company_role_id integer
+  is_admin boolean
+  is_client_user boolean
+  is_placeholder_resource boolean
+  is_service_account boolean
+  deleted boolean [default: false]
+  can_add_projects boolean
+  can_access_portfolio boolean
+  can_manage_portfolio boolean
+  timezone varchar(100)
+  length_of_day decimal
+  user_cost decimal
+  user_rate decimal
+  last_login timestamp
+  created_at timestamp
+  updated_at timestamp
+  raw_data jsonb
+  db_created_at timestamp [default: `now()`]
+  db_updated_at timestamp [default: `now()`]
+}
+
+Table tw_teams {
+  id integer [pk]
+  name text [not null]
+  handle text
+  team_logo text
+  team_logo_color varchar(50)
+  team_logo_icon text
+  created_at timestamp
+  updated_at timestamp
+  raw_data jsonb
+  db_created_at timestamp [default: `now()`]
+  db_updated_at timestamp [default: `now()`]
+}
+
+Table tw_tags {
+  id integer [pk]
+  name text [not null]
+  color varchar(50)
+  project_id integer
+  count integer [default: 0]
+  raw_data jsonb
+  db_created_at timestamp [default: `now()`]
+  db_updated_at timestamp [default: `now()`]
+}
+
+Table tw_projects {
+  id integer [pk]
+  name text [not null]
+  description text
+  company_id integer
+  category_id integer
+  status varchar(50)
+  sub_status varchar(50)
+  start_date date
+  end_date date
+  start_at timestamp
+  end_at timestamp
+  completed_at timestamp
+  owner_id integer
+  completed_by integer
+  created_by integer
+  updated_by integer
+  is_starred boolean
+  is_billable boolean
+  is_sample_project boolean
+  is_onboarding_project boolean
+  is_project_admin boolean
+  logo text
+  logo_color varchar(50)
+  logo_icon text
+  announcement text
+  show_announcement boolean
+  default_privacy varchar(50)
+  privacy_enabled boolean
+  harvest_timers_enabled boolean
+  notify_everyone boolean
+  skip_weekends boolean
+  created_at timestamp
+  updated_at timestamp
+  last_worked_on timestamp
+  raw_data jsonb
+  db_created_at timestamp [default: `now()`]
+  db_updated_at timestamp [default: `now()`]
+}
+
+Table tw_tasklists {
+  id integer [pk]
+  name text [not null]
+  description text
+  project_id integer
+  milestone_id integer
+  status varchar(50)
+  display_order integer
+  is_private boolean
+  is_pinned boolean
+  is_billable boolean
+  icon text
+  lockdown_id integer
+  calculated_start_date date
+  calculated_due_date date
+  created_at timestamp
+  updated_at timestamp
+  raw_data jsonb
+  db_created_at timestamp [default: `now()`]
+  db_updated_at timestamp [default: `now()`]
+}
+
+Table tasks {
+  id integer [pk]
+  project_id integer
+  tasklist_id integer
+  name text
+  description text
+  status varchar(100)
+  priority varchar(50)
+  progress integer
+  parent_task varchar(255)
+  start_date timestamp
+  due_date timestamp
+  estimate_minutes integer
+  accumulated_estimated_minutes integer
+  created_at timestamp
+  created_by_id integer
+  updated_at timestamp
+  updated_by_id integer
+  deleted_at timestamp
+  source_links jsonb
+  raw_data jsonb
+  db_created_at timestamp [default: `now()`]
+  db_updated_at timestamp [default: `now()`]
+}
+
+// Junction Tables
+Table task_tags {
+  task_id integer
+  tag_id integer
+  
+  indexes {
+    (task_id, tag_id) [pk]
+  }
+}
+
+Table task_assignees {
+  user_id integer
+  task_id integer
+  
+  indexes {
+    (task_id, user_id) [pk]
+  }
+}
+
+Table tw_user_teams {
+  user_id integer
+  team_id integer
+  
+  indexes {
+    (user_id, team_id) [pk]
+  }
+}
+
+// ========================================
+// RELATIONSHIPS (Teamwork)
+// ========================================
+
+Ref: tw_users.company_id > tw_companies.id [delete: set null]
+
+Ref: tw_projects.company_id > tw_companies.id [delete: set null]
+Ref: tw_projects.owner_id > tw_users.id [delete: set null]
+Ref: tw_projects.completed_by > tw_users.id [delete: set null]
+Ref: tw_projects.created_by > tw_users.id [delete: set null]
+Ref: tw_projects.updated_by > tw_users.id [delete: set null]
+
+Ref: tw_tasklists.project_id > tw_projects.id [delete: cascade]
+
+// Tasks References
+Ref: tasks.project_id > tw_projects.id [delete: set null]
+Ref: tasks.tasklist_id > tw_tasklists.id [delete: set null]
+Ref: tasks.created_by_id > tw_users.id [delete: set null]
+Ref: tasks.updated_by_id > tw_users.id [delete: set null]
+Ref: tasks.parent_task - tasks.id [delete: set null] // Self reference via string ID
+
+// Junction References
+// Note: task_tags and task_assignees use task_id (string), not id (int)
+Ref: task_tags.task_id > tasks.id [delete: cascade]
+Ref: task_tags.tag_id > tw_tags.id [delete: cascade]
+
+Ref: task_assignees.task_id > tasks.id [delete: cascade]
+Ref: task_assignees.user_id > tw_users.id [delete: cascade]
+
+Ref: tw_user_teams.user_id > tw_users.id [delete: cascade]
+Ref: tw_user_teams.team_id > tw_teams.id [delete: cascade]
