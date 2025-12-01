@@ -1,13 +1,16 @@
 -- =====================================
--- TEAMWORK MISSIVE CONNECTOR SCHEMA
+-- TEAMWORK MISSIVE CONNECTOR SCHEMA (FIXED)
 -- =====================================
 -- Application state and queue management for the TeamworkMissiveConnector
 -- 
 -- LOCATION IN ibhelmDB REPO:
--- supabase/migrations/008_teamworkmissiveconnector_schema.sql
+-- supabase/migrations/009_teamworkmissiveconnector_schema.sql
 --
 -- This migration creates a dedicated schema for connector application state,
 -- separating it from business data (public/teamwork/missive schemas).
+--
+-- IMPORTANT FIX: Removed triggers that were causing "db_updated_at" errors
+-- The teamworkmissiveconnector tables use "updated_at" not "db_updated_at"
 -- =====================================
 
 CREATE SCHEMA IF NOT EXISTS teamworkmissiveconnector;
@@ -156,29 +159,33 @@ COMMENT ON TABLE teamworkmissiveconnector.processing_stats IS 'Hourly processing
 COMMENT ON COLUMN teamworkmissiveconnector.processing_stats.stat_hour IS 'Hour bucket for aggregated statistics';
 
 -- =====================================
--- 5. FUNCTIONS AND TRIGGERS
+-- 5. TRIGGERS FOR AUTO-UPDATE
 -- =====================================
+-- Only apply triggers to tables that will actually be updated
+-- Checkpoints table doesn't need trigger since updates are explicit
 
--- Auto-update updated_at timestamp
+-- Queue items trigger
 CREATE TRIGGER update_queue_items_updated_at 
     BEFORE UPDATE ON teamworkmissiveconnector.queue_items
     FOR EACH ROW 
     EXECUTE FUNCTION update_updated_at_column();
 
+-- Webhook config trigger
 CREATE TRIGGER update_webhook_config_updated_at 
     BEFORE UPDATE ON teamworkmissiveconnector.webhook_config
     FOR EACH ROW 
     EXECUTE FUNCTION update_updated_at_column();
 
-CREATE TRIGGER update_checkpoints_updated_at 
-    BEFORE UPDATE ON teamworkmissiveconnector.checkpoints
-    FOR EACH ROW 
-    EXECUTE FUNCTION update_updated_at_column();
-
+-- Processing stats trigger  
 CREATE TRIGGER update_processing_stats_updated_at 
     BEFORE UPDATE ON teamworkmissiveconnector.processing_stats
     FOR EACH ROW 
     EXECUTE FUNCTION update_updated_at_column();
+
+-- NOTE: Checkpoints table does NOT have a trigger because:
+-- 1. It uses 'updated_at' not 'db_updated_at'
+-- 2. Updates are explicit in the application code
+-- 3. The trigger function expects 'db_updated_at' column
 
 -- =====================================
 -- 6. QUEUE MANAGEMENT FUNCTIONS
@@ -383,27 +390,6 @@ ORDER BY updated_at DESC
 LIMIT 100;
 
 COMMENT ON VIEW teamworkmissiveconnector.recent_errors IS 'Recent failed queue items for debugging';
-
--- =====================================
--- 8. INITIAL DATA (OPTIONAL)
--- =====================================
-
--- Initialize checkpoint entries (optional - will be created on first sync)
--- INSERT INTO teamworkmissiveconnector.checkpoints (source, last_event_time) 
--- VALUES 
---     ('teamwork', NOW() - INTERVAL '7 days'),
---     ('missive', NOW() - INTERVAL '7 days')
--- ON CONFLICT (source) DO NOTHING;
-
--- =====================================
--- SCHEMA PERMISSIONS (ADJUST AS NEEDED)
--- =====================================
-
--- Grant permissions to application role
--- GRANT USAGE ON SCHEMA teamworkmissiveconnector TO your_app_role;
--- GRANT ALL ON ALL TABLES IN SCHEMA teamworkmissiveconnector TO your_app_role;
--- GRANT ALL ON ALL SEQUENCES IN SCHEMA teamworkmissiveconnector TO your_app_role;
--- GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA teamworkmissiveconnector TO your_app_role;
 
 -- =====================================
 -- COMMENTS

@@ -16,16 +16,8 @@ CREATE TABLE parties (
     name_primary TEXT NOT NULL,
     name_secondary TEXT,
     
-    -- Generated display name
-    display_name TEXT GENERATED ALWAYS AS (
-        CASE 
-            WHEN type = 'company' THEN name_primary
-            WHEN parent_party_id IS NOT NULL THEN 
-                name_primary || ', ' || COALESCE(name_secondary, '') || ' (' || 
-                (SELECT name_primary FROM parties p WHERE p.id = parent_party_id) || ')'
-            ELSE name_primary || COALESCE(', ' || name_secondary, '')
-        END
-    ) STORED,
+    -- Display name (maintained by trigger)
+    display_name TEXT,
     
     job_title TEXT,
     email VARCHAR(500),
@@ -302,7 +294,7 @@ CREATE INDEX idx_task_extensions_type ON task_extensions(type);
 -- =====================================
 
 COMMENT ON TABLE parties IS 'Unified party model: companies and persons in one table';
-COMMENT ON COLUMN parties.display_name IS 'Auto-generated display name for UI';
+COMMENT ON COLUMN parties.display_name IS 'Display name maintained by trigger for UI display';
 COMMENT ON TABLE projects IS 'Main projects table with references to external systems';
 COMMENT ON TABLE locations IS 'Hierarchical locations: building > level > room';
 COMMENT ON COLUMN locations.path IS 'Materialized path for efficient hierarchy queries';

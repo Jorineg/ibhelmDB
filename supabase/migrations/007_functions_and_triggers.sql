@@ -191,7 +191,67 @@ CREATE TRIGGER cost_group_path_trigger
     EXECUTE FUNCTION update_cost_group_path();
 
 -- =====================================
--- 4. FUZZY LOCATION SEARCH FUNCTION
+-- 4. PARTIES DISPLAY NAME MAINTENANCE
+-- =====================================
+
+-- Function to update display name for a party
+CREATE OR REPLACE FUNCTION update_party_display_name()
+RETURNS TRIGGER AS $$
+DECLARE
+    parent_name TEXT;
+BEGIN
+    -- Get parent name if exists
+    IF NEW.parent_party_id IS NOT NULL THEN
+        SELECT name_primary INTO parent_name
+        FROM parties
+        WHERE id = NEW.parent_party_id;
+    END IF;
+    
+    -- Generate display name
+    NEW.display_name := CASE 
+        WHEN NEW.type = 'company' THEN NEW.name_primary
+        WHEN NEW.parent_party_id IS NOT NULL THEN 
+            NEW.name_primary || COALESCE(', ' || NEW.name_secondary, '') || 
+            ' (' || COALESCE(parent_name, 'Unknown') || ')'
+        ELSE NEW.name_primary || COALESCE(', ' || NEW.name_secondary, '')
+    END;
+    
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Trigger to update display name on insert or update
+CREATE TRIGGER trigger_update_party_display_name
+    BEFORE INSERT OR UPDATE OF name_primary, name_secondary, type, parent_party_id
+    ON parties
+    FOR EACH ROW
+    EXECUTE FUNCTION update_party_display_name();
+
+-- Function to update child party display names when parent name changes
+CREATE OR REPLACE FUNCTION update_child_party_display_names()
+RETURNS TRIGGER AS $$
+BEGIN
+    -- Only update children if the parent's name_primary changed
+    IF OLD.name_primary IS DISTINCT FROM NEW.name_primary THEN
+        UPDATE parties
+        SET db_updated_at = NOW()
+        WHERE parent_party_id = NEW.id;
+    END IF;
+    
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Trigger to cascade display name updates to children
+CREATE TRIGGER trigger_update_child_party_display_names
+    AFTER UPDATE OF name_primary
+    ON parties
+    FOR EACH ROW
+    WHEN (OLD.name_primary IS DISTINCT FROM NEW.name_primary)
+    EXECUTE FUNCTION update_child_party_display_names();
+
+-- =====================================
+-- 5. FUZZY LOCATION SEARCH FUNCTION
 -- =====================================
 
 -- Function for typo-resistant, multi-level location search
@@ -247,7 +307,7 @@ END;
 $$ LANGUAGE plpgsql STABLE;
 
 -- =====================================
--- 5. UNIFIED SEARCH FUNCTION
+-- 6. UNIFIED SEARCH FUNCTION
 -- =====================================
 
 -- Function to search across all objects (files, tasks, messages)
@@ -364,5 +424,7 @@ $$ LANGUAGE plpgsql STABLE;
 COMMENT ON FUNCTION update_updated_at_column() IS 'Generic trigger function to update db_updated_at timestamp';
 COMMENT ON FUNCTION update_location_hierarchy() IS 'Maintains materialized path and search_text for location hierarchy';
 COMMENT ON FUNCTION update_cost_group_path() IS 'Maintains materialized path for cost group hierarchy';
+COMMENT ON FUNCTION update_party_display_name() IS 'Maintains display_name for parties based on type and parent';
+COMMENT ON FUNCTION update_child_party_display_names() IS 'Cascades display_name updates to child parties when parent name changes';
 COMMENT ON FUNCTION search_locations(TEXT, FLOAT) IS 'Typo-resistant location search with similarity scoring';
 COMMENT ON FUNCTION search_all_objects(TEXT, UUID, UUID, UUID, INTEGER) IS 'Unified full-text search across files, tasks, and messages';
