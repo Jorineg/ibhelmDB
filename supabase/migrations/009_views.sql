@@ -31,7 +31,7 @@ SELECT
     
     -- Aggregate assignees
     (
-        SELECT json_agg(json_build_object(
+        SELECT jsonb_agg(jsonb_build_object(
             'id', u.id, 
             'first_name', u.first_name, 
             'last_name', u.last_name, 
@@ -44,7 +44,7 @@ SELECT
     
     -- Aggregate tags
     (
-        SELECT json_agg(json_build_object(
+        SELECT jsonb_agg(jsonb_build_object(
             'id', tag.id, 
             'name', tag.name, 
             'color', tag.color
@@ -55,13 +55,13 @@ SELECT
     ) AS tags,
     
     -- Email-specific fields (null for tasks)
-    NULL AS body,
-    NULL AS preview,
-    NULL AS from_name,
-    NULL AS from_email,
-    NULL AS conversation_subject,
-    NULL AS recipients,
-    NULL AS attachments,
+    NULL::TEXT AS body,
+    NULL::TEXT AS preview,
+    NULL::TEXT AS from_name,
+    NULL::TEXT AS from_email,
+    NULL::TEXT AS conversation_subject,
+    NULL::JSONB AS recipients,
+    NULL::JSONB AS attachments,
     0 AS attachment_count,
     
     -- Sort key
@@ -79,14 +79,14 @@ WHERE t.deleted_at IS NULL
 
 UNION ALL
 
--- Emails from Missive
+-- Emails from Missive (via conversations for location/cost group linking)
 SELECT 
     m.id::TEXT AS id,
     'email' AS type,
     m.subject AS name,
     COALESCE(m.preview, LEFT(m.body, 200)) AS description,
     '' AS status,
-    '' AS project,
+    COALESCE(twp.name, '') AS project,
     '' AS customer,
     l.name AS location,
     l.search_text AS location_path,
@@ -100,8 +100,8 @@ SELECT
     '' AS tasklist,
     
     -- Task-specific fields (null for emails)
-    NULL AS assignees,
-    NULL AS tags,
+    NULL::JSONB AS assignees,
+    NULL::JSONB AS tags,
     
     -- Email-specific fields
     m.body,
@@ -112,23 +112,23 @@ SELECT
     
     -- Aggregate recipients
     (
-        SELECT json_agg(json_build_object(
+        SELECT jsonb_agg(jsonb_build_object(
             'id', mr.id, 
             'recipient_type', mr.recipient_type, 
-            'contact', json_build_object(
-                'id', c.id, 
-                'name', c.name, 
-                'email', c.email
+            'contact', jsonb_build_object(
+                'id', rc.id, 
+                'name', rc.name, 
+                'email', rc.email
             )
         ))
         FROM missive.message_recipients mr
-        LEFT JOIN missive.contacts c ON mr.contact_id = c.id
+        LEFT JOIN missive.contacts rc ON mr.contact_id = rc.id
         WHERE mr.message_id = m.id
     ) AS recipients,
     
     -- Aggregate attachments
     (
-        SELECT json_agg(json_build_object(
+        SELECT jsonb_agg(jsonb_build_object(
             'id', a.id, 
             'filename', a.filename, 
             'extension', a.extension, 
@@ -139,7 +139,7 @@ SELECT
     ) AS attachments,
     
     (
-        SELECT COUNT(*)
+        SELECT COUNT(*)::INTEGER
         FROM missive.attachments a
         WHERE a.message_id = m.id
     ) AS attachment_count,
@@ -150,91 +150,108 @@ SELECT
 FROM missive.messages m
 LEFT JOIN missive.conversations conv ON m.conversation_id = conv.id
 LEFT JOIN missive.contacts from_contact ON m.from_contact_id = from_contact.id
-LEFT JOIN object_locations ol ON m.id = ol.m_message_id
+-- Join locations and cost groups via conversation (not message)
+LEFT JOIN object_locations ol ON conv.id = ol.m_conversation_id
 LEFT JOIN locations l ON ol.location_id = l.id
-LEFT JOIN object_cost_groups ocg ON m.id = ocg.m_message_id
-LEFT JOIN cost_groups cg ON ocg.cost_group_id = cg.id;
+LEFT JOIN object_cost_groups ocg ON conv.id = ocg.m_conversation_id
+LEFT JOIN cost_groups cg ON ocg.cost_group_id = cg.id
+-- Join project via project_conversations
+LEFT JOIN project_conversations pc ON conv.id = pc.m_conversation_id
+LEFT JOIN teamwork.projects twp ON pc.tw_project_id = twp.id;
 
 -- =====================================
--- 2. PARTY DETAILS VIEW
+-- 2. UNIFIED PERSON DETAILS VIEW
 -- =====================================
--- Enriched party view with external system info
+-- Enriched unified person view with linked system info
 
-CREATE OR REPLACE VIEW party_details AS
+CREATE OR REPLACE VIEW unified_person_details AS
 SELECT 
-    p.id,
-    p.type,
-    p.name_primary,
-    p.name_secondary,
-    p.display_name,
-    p.job_title,
-    p.email,
-    p.phone,
-    p.is_internal,
+    up.id,
+    up.display_name,
+    up.primary_email,
+    up.preferred_contact_method,
+    up.is_internal,
+    up.is_company,
+    up.notes,
     
-    -- Parent company info (for persons)
-    parent.display_name AS parent_company_name,
-    parent.email AS parent_company_email,
-    
-    -- Teamwork company data
+    -- Teamwork company data (if linked)
+    twc.id AS tw_company_id,
     twc.name AS tw_company_name,
     twc.website AS tw_company_website,
     
-    -- Teamwork user data
+    -- Teamwork user data (if linked)
+    twu.id AS tw_user_id,
     twu.first_name AS tw_user_first_name,
     twu.last_name AS tw_user_last_name,
     twu.email AS tw_user_email,
     
-    -- Missive contact data
+    -- Missive contact data (if linked)
+    mc.id AS m_contact_id,
     mc.email AS m_contact_email,
+    mc.name AS m_contact_name,
     
-    p.db_created_at,
-    p.db_updated_at
+    up.db_created_at,
+    up.db_updated_at
     
-FROM parties p
-LEFT JOIN parties parent ON p.parent_party_id = parent.id
-LEFT JOIN teamwork.companies twc ON p.tw_company_id = twc.id
-LEFT JOIN teamwork.users twu ON p.tw_user_id = twu.id
-LEFT JOIN missive.contacts mc ON p.m_contact_id = mc.id;
+FROM unified_persons up
+LEFT JOIN unified_person_links upl_company ON up.id = upl_company.unified_person_id AND upl_company.tw_company_id IS NOT NULL
+LEFT JOIN teamwork.companies twc ON upl_company.tw_company_id = twc.id
+LEFT JOIN unified_person_links upl_user ON up.id = upl_user.unified_person_id AND upl_user.tw_user_id IS NOT NULL
+LEFT JOIN teamwork.users twu ON upl_user.tw_user_id = twu.id
+LEFT JOIN unified_person_links upl_contact ON up.id = upl_contact.unified_person_id AND upl_contact.m_contact_id IS NOT NULL
+LEFT JOIN missive.contacts mc ON upl_contact.m_contact_id = mc.id;
 
 -- =====================================
 -- 3. PROJECT OVERVIEW VIEW
 -- =====================================
--- Project with aggregated data
+-- Teamwork project with ibhelm extensions and aggregated data
 
 CREATE OR REPLACE VIEW project_overview AS
 SELECT 
-    p.id,
-    p.name,
-    p.project_number,
-    p.description,
-    p.status,
-    p.start_date,
-    p.end_date,
+    twp.id,
+    twp.name,
+    twp.description,
+    twp.status,
+    twp.start_date,
+    twp.end_date,
     
-    -- Client info
+    -- Company info
+    twc.name AS company_name,
+    
+    -- Client info from project_extensions
     client.display_name AS client_name,
-    client.email AS client_email,
-    client.phone AS client_phone,
+    client.primary_email AS client_email,
     
-    -- Teamwork project data
-    twp.name AS tw_project_name,
-    twp.status AS tw_project_status,
-    twp.is_starred AS tw_project_starred,
+    -- ibhelm extensions
+    pe.nas_folder_path,
+    pe.internal_notes,
+    
+    -- Default location
+    dl.name AS default_location_name,
+    dl.search_text AS default_location_path,
+    
+    -- Default cost group
+    dcg.name AS default_cost_group_name,
+    dcg.code AS default_cost_group_code,
     
     -- Aggregated counts
-    (SELECT COUNT(*) FROM project_files pf WHERE pf.project_id = p.id) AS file_count,
-    (SELECT COUNT(*) FROM project_contractors pc WHERE pc.project_id = p.id) AS contractor_count,
+    (SELECT COUNT(*) FROM project_files pf WHERE pf.tw_project_id = twp.id) AS file_count,
+    (SELECT COUNT(*) FROM project_contractors pc WHERE pc.tw_project_id = twp.id) AS contractor_count,
+    (SELECT COUNT(*) FROM project_conversations pcon WHERE pcon.tw_project_id = twp.id) AS conversation_count,
     (SELECT COUNT(*) FROM teamwork.tasks t WHERE t.project_id = twp.id AND t.deleted_at IS NULL) AS task_count,
     (SELECT COUNT(*) FROM teamwork.tasks t WHERE t.project_id = twp.id AND t.deleted_at IS NULL AND t.status = 'completed') AS completed_task_count,
     
-    p.created_at,
-    p.db_created_at,
-    p.db_updated_at
+    twp.created_at,
+    twp.updated_at,
+    pe.db_created_at AS extension_created_at,
+    pe.db_updated_at AS extension_updated_at
     
-FROM projects p
-LEFT JOIN parties client ON p.client_party_id = client.id
-LEFT JOIN teamwork.projects twp ON p.tw_project_id = twp.id;
+FROM teamwork.projects twp
+LEFT JOIN teamwork.companies twc ON twp.company_id = twc.id
+LEFT JOIN project_extensions pe ON twp.id = pe.tw_project_id
+LEFT JOIN unified_persons client ON pe.client_person_id = client.id
+LEFT JOIN locations dl ON pe.default_location_id = dl.id
+LEFT JOIN cost_groups dcg ON pe.default_cost_group_id = dcg.id;
 
 -- =====================================
 -- 4. FILE DETAILS VIEW
@@ -266,19 +283,18 @@ SELECT
     
     -- Projects (aggregated)
     (
-        SELECT json_agg(json_build_object(
-            'id', proj.id,
-            'name', proj.name,
-            'project_number', proj.project_number
+        SELECT jsonb_agg(jsonb_build_object(
+            'id', twp.id,
+            'name', twp.name
         ))
         FROM project_files pf
-        JOIN projects proj ON pf.project_id = proj.id
+        JOIN teamwork.projects twp ON pf.tw_project_id = twp.id
         WHERE pf.file_id = f.id
     ) AS projects,
     
     -- Locations (aggregated)
     (
-        SELECT json_agg(json_build_object(
+        SELECT jsonb_agg(jsonb_build_object(
             'id', loc.id,
             'name', loc.name,
             'type', loc.type,
@@ -291,7 +307,7 @@ SELECT
     
     -- Cost groups (aggregated)
     (
-        SELECT json_agg(json_build_object(
+        SELECT jsonb_agg(jsonb_build_object(
             'id', cg.id,
             'code', cg.code,
             'name', cg.name
@@ -321,16 +337,13 @@ SELECT
     l.name,
     l.type,
     l.depth,
+    l.path,
     l.search_text AS full_path,
     
     -- Parent info
     parent.id AS parent_id,
     parent.name AS parent_name,
     parent.type AS parent_type,
-    
-    -- Owner info
-    owner.display_name AS owner_name,
-    owner.type AS owner_type,
     
     -- Building (root) info
     building.id AS building_id,
@@ -347,11 +360,10 @@ SELECT
     
 FROM locations l
 LEFT JOIN locations parent ON l.parent_id = parent.id
-LEFT JOIN parties owner ON l.owner_party_id = owner.id
 LEFT JOIN LATERAL (
-    SELECT id, name
-    FROM locations
-    WHERE l.path_ids[1] = id
+    SELECT loc.id, loc.name
+    FROM locations loc
+    WHERE l.path_ids[1] = loc.id
     LIMIT 1
 ) building ON true;
 
@@ -360,8 +372,7 @@ LEFT JOIN LATERAL (
 -- =====================================
 
 COMMENT ON VIEW unified_items IS 'Unified view combining tasks and emails for dashboard display';
-COMMENT ON VIEW party_details IS 'Enriched party view with external system references';
-COMMENT ON VIEW project_overview IS 'Project overview with aggregated counts and related data';
+COMMENT ON VIEW unified_person_details IS 'Enriched unified person view with linked external system data';
+COMMENT ON VIEW project_overview IS 'Teamwork project overview with ibhelm extensions and aggregated counts';
 COMMENT ON VIEW file_details IS 'File details with all metadata and relationships';
 COMMENT ON VIEW location_hierarchy IS 'Location hierarchy with parent/child relationships and counts';
-

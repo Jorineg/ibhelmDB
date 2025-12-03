@@ -33,23 +33,14 @@ CREATE INDEX idx_files_folder_path_trgm ON files USING GIST (folder_path gist_tr
 CREATE INDEX idx_files_auto_extracted_metadata_gin ON files USING GIN (auto_extracted_metadata);
 
 -- =====================================
--- PARTY SEARCH INDEXES
+-- UNIFIED PERSONS SEARCH INDEXES
 -- =====================================
 
--- Trigram index for fuzzy search on party names
-CREATE INDEX idx_parties_name_primary_trgm ON parties USING GIST (name_primary gist_trgm_ops);
-CREATE INDEX idx_parties_name_secondary_trgm ON parties USING GIST (name_secondary gist_trgm_ops);
-CREATE INDEX idx_parties_display_name_trgm ON parties USING GIST (display_name gist_trgm_ops);
+-- Trigram index for fuzzy search on unified person display names
+CREATE INDEX idx_unified_persons_display_name_trgm ON unified_persons USING GIST (display_name gist_trgm_ops);
 
--- =====================================
--- PROJECT SEARCH INDEXES
--- =====================================
-
--- Trigram index for fuzzy search on project names
-CREATE INDEX idx_projects_name_trgm ON projects USING GIST (name gist_trgm_ops);
-
--- Full-text search on project description
-CREATE INDEX idx_projects_description_fts ON projects USING GIN (to_tsvector('german', COALESCE(description, '')));
+-- Trigram index for fuzzy search on unified person emails
+CREATE INDEX idx_unified_persons_primary_email_trgm ON unified_persons USING GIST (primary_email gist_trgm_ops);
 
 -- =====================================
 -- COST GROUP SEARCH INDEXES
@@ -80,7 +71,7 @@ CREATE INDEX idx_tw_companies_name_trgm ON teamwork.companies USING GIST (name g
 -- =====================================
 
 -- Full-text search on message body
-CREATE INDEX idx_m_messages_body_fts ON missive.messages USING GIN (to_tsvector('german', COALESCE(body, '')));
+CREATE INDEX idx_m_messages_body_fts ON missive.messages USING GIN (to_tsvector('german', COALESCE(subject, '') || ' ' || COALESCE(body, '') || ' ' || COALESCE(body_plain_text, '')));
 
 -- Full-text search on message subject
 CREATE INDEX idx_m_messages_subject_fts ON missive.messages USING GIN (to_tsvector('german', COALESCE(subject, '')));
@@ -95,8 +86,8 @@ CREATE INDEX idx_m_contacts_email_trgm ON missive.contacts USING GIST (email gis
 
 -- Composite indexes for common queries
 
--- Files by project and type
-CREATE INDEX idx_files_project_type ON project_files(project_id, file_id);
+-- Files by project
+CREATE INDEX idx_project_files_composite ON project_files(tw_project_id, file_id);
 
 -- Tasks by project and status
 CREATE INDEX idx_tw_tasks_project_status ON teamwork.tasks(project_id, status) WHERE deleted_at IS NULL;
@@ -104,8 +95,8 @@ CREATE INDEX idx_tw_tasks_project_status ON teamwork.tasks(project_id, status) W
 -- Messages by conversation and date
 CREATE INDEX idx_m_messages_conversation_delivered ON missive.messages(conversation_id, delivered_at DESC);
 
--- Locations by owner and type
-CREATE INDEX idx_locations_owner_type ON locations(owner_party_id, type);
+-- Locations by parent and type
+CREATE INDEX idx_locations_parent_type ON locations(parent_id, type);
 
 -- =====================================
 -- COMMENTS

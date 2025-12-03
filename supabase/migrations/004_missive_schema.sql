@@ -79,6 +79,7 @@ CREATE TABLE missive.messages (
     type VARCHAR(50),
     email_message_id TEXT,
     body TEXT,
+    body_plain_text TEXT,
     from_contact_id INTEGER REFERENCES missive.contacts(id) ON DELETE SET NULL,
     delivered_at TIMESTAMP,
     created_at TIMESTAMP,
@@ -117,6 +118,64 @@ CREATE TABLE missive.conversation_authors (
     id SERIAL PRIMARY KEY,
     conversation_id UUID REFERENCES missive.conversations(id) ON DELETE CASCADE,
     contact_id INTEGER REFERENCES missive.contacts(id) ON DELETE SET NULL
+);
+
+-- =====================================
+-- CONVERSATION COMMENTS & RELATED TABLES
+-- =====================================
+
+-- Conversation Comments
+CREATE TABLE missive.conversation_comments (
+    id UUID PRIMARY KEY,
+    conversation_id UUID NOT NULL REFERENCES missive.conversations(id) ON DELETE CASCADE,
+    body TEXT,
+    created_at TIMESTAMP,
+    author_id UUID REFERENCES missive.users(id) ON DELETE SET NULL,
+    raw_data JSONB,
+    db_created_at TIMESTAMP DEFAULT NOW(),
+    db_updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Comment Attachments
+CREATE TABLE missive.comment_attachments (
+    id UUID PRIMARY KEY,
+    comment_id UUID NOT NULL REFERENCES missive.conversation_comments(id) ON DELETE CASCADE,
+    filename VARCHAR(500),
+    extension VARCHAR(50),
+    url TEXT,
+    media_type VARCHAR(100),
+    sub_type VARCHAR(100),
+    size INTEGER,
+    raw_data JSONB,
+    db_created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Comment Mentions
+CREATE TABLE missive.comment_mentions (
+    id SERIAL PRIMARY KEY,
+    comment_id UUID NOT NULL REFERENCES missive.conversation_comments(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES missive.users(id) ON DELETE CASCADE,
+    mention_index INTEGER,
+    mention_length INTEGER
+);
+
+-- Comment Tasks
+CREATE TABLE missive.comment_tasks (
+    id SERIAL PRIMARY KEY,
+    comment_id UUID UNIQUE NOT NULL REFERENCES missive.conversation_comments(id) ON DELETE CASCADE,
+    description TEXT,
+    state VARCHAR(50),
+    due_at TIMESTAMP,
+    started_at TIMESTAMP,
+    closed_at TIMESTAMP,
+    team_id UUID REFERENCES missive.teams(id) ON DELETE SET NULL
+);
+
+-- Comment Task Assignees (Many-to-Many)
+CREATE TABLE missive.comment_task_assignees (
+    comment_task_id INTEGER REFERENCES missive.comment_tasks(id) ON DELETE CASCADE,
+    user_id UUID REFERENCES missive.users(id) ON DELETE CASCADE,
+    PRIMARY KEY (comment_task_id, user_id)
 );
 
 -- =====================================
@@ -191,6 +250,22 @@ CREATE INDEX idx_m_conversation_assignees_user_id ON missive.conversation_assign
 CREATE INDEX idx_m_conversation_labels_conversation_id ON missive.conversation_labels(conversation_id);
 CREATE INDEX idx_m_conversation_labels_label_id ON missive.conversation_labels(label_id);
 
+CREATE INDEX idx_m_conversation_comments_conversation_id ON missive.conversation_comments(conversation_id);
+CREATE INDEX idx_m_conversation_comments_author_id ON missive.conversation_comments(author_id);
+CREATE INDEX idx_m_conversation_comments_created_at ON missive.conversation_comments(created_at);
+
+CREATE INDEX idx_m_comment_attachments_comment_id ON missive.comment_attachments(comment_id);
+
+CREATE INDEX idx_m_comment_mentions_comment_id ON missive.comment_mentions(comment_id);
+CREATE INDEX idx_m_comment_mentions_user_id ON missive.comment_mentions(user_id);
+
+CREATE INDEX idx_m_comment_tasks_comment_id ON missive.comment_tasks(comment_id);
+CREATE INDEX idx_m_comment_tasks_team_id ON missive.comment_tasks(team_id);
+CREATE INDEX idx_m_comment_tasks_state ON missive.comment_tasks(state);
+
+CREATE INDEX idx_m_comment_task_assignees_comment_task_id ON missive.comment_task_assignees(comment_task_id);
+CREATE INDEX idx_m_comment_task_assignees_user_id ON missive.comment_task_assignees(user_id);
+
 -- =====================================
 -- COMMENTS
 -- =====================================
@@ -198,4 +273,10 @@ CREATE INDEX idx_m_conversation_labels_label_id ON missive.conversation_labels(l
 COMMENT ON SCHEMA missive IS 'External data from Missive email collaboration system';
 COMMENT ON TABLE missive.contacts IS 'Email correspondents (external contacts)';
 COMMENT ON TABLE missive.message_recipients IS 'Normalized to/cc/bcc fields from messages';
+COMMENT ON TABLE missive.conversation_comments IS 'Comments on conversations';
+COMMENT ON TABLE missive.comment_attachments IS 'Attachments on conversation comments';
+COMMENT ON TABLE missive.comment_mentions IS 'User mentions within comments';
+COMMENT ON TABLE missive.comment_tasks IS 'Tasks associated with comments (1:1 with comment)';
+COMMENT ON TABLE missive.comment_task_assignees IS 'Assignees for comment tasks';
+COMMENT ON COLUMN missive.messages.body_plain_text IS 'Plain text extracted from HTML body for searching and display';
 

@@ -18,10 +18,13 @@ $$ LANGUAGE plpgsql;
 -- Apply to all relevant tables
 
 -- Public schema (ibhelm)
-CREATE TRIGGER update_parties_updated_at BEFORE UPDATE ON parties
+CREATE TRIGGER update_unified_persons_updated_at BEFORE UPDATE ON unified_persons
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
-CREATE TRIGGER update_projects_updated_at BEFORE UPDATE ON projects
+CREATE TRIGGER update_unified_person_links_updated_at BEFORE UPDATE ON unified_person_links
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_project_extensions_updated_at BEFORE UPDATE ON project_extensions
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 CREATE TRIGGER update_locations_updated_at BEFORE UPDATE ON locations
@@ -191,67 +194,7 @@ CREATE TRIGGER cost_group_path_trigger
     EXECUTE FUNCTION update_cost_group_path();
 
 -- =====================================
--- 4. PARTIES DISPLAY NAME MAINTENANCE
--- =====================================
-
--- Function to update display name for a party
-CREATE OR REPLACE FUNCTION update_party_display_name()
-RETURNS TRIGGER AS $$
-DECLARE
-    parent_name TEXT;
-BEGIN
-    -- Get parent name if exists
-    IF NEW.parent_party_id IS NOT NULL THEN
-        SELECT name_primary INTO parent_name
-        FROM parties
-        WHERE id = NEW.parent_party_id;
-    END IF;
-    
-    -- Generate display name
-    NEW.display_name := CASE 
-        WHEN NEW.type = 'company' THEN NEW.name_primary
-        WHEN NEW.parent_party_id IS NOT NULL THEN 
-            NEW.name_primary || COALESCE(', ' || NEW.name_secondary, '') || 
-            ' (' || COALESCE(parent_name, 'Unknown') || ')'
-        ELSE NEW.name_primary || COALESCE(', ' || NEW.name_secondary, '')
-    END;
-    
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
--- Trigger to update display name on insert or update
-CREATE TRIGGER trigger_update_party_display_name
-    BEFORE INSERT OR UPDATE OF name_primary, name_secondary, type, parent_party_id
-    ON parties
-    FOR EACH ROW
-    EXECUTE FUNCTION update_party_display_name();
-
--- Function to update child party display names when parent name changes
-CREATE OR REPLACE FUNCTION update_child_party_display_names()
-RETURNS TRIGGER AS $$
-BEGIN
-    -- Only update children if the parent's name_primary changed
-    IF OLD.name_primary IS DISTINCT FROM NEW.name_primary THEN
-        UPDATE parties
-        SET db_updated_at = NOW()
-        WHERE parent_party_id = NEW.id;
-    END IF;
-    
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
--- Trigger to cascade display name updates to children
-CREATE TRIGGER trigger_update_child_party_display_names
-    AFTER UPDATE OF name_primary
-    ON parties
-    FOR EACH ROW
-    WHEN (OLD.name_primary IS DISTINCT FROM NEW.name_primary)
-    EXECUTE FUNCTION update_child_party_display_names();
-
--- =====================================
--- 5. FUZZY LOCATION SEARCH FUNCTION
+-- 4. FUZZY LOCATION SEARCH FUNCTION
 -- =====================================
 
 -- Function for typo-resistant, multi-level location search
@@ -307,13 +250,13 @@ END;
 $$ LANGUAGE plpgsql STABLE;
 
 -- =====================================
--- 6. UNIFIED SEARCH FUNCTION
+-- 5. UNIFIED SEARCH FUNCTION
 -- =====================================
 
--- Function to search across all objects (files, tasks, messages)
+-- Function to search across all objects (files, tasks, conversations)
 CREATE OR REPLACE FUNCTION search_all_objects(
     search_query TEXT,
-    filter_project_id UUID DEFAULT NULL,
+    filter_project_id INTEGER DEFAULT NULL,
     filter_location_id UUID DEFAULT NULL,
     filter_cost_group_id UUID DEFAULT NULL,
     limit_results INTEGER DEFAULT 50
@@ -345,7 +288,7 @@ BEGIN
             ) AS relevance
         FROM files f
         LEFT JOIN project_files pf ON f.id = pf.file_id
-        LEFT JOIN projects p ON pf.project_id = p.id
+        LEFT JOIN teamwork.projects p ON pf.tw_project_id = p.id
         LEFT JOIN object_locations ol ON f.id = ol.file_id
         LEFT JOIN locations l ON ol.location_id = l.id
         LEFT JOIN object_cost_groups ocg ON f.id = ocg.file_id
@@ -377,40 +320,43 @@ BEGIN
         LEFT JOIN cost_groups cg ON ocg.cost_group_id = cg.id
         WHERE 
             t.deleted_at IS NULL
-            AND (filter_project_id IS NULL OR p.tw_project_id::TEXT = filter_project_id::TEXT)
+            AND (filter_project_id IS NULL OR p.id = filter_project_id)
             AND (filter_location_id IS NULL OR l.id = filter_location_id)
             AND (filter_cost_group_id IS NULL OR cg.id = filter_cost_group_id)
             AND to_tsvector('german', COALESCE(t.name || ' ' || t.description, '')) @@ plainto_tsquery('german', search_query)
     ),
-    ranked_messages AS (
+    ranked_conversations AS (
         SELECT 
-            m.id::TEXT AS object_id,
-            'message'::TEXT AS object_type,
-            m.subject AS name,
-            COALESCE(m.body, '') AS description,
-            ''::TEXT AS project_name,
+            c.id::TEXT AS object_id,
+            'conversation'::TEXT AS object_type,
+            c.subject AS name,
+            COALESCE(c.latest_message_subject, '') AS description,
+            p.name AS project_name,
             l.search_text AS location_name,
             cg.name AS cost_group_name,
             ts_rank(
-                to_tsvector('german', COALESCE(m.subject || ' ' || m.body, '')),
+                to_tsvector('german', COALESCE(c.subject || ' ' || c.latest_message_subject, '')),
                 plainto_tsquery('german', search_query)
             ) AS relevance
-        FROM missive.messages m
-        LEFT JOIN object_locations ol ON m.id = ol.m_message_id
+        FROM missive.conversations c
+        LEFT JOIN project_conversations pc ON c.id = pc.m_conversation_id
+        LEFT JOIN teamwork.projects p ON pc.tw_project_id = p.id
+        LEFT JOIN object_locations ol ON c.id = ol.m_conversation_id
         LEFT JOIN locations l ON ol.location_id = l.id
-        LEFT JOIN object_cost_groups ocg ON m.id = ocg.m_message_id
+        LEFT JOIN object_cost_groups ocg ON c.id = ocg.m_conversation_id
         LEFT JOIN cost_groups cg ON ocg.cost_group_id = cg.id
         WHERE 
-            (filter_location_id IS NULL OR l.id = filter_location_id)
+            (filter_project_id IS NULL OR p.id = filter_project_id)
+            AND (filter_location_id IS NULL OR l.id = filter_location_id)
             AND (filter_cost_group_id IS NULL OR cg.id = filter_cost_group_id)
-            AND to_tsvector('german', COALESCE(m.subject || ' ' || m.body, '')) @@ plainto_tsquery('german', search_query)
+            AND to_tsvector('german', COALESCE(c.subject || ' ' || c.latest_message_subject, '')) @@ plainto_tsquery('german', search_query)
     )
     SELECT * FROM (
         SELECT * FROM ranked_files
         UNION ALL
         SELECT * FROM ranked_tasks
         UNION ALL
-        SELECT * FROM ranked_messages
+        SELECT * FROM ranked_conversations
     ) combined
     ORDER BY relevance DESC
     LIMIT limit_results;
@@ -424,7 +370,5 @@ $$ LANGUAGE plpgsql STABLE;
 COMMENT ON FUNCTION update_updated_at_column() IS 'Generic trigger function to update db_updated_at timestamp';
 COMMENT ON FUNCTION update_location_hierarchy() IS 'Maintains materialized path and search_text for location hierarchy';
 COMMENT ON FUNCTION update_cost_group_path() IS 'Maintains materialized path for cost group hierarchy';
-COMMENT ON FUNCTION update_party_display_name() IS 'Maintains display_name for parties based on type and parent';
-COMMENT ON FUNCTION update_child_party_display_names() IS 'Cascades display_name updates to child parties when parent name changes';
 COMMENT ON FUNCTION search_locations(TEXT, FLOAT) IS 'Typo-resistant location search with similarity scoring';
-COMMENT ON FUNCTION search_all_objects(TEXT, UUID, UUID, UUID, INTEGER) IS 'Unified full-text search across files, tasks, and messages';
+COMMENT ON FUNCTION search_all_objects(TEXT, INTEGER, UUID, UUID, INTEGER) IS 'Unified full-text search across files, tasks, and conversations';

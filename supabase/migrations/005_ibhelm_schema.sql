@@ -4,72 +4,57 @@
 -- Main business logic tables for ibhelm
 
 -- =====================================
--- 1. MASTER DATA (Parties & Projects)
+-- 1. UNIFIED PERSONS (replaces parties)
 -- =====================================
 
--- Parties (Unified Company/Person Model)
-CREATE TABLE parties (
+-- Unified Persons (canonical identity for a person/company)
+CREATE TABLE unified_persons (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    type party_type NOT NULL,
-    parent_party_id UUID REFERENCES parties(id) ON DELETE SET NULL,
     
-    name_primary TEXT NOT NULL,
-    name_secondary TEXT,
+    display_name TEXT NOT NULL,
+    primary_email TEXT,
     
-    -- Display name (maintained by trigger)
-    display_name TEXT,
+    preferred_contact_method VARCHAR(50),
     
-    job_title TEXT,
-    email VARCHAR(500),
-    phone VARCHAR(100),
-    
-    -- Internal flag
     is_internal BOOLEAN DEFAULT FALSE,
+    is_company BOOLEAN DEFAULT FALSE,
     
-    -- External system references
-    tw_company_id INTEGER REFERENCES teamwork.companies(id) ON DELETE SET NULL,
-    tw_user_id INTEGER REFERENCES teamwork.users(id) ON DELETE SET NULL,
-    m_contact_id INTEGER REFERENCES missive.contacts(id) ON DELETE SET NULL,
+    notes TEXT,
     
-    db_created_at TIMESTAMP DEFAULT NOW(),
-    db_updated_at TIMESTAMP DEFAULT NOW(),
-    
-    -- Constraints
-    CONSTRAINT parties_type_person_requires_primary_name CHECK (
-        type = 'company' OR name_primary IS NOT NULL
-    ),
-    CONSTRAINT parties_person_can_have_parent CHECK (
-        type = 'person' OR parent_party_id IS NULL
-    )
-);
-
--- Projects
-CREATE TABLE projects (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name TEXT NOT NULL,
-    project_number VARCHAR(100),
-    description TEXT,
-    status VARCHAR(50),
-    start_date DATE,
-    end_date DATE,
-    
-    client_party_id UUID REFERENCES parties(id) ON DELETE SET NULL,
-    tw_project_id INTEGER REFERENCES teamwork.projects(id) ON DELETE SET NULL,
-    
-    created_at TIMESTAMP DEFAULT NOW(),
     db_created_at TIMESTAMP DEFAULT NOW(),
     db_updated_at TIMESTAMP DEFAULT NOW()
 );
 
--- Project Contractors (n:m relationship)
-CREATE TABLE project_contractors (
+-- Unified Person Links (connects unified_persons to source systems)
+CREATE TABLE unified_person_links (
     id SERIAL PRIMARY KEY,
-    project_id UUID REFERENCES projects(id) ON DELETE CASCADE,
-    contractor_party_id UUID REFERENCES parties(id) ON DELETE CASCADE,
-    role VARCHAR(100),
+    unified_person_id UUID NOT NULL REFERENCES unified_persons(id) ON DELETE CASCADE,
     
-    CONSTRAINT project_contractors_unique UNIQUE (project_id, contractor_party_id)
+    -- Source System (exactly ONE per row)
+    tw_user_id INTEGER REFERENCES teamwork.users(id) ON DELETE CASCADE,
+    tw_company_id INTEGER REFERENCES teamwork.companies(id) ON DELETE CASCADE,
+    m_contact_id INTEGER REFERENCES missive.contacts(id) ON DELETE CASCADE,
+    
+    link_type VARCHAR(50) DEFAULT 'auto_email',
+    
+    linked_by UUID,
+    linked_at TIMESTAMP DEFAULT NOW(),
+    
+    -- Constraint: exactly one source system reference must be set
+    CONSTRAINT unified_person_links_one_source CHECK (
+        (tw_user_id IS NOT NULL)::int + 
+        (tw_company_id IS NOT NULL)::int + 
+        (m_contact_id IS NOT NULL)::int = 1
+    )
 );
+
+-- Unique partial indexes for unified_person_links
+CREATE UNIQUE INDEX idx_unified_person_links_tw_user_id 
+    ON unified_person_links(tw_user_id) WHERE tw_user_id IS NOT NULL;
+CREATE UNIQUE INDEX idx_unified_person_links_tw_company_id 
+    ON unified_person_links(tw_company_id) WHERE tw_company_id IS NOT NULL;
+CREATE UNIQUE INDEX idx_unified_person_links_m_contact_id 
+    ON unified_person_links(m_contact_id) WHERE m_contact_id IS NOT NULL;
 
 -- =====================================
 -- 2. HIERARCHIES (Locations & Cost Groups)
@@ -79,37 +64,30 @@ CREATE TABLE project_contractors (
 CREATE TABLE locations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     parent_id UUID REFERENCES locations(id) ON DELETE CASCADE,
-    owner_party_id UUID REFERENCES parties(id) ON DELETE SET NULL,
     
-    name TEXT NOT NULL,
-    type location_type NOT NULL,
+    name TEXT,
+    type location_type,
+    
+    teamwork_tag_pattern VARCHAR(255),
     
     -- Materialized path for efficient hierarchy queries
     path TEXT,
     path_ids UUID[],
-    depth INTEGER NOT NULL DEFAULT 0,
+    depth INTEGER,
     
     -- Generated search text (will be populated by trigger)
     search_text TEXT,
     
     db_created_at TIMESTAMP DEFAULT NOW(),
-    db_updated_at TIMESTAMP DEFAULT NOW(),
-    
-    -- Constraints
-    CONSTRAINT locations_depth_check CHECK (depth >= 0 AND depth <= 2),
-    CONSTRAINT locations_type_depth_match CHECK (
-        (type = 'building' AND depth = 0) OR
-        (type = 'level' AND depth = 1) OR
-        (type = 'room' AND depth = 2)
-    )
+    db_updated_at TIMESTAMP DEFAULT NOW()
 );
 
 -- Cost Groups (Hierarchical: 300 > 310 > 311.5)
 CREATE TABLE cost_groups (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     parent_id UUID REFERENCES cost_groups(id) ON DELETE CASCADE,
-    code VARCHAR(50) NOT NULL UNIQUE,
-    name TEXT NOT NULL,
+    code VARCHAR(50),
+    name TEXT,
     
     -- Materialized path for efficient hierarchy queries
     path TEXT,
@@ -119,14 +97,58 @@ CREATE TABLE cost_groups (
 );
 
 -- =====================================
--- 3. FILES & CONTENT
+-- 3. PROJECT EXTENSIONS (1:1 with tw_projects)
+-- =====================================
+
+-- Project Extensions (extends Teamwork projects with ibhelm-specific data)
+CREATE TABLE project_extensions (
+    tw_project_id INTEGER PRIMARY KEY REFERENCES teamwork.projects(id) ON DELETE CASCADE,
+    
+    default_location_id UUID REFERENCES locations(id) ON DELETE SET NULL,
+    default_cost_group_id UUID REFERENCES cost_groups(id) ON DELETE SET NULL,
+    nas_folder_path TEXT,
+    
+    client_person_id UUID REFERENCES unified_persons(id) ON DELETE SET NULL,
+    
+    internal_notes TEXT,
+    
+    db_created_at TIMESTAMP DEFAULT NOW(),
+    db_updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Project Contractors (n:m relationship)
+CREATE TABLE project_contractors (
+    id SERIAL PRIMARY KEY,
+    tw_project_id INTEGER REFERENCES teamwork.projects(id) ON DELETE CASCADE,
+    contractor_person_id UUID REFERENCES unified_persons(id) ON DELETE CASCADE,
+    role VARCHAR(100),
+    
+    db_created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- =====================================
+-- 4. TASK EXTENSIONS
+-- =====================================
+
+-- Task Extensions (Decorator Pattern for Teamwork tasks)
+CREATE TABLE task_extensions (
+    tw_task_id INTEGER PRIMARY KEY REFERENCES teamwork.tasks(id) ON DELETE CASCADE,
+    
+    type task_extension_type DEFAULT 'todo',
+    
+    db_created_at TIMESTAMP DEFAULT NOW(),
+    db_updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- =====================================
+-- 5. FILES & CONTENT
 -- =====================================
 
 -- Document Types
 CREATE TABLE document_types (
     id SERIAL PRIMARY KEY,
-    name TEXT NOT NULL,
-    slug VARCHAR(100) UNIQUE NOT NULL,
+    name TEXT,
+    slug VARCHAR(100) UNIQUE,
     description TEXT,
     
     db_created_at TIMESTAMP DEFAULT NOW()
@@ -139,7 +161,7 @@ CREATE TABLE files (
     -- Reference to Supabase storage.objects(id)
     storage_object_id UUID REFERENCES storage.objects(id) ON DELETE SET NULL,
     
-    filename TEXT NOT NULL,
+    filename TEXT,
     folder_path TEXT,
     content_hash VARCHAR(64),
     
@@ -171,28 +193,45 @@ CREATE TABLE files (
 );
 
 -- =====================================
--- 4. THE GLUE (Connecting Everything)
+-- 6. THE GLUE (Connecting Everything)
 -- =====================================
+
+-- Project Conversations (n:m - A conversation can belong to multiple projects)
+CREATE TABLE project_conversations (
+    m_conversation_id UUID REFERENCES missive.conversations(id) ON DELETE CASCADE,
+    tw_project_id INTEGER REFERENCES teamwork.projects(id) ON DELETE CASCADE,
+    
+    source VARCHAR(50) NOT NULL,
+    source_label_name VARCHAR(255),
+    
+    assigned_at TIMESTAMP DEFAULT NOW(),
+    
+    PRIMARY KEY (tw_project_id, m_conversation_id)
+);
 
 -- Project Files (n:m - A file can belong to multiple projects)
 CREATE TABLE project_files (
     file_id UUID REFERENCES files(id) ON DELETE CASCADE,
-    project_id UUID REFERENCES projects(id) ON DELETE CASCADE,
+    tw_project_id INTEGER REFERENCES teamwork.projects(id) ON DELETE CASCADE,
     
     assigned_at TIMESTAMP DEFAULT NOW(),
     
-    PRIMARY KEY (project_id, file_id)
+    PRIMARY KEY (tw_project_id, file_id)
 );
 
--- Object Locations (Polymorphic - connects files/tasks/messages to locations)
+-- Object Locations (Polymorphic - connects files/tasks/conversations to locations)
 CREATE TABLE object_locations (
     id SERIAL PRIMARY KEY,
     location_id UUID REFERENCES locations(id) ON DELETE CASCADE,
     
     -- Polymorphic columns (exactly ONE must be set)
     tw_task_id INTEGER REFERENCES teamwork.tasks(id) ON DELETE CASCADE,
-    m_message_id UUID REFERENCES missive.messages(id) ON DELETE CASCADE,
+    m_conversation_id UUID REFERENCES missive.conversations(id) ON DELETE CASCADE,
     file_id UUID REFERENCES files(id) ON DELETE CASCADE,
+    
+    -- Source tracking
+    source VARCHAR(50) NOT NULL,
+    source_tag_name VARCHAR(255),
     
     db_created_at TIMESTAMP DEFAULT NOW(),
     
@@ -200,19 +239,23 @@ CREATE TABLE object_locations (
     CONSTRAINT object_locations_one_object CHECK (
         (file_id IS NOT NULL)::int + 
         (tw_task_id IS NOT NULL)::int + 
-        (m_message_id IS NOT NULL)::int = 1
+        (m_conversation_id IS NOT NULL)::int = 1
     )
 );
 
--- Object Cost Groups (Polymorphic - connects files/tasks/messages to cost groups)
+-- Object Cost Groups (Polymorphic - connects files/tasks/conversations to cost groups)
 CREATE TABLE object_cost_groups (
     id SERIAL PRIMARY KEY,
     cost_group_id UUID REFERENCES cost_groups(id) ON DELETE CASCADE,
     
     -- Polymorphic columns (exactly ONE must be set)
     tw_task_id INTEGER REFERENCES teamwork.tasks(id) ON DELETE CASCADE,
-    m_message_id UUID REFERENCES missive.messages(id) ON DELETE CASCADE,
+    m_conversation_id UUID REFERENCES missive.conversations(id) ON DELETE CASCADE,
     file_id UUID REFERENCES files(id) ON DELETE CASCADE,
+    
+    -- Source tracking
+    source VARCHAR(50) NOT NULL,
+    source_tag_name VARCHAR(255),
     
     db_created_at TIMESTAMP DEFAULT NOW(),
     
@@ -220,50 +263,38 @@ CREATE TABLE object_cost_groups (
     CONSTRAINT object_cost_groups_one_object CHECK (
         (file_id IS NOT NULL)::int + 
         (tw_task_id IS NOT NULL)::int + 
-        (m_message_id IS NOT NULL)::int = 1
+        (m_conversation_id IS NOT NULL)::int = 1
     )
-);
-
--- Task Extensions (Decorator Pattern for Teamwork tasks)
-CREATE TABLE task_extensions (
-    tw_task_id INTEGER PRIMARY KEY REFERENCES teamwork.tasks(id) ON DELETE CASCADE,
-    
-    type task_extension_type DEFAULT 'todo',
-    
-    db_created_at TIMESTAMP DEFAULT NOW(),
-    db_updated_at TIMESTAMP DEFAULT NOW()
 );
 
 -- =====================================
 -- BASIC INDEXES
 -- =====================================
 
-CREATE INDEX idx_parties_type ON parties(type);
-CREATE INDEX idx_parties_parent_party_id ON parties(parent_party_id);
-CREATE INDEX idx_parties_email ON parties(email);
-CREATE INDEX idx_parties_is_internal ON parties(is_internal);
-CREATE INDEX idx_parties_tw_company_id ON parties(tw_company_id);
-CREATE INDEX idx_parties_tw_user_id ON parties(tw_user_id);
-CREATE INDEX idx_parties_m_contact_id ON parties(m_contact_id);
-CREATE INDEX idx_parties_display_name ON parties(display_name);
+CREATE INDEX idx_unified_persons_display_name ON unified_persons(display_name);
+CREATE INDEX idx_unified_persons_primary_email ON unified_persons(primary_email);
+CREATE INDEX idx_unified_persons_is_internal ON unified_persons(is_internal);
+CREATE INDEX idx_unified_persons_is_company ON unified_persons(is_company);
 
-CREATE INDEX idx_projects_name ON projects(name);
-CREATE INDEX idx_projects_project_number ON projects(project_number);
-CREATE INDEX idx_projects_client_party_id ON projects(client_party_id);
-CREATE INDEX idx_projects_tw_project_id ON projects(tw_project_id);
-CREATE INDEX idx_projects_status ON projects(status);
-
-CREATE INDEX idx_project_contractors_project_id ON project_contractors(project_id);
-CREATE INDEX idx_project_contractors_contractor_party_id ON project_contractors(contractor_party_id);
+CREATE INDEX idx_unified_person_links_unified_person_id ON unified_person_links(unified_person_id);
+CREATE INDEX idx_unified_person_links_link_type ON unified_person_links(link_type);
 
 CREATE INDEX idx_locations_parent_id ON locations(parent_id);
-CREATE INDEX idx_locations_owner_party_id ON locations(owner_party_id);
 CREATE INDEX idx_locations_type ON locations(type);
 CREATE INDEX idx_locations_depth ON locations(depth);
 CREATE INDEX idx_locations_path_ids ON locations USING GIN(path_ids);
 
 CREATE INDEX idx_cost_groups_parent_id ON cost_groups(parent_id);
 CREATE INDEX idx_cost_groups_code ON cost_groups(code);
+
+CREATE INDEX idx_project_extensions_default_location_id ON project_extensions(default_location_id);
+CREATE INDEX idx_project_extensions_default_cost_group_id ON project_extensions(default_cost_group_id);
+CREATE INDEX idx_project_extensions_client_person_id ON project_extensions(client_person_id);
+
+CREATE INDEX idx_project_contractors_tw_project_id ON project_contractors(tw_project_id);
+CREATE INDEX idx_project_contractors_contractor_person_id ON project_contractors(contractor_person_id);
+
+CREATE INDEX idx_task_extensions_type ON task_extensions(type);
 
 CREATE INDEX idx_document_types_slug ON document_types(slug);
 
@@ -273,35 +304,67 @@ CREATE INDEX idx_files_document_type_id ON files(document_type_id);
 CREATE INDEX idx_files_source_missive_attachment_id ON files(source_missive_attachment_id);
 CREATE INDEX idx_files_storage_object_id ON files(storage_object_id);
 
+CREATE INDEX idx_project_conversations_m_conversation_id ON project_conversations(m_conversation_id);
+CREATE INDEX idx_project_conversations_tw_project_id ON project_conversations(tw_project_id);
+CREATE INDEX idx_project_conversations_source ON project_conversations(source);
+
 CREATE INDEX idx_project_files_file_id ON project_files(file_id);
-CREATE INDEX idx_project_files_project_id ON project_files(project_id);
+CREATE INDEX idx_project_files_tw_project_id ON project_files(tw_project_id);
 
 CREATE INDEX idx_object_locations_location_id ON object_locations(location_id);
 CREATE INDEX idx_object_locations_tw_task_id ON object_locations(tw_task_id);
-CREATE INDEX idx_object_locations_m_message_id ON object_locations(m_message_id);
+CREATE INDEX idx_object_locations_m_conversation_id ON object_locations(m_conversation_id);
 CREATE INDEX idx_object_locations_file_id ON object_locations(file_id);
+CREATE INDEX idx_object_locations_source ON object_locations(source);
 
 CREATE INDEX idx_object_cost_groups_cost_group_id ON object_cost_groups(cost_group_id);
 CREATE INDEX idx_object_cost_groups_tw_task_id ON object_cost_groups(tw_task_id);
-CREATE INDEX idx_object_cost_groups_m_message_id ON object_cost_groups(m_message_id);
+CREATE INDEX idx_object_cost_groups_m_conversation_id ON object_cost_groups(m_conversation_id);
 CREATE INDEX idx_object_cost_groups_file_id ON object_cost_groups(file_id);
-
-CREATE INDEX idx_task_extensions_tw_task_id ON task_extensions(tw_task_id);
-CREATE INDEX idx_task_extensions_type ON task_extensions(type);
+CREATE INDEX idx_object_cost_groups_source ON object_cost_groups(source);
 
 -- =====================================
 -- COMMENTS
 -- =====================================
 
-COMMENT ON TABLE parties IS 'Unified party model: companies and persons in one table';
-COMMENT ON COLUMN parties.display_name IS 'Display name maintained by trigger for UI display';
-COMMENT ON TABLE projects IS 'Main projects table with references to external systems';
+COMMENT ON TABLE unified_persons IS 'Canonical identity for a person or company';
+COMMENT ON COLUMN unified_persons.is_internal IS 'ibhelm employee';
+COMMENT ON COLUMN unified_persons.is_company IS 'true = company, false = person';
+COMMENT ON COLUMN unified_persons.preferred_contact_method IS 'email, phone, or teamwork';
+
+COMMENT ON TABLE unified_person_links IS 'Links unified_persons to source systems (Teamwork, Missive)';
+COMMENT ON COLUMN unified_person_links.link_type IS 'auto_email, auto_name, or manual';
+
 COMMENT ON TABLE locations IS 'Hierarchical locations: building > level > room';
 COMMENT ON COLUMN locations.path IS 'Materialized path for efficient hierarchy queries';
+COMMENT ON COLUMN locations.teamwork_tag_pattern IS 'Regex or prefix for auto-matching, e.g. LOC_GEB_A_EG';
 COMMENT ON COLUMN locations.search_text IS 'Generated search text including all parent names';
-COMMENT ON TABLE cost_groups IS 'Hierarchical cost groups (Kostengruppen)';
-COMMENT ON TABLE files IS 'File references with metadata and links to Supabase Storage';
-COMMENT ON TABLE object_locations IS 'Polymorphic table connecting objects (files/tasks/messages) to locations';
-COMMENT ON TABLE object_cost_groups IS 'Polymorphic table connecting objects (files/tasks/messages) to cost groups';
-COMMENT ON TABLE task_extensions IS 'Decorator pattern: extends Teamwork tasks with ibhelm semantics';
 
+COMMENT ON TABLE cost_groups IS 'Hierarchical cost groups (Kostengruppen)';
+COMMENT ON COLUMN cost_groups.path IS 'Materialized path, e.g. 300.410.411.2';
+
+COMMENT ON TABLE project_extensions IS '1:1 extension to tw_projects - only ibhelm-specific data';
+COMMENT ON COLUMN project_extensions.nas_folder_path IS 'e.g. /projects/2024-001-Neubau-XY/ for auto-assignment';
+COMMENT ON COLUMN project_extensions.client_person_id IS 'Client/Auftraggeber';
+
+COMMENT ON TABLE project_contractors IS 'Links contractors to projects (n:m)';
+COMMENT ON COLUMN project_contractors.role IS 'e.g. Elektroplanung, Architekt, Heizung';
+
+COMMENT ON TABLE task_extensions IS 'Decorator pattern: extends Teamwork tasks with ibhelm semantics';
+COMMENT ON COLUMN task_extensions.type IS 'todo or info_item';
+
+COMMENT ON TABLE files IS 'File references with metadata and links to Supabase Storage';
+
+COMMENT ON TABLE project_conversations IS 'n:m - A conversation can belong to multiple projects';
+COMMENT ON COLUMN project_conversations.source IS 'auto_missive or manual';
+COMMENT ON COLUMN project_conversations.source_label_name IS 'Original label name if auto';
+
+COMMENT ON TABLE project_files IS 'n:m - A file can belong to multiple projects';
+
+COMMENT ON TABLE object_locations IS 'Polymorphic table connecting objects (files/tasks/conversations) to locations';
+COMMENT ON COLUMN object_locations.source IS 'auto_teamwork, auto_missive, auto_path, or manual';
+COMMENT ON COLUMN object_locations.source_tag_name IS 'Original tag/label name if from Teamwork/Missive';
+
+COMMENT ON TABLE object_cost_groups IS 'Polymorphic table connecting objects (files/tasks/conversations) to cost groups';
+COMMENT ON COLUMN object_cost_groups.source IS 'auto_teamwork, auto_missive, auto_path, or manual';
+COMMENT ON COLUMN object_cost_groups.source_tag_name IS 'Original tag/label name if from Teamwork/Missive';

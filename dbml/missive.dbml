@@ -67,6 +67,7 @@ Table m_messages {
   type varchar(50)
   email_message_id text
   body text
+  body_plain_text text [note: 'Plain text extracted from HTML body for searching and display']
   from_contact_id integer
   delivered_at timestamp
   created_at timestamp
