@@ -161,31 +161,10 @@ COMMENT ON COLUMN teamworkmissiveconnector.processing_stats.stat_hour IS 'Hour b
 -- =====================================
 -- 5. TRIGGERS FOR AUTO-UPDATE
 -- =====================================
--- Only apply triggers to tables that will actually be updated
--- Checkpoints table doesn't need trigger since updates are explicit
-
--- Queue items trigger
-CREATE TRIGGER update_queue_items_updated_at 
-    BEFORE UPDATE ON teamworkmissiveconnector.queue_items
-    FOR EACH ROW 
-    EXECUTE FUNCTION update_updated_at_column();
-
--- Webhook config trigger
-CREATE TRIGGER update_webhook_config_updated_at 
-    BEFORE UPDATE ON teamworkmissiveconnector.webhook_config
-    FOR EACH ROW 
-    EXECUTE FUNCTION update_updated_at_column();
-
--- Processing stats trigger  
-CREATE TRIGGER update_processing_stats_updated_at 
-    BEFORE UPDATE ON teamworkmissiveconnector.processing_stats
-    FOR EACH ROW 
-    EXECUTE FUNCTION update_updated_at_column();
-
--- NOTE: Checkpoints table does NOT have a trigger because:
--- 1. It uses 'updated_at' not 'db_updated_at'
--- 2. Updates are explicit in the application code
--- 3. The trigger function expects 'db_updated_at' column
+-- NOTE: The teamworkmissiveconnector tables use 'updated_at' column,
+-- but the generic update_updated_at_column() function expects 'db_updated_at'.
+-- Since all functions in this schema explicitly set updated_at = NOW(),
+-- no triggers are needed here.
 
 -- =====================================
 -- 6. QUEUE MANAGEMENT FUNCTIONS
