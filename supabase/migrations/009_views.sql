@@ -64,6 +64,10 @@ SELECT
     NULL::JSONB AS attachments,
     0 AS attachment_count,
     
+    -- External links
+    t.source_links->>'teamwork_url' AS teamwork_url,
+    NULL::TEXT AS missive_url,
+    
     -- Sort key
     COALESCE(t.updated_at, t.created_at) AS sort_date
     
@@ -143,6 +147,10 @@ SELECT
         FROM missive.attachments a
         WHERE a.message_id = m.id
     ) AS attachment_count,
+    
+    -- External links
+    NULL::TEXT AS teamwork_url,
+    conv.app_url AS missive_url,
     
     -- Sort key
     COALESCE(m.delivered_at, m.updated_at, m.created_at) AS sort_date
