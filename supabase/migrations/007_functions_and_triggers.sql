@@ -450,7 +450,10 @@ CREATE TRIGGER extract_task_type_on_tags_change
 -- Main function to re-run extraction on all tasks
 -- Returns the extraction_run ID for status tracking
 CREATE OR REPLACE FUNCTION rerun_all_task_type_extractions()
-RETURNS UUID AS $$
+RETURNS UUID 
+SECURITY DEFINER
+SET search_path = public
+AS $$
 DECLARE
     v_run_id UUID;
     v_total_count INTEGER;
@@ -513,7 +516,10 @@ RETURNS TABLE (
     started_at TIMESTAMP,
     completed_at TIMESTAMP,
     error_message TEXT
-) AS $$
+)
+SECURITY DEFINER
+SET search_path = public
+AS $$
 BEGIN
     RETURN QUERY
     SELECT 
@@ -545,7 +551,10 @@ RETURNS TABLE (
     started_at TIMESTAMP,
     completed_at TIMESTAMP,
     error_message TEXT
-) AS $$
+)
+SECURITY DEFINER
+SET search_path = public
+AS $$
 BEGIN
     RETURN QUERY
     SELECT 
