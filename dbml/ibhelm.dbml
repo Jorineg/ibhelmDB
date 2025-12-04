@@ -83,21 +83,62 @@ Table project_contractors {
   Note: "Verknüpft Umsetzungspartner mit dem Projekt (n:m)"
 }
 
-// --- 3. TASK EXTENSIONS ---
+// --- 3. TASK TYPES (Configurable via UI) ---
+
+Table task_types {
+  id uuid [pk, default: `gen_random_uuid()`]
+  name text [not null]
+  slug text [not null, unique]
+  description text
+  color varchar
+  icon varchar
+  is_default boolean [default: false, note: "Default type for unmatched tasks"]
+  display_order integer [default: 0]
+  
+  db_created_at timestamp [default: `now()`]
+  db_updated_at timestamp [default: `now()`]
+  
+  Note: "Configurable task type categories"
+}
+
+Table task_type_rules {
+  id uuid [pk, default: `gen_random_uuid()`]
+  task_type_id uuid [ref: > task_types.id, not null]
+  teamwork_tag_name text [not null, unique]
+  
+  db_created_at timestamp [default: `now()`]
+  
+  Note: "Maps Teamwork tag names to task types"
+}
+
+Table extraction_runs {
+  id uuid [pk, default: `gen_random_uuid()`]
+  status varchar [not null, default: 'running', note: "'running', 'completed', 'failed'"]
+  total_count integer
+  processed_count integer [default: 0]
+  error_message text
+  started_at timestamp [default: `now()`]
+  completed_at timestamp
+  
+  Note: "Tracks status of bulk extraction re-run operations"
+}
+
+// --- 4. TASK EXTENSIONS ---
 
 Table task_extensions {
   tw_task_id integer [pk, ref: - tw_tasks.task_id, note: "1:1 Beziehung"]
   
-  type varchar [
-    default: 'todo',
-    note: "'todo' oder 'info_item' - Erweitert Teamwork Task um ibhelm Semantik"
-  ]
+  task_type_id uuid [ref: > task_types.id, note: "Reference to task_types table"]
+  type_source varchar [default: 'auto', note: "'auto' or 'manual'"]
+  type_source_tag_name varchar [note: "Tag that triggered auto-assignment"]
   
   db_created_at timestamp [default: `now()`]
   db_updated_at timestamp [default: `now()`]
+  
+  Note: "Extends Teamwork tasks with ibhelm semantics"
 }
 
-// --- 4. HIERARCHIEN (Orte & Kostengruppen) ---
+// --- 5. HIERARCHIEN (Orte & Kostengruppen) ---
 
 Table locations {
   id uuid [pk, default: `gen_random_uuid()`]
@@ -143,7 +184,7 @@ Table cost_groups {
   db_updated_at timestamp [default: `now()`]
 }
 
-// --- 5. FILES & CONTENT ---
+// --- 6. FILES & CONTENT ---
 
 Table document_types {
   id serial [pk]
@@ -191,7 +232,7 @@ Table files {
   db_updated_at timestamp [default: `now()`]
 }
 
-// --- 6. THE GLUE (Verbindungstabellen) ---
+// --- 7. THE GLUE (Verbindungstabellen) ---
 
 Table project_conversations {
   m_conversation_id uuid [ref: > m_conversations.id]

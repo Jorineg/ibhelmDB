@@ -29,6 +29,12 @@ SELECT
     t.progress,
     tl.name AS tasklist,
     
+    -- Task type from task_extensions
+    tt.id AS task_type_id,
+    tt.name AS task_type_name,
+    tt.slug AS task_type_slug,
+    tt.color AS task_type_color,
+    
     -- Aggregate assignees
     (
         SELECT jsonb_agg(jsonb_build_object(
@@ -79,6 +85,8 @@ LEFT JOIN object_locations ol ON t.id = ol.tw_task_id
 LEFT JOIN locations l ON ol.location_id = l.id
 LEFT JOIN object_cost_groups ocg ON t.id = ocg.tw_task_id
 LEFT JOIN cost_groups cg ON ocg.cost_group_id = cg.id
+LEFT JOIN task_extensions te ON t.id = te.tw_task_id
+LEFT JOIN task_types tt ON te.task_type_id = tt.id
 WHERE t.deleted_at IS NULL
 
 UNION ALL
@@ -102,6 +110,12 @@ SELECT
     '' AS priority,
     NULL AS progress,
     '' AS tasklist,
+    
+    -- Task type fields (null for emails)
+    NULL::UUID AS task_type_id,
+    NULL::TEXT AS task_type_name,
+    NULL::TEXT AS task_type_slug,
+    NULL::VARCHAR(50) AS task_type_color,
     
     -- Task-specific fields (null for emails)
     NULL::JSONB AS assignees,

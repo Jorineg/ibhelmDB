@@ -134,7 +134,12 @@ CREATE TABLE project_contractors (
 CREATE TABLE task_extensions (
     tw_task_id INTEGER PRIMARY KEY REFERENCES teamwork.tasks(id) ON DELETE CASCADE,
     
-    type task_extension_type DEFAULT 'todo',
+    -- References task_types table from 002_types_and_enums.sql
+    task_type_id UUID REFERENCES task_types(id) ON DELETE SET NULL,
+    
+    -- Source tracking for the type assignment
+    type_source VARCHAR(50) DEFAULT 'auto',  -- 'auto' (from rules) or 'manual'
+    type_source_tag_name VARCHAR(255),  -- The tag that matched (if auto)
     
     db_created_at TIMESTAMP DEFAULT NOW(),
     db_updated_at TIMESTAMP DEFAULT NOW()
@@ -294,7 +299,8 @@ CREATE INDEX idx_project_extensions_client_person_id ON project_extensions(clien
 CREATE INDEX idx_project_contractors_tw_project_id ON project_contractors(tw_project_id);
 CREATE INDEX idx_project_contractors_contractor_person_id ON project_contractors(contractor_person_id);
 
-CREATE INDEX idx_task_extensions_type ON task_extensions(type);
+CREATE INDEX idx_task_extensions_task_type_id ON task_extensions(task_type_id);
+CREATE INDEX idx_task_extensions_type_source ON task_extensions(type_source);
 
 CREATE INDEX idx_document_types_slug ON document_types(slug);
 
@@ -351,7 +357,9 @@ COMMENT ON TABLE project_contractors IS 'Links contractors to projects (n:m)';
 COMMENT ON COLUMN project_contractors.role IS 'e.g. Elektroplanung, Architekt, Heizung';
 
 COMMENT ON TABLE task_extensions IS 'Decorator pattern: extends Teamwork tasks with ibhelm semantics';
-COMMENT ON COLUMN task_extensions.type IS 'todo or info_item';
+COMMENT ON COLUMN task_extensions.task_type_id IS 'References configurable task_types table';
+COMMENT ON COLUMN task_extensions.type_source IS 'auto (from tag matching rules) or manual';
+COMMENT ON COLUMN task_extensions.type_source_tag_name IS 'The Teamwork tag name that triggered the auto-assignment';
 
 COMMENT ON TABLE files IS 'File references with metadata and links to Supabase Storage';
 

@@ -364,6 +364,214 @@ END;
 $$ LANGUAGE plpgsql STABLE;
 
 -- =====================================
+-- 6. TASK TYPE EXTRACTION
+-- =====================================
+
+-- Core function: Extract task type for a single task based on rules
+CREATE OR REPLACE FUNCTION extract_task_type(p_task_id INTEGER)
+RETURNS void AS $$
+DECLARE
+    v_matched_type_id UUID;
+    v_matched_tag_name TEXT;
+    v_default_type_id UUID;
+BEGIN
+    -- Find the first matching task type based on task's tags
+    SELECT ttr.task_type_id, ttr.teamwork_tag_name
+    INTO v_matched_type_id, v_matched_tag_name
+    FROM teamwork.task_tags tt
+    JOIN teamwork.tags t ON tt.tag_id = t.id
+    JOIN task_type_rules ttr ON LOWER(t.name) = LOWER(ttr.teamwork_tag_name)
+    WHERE tt.task_id = p_task_id
+    LIMIT 1;  -- First match wins (match any)
+
+    -- If no match, get the default type
+    IF v_matched_type_id IS NULL THEN
+        SELECT id INTO v_default_type_id
+        FROM task_types
+        WHERE is_default = TRUE
+        LIMIT 1;
+        
+        v_matched_type_id := v_default_type_id;
+        v_matched_tag_name := NULL;
+    END IF;
+
+    -- Upsert task extension with the type
+    INSERT INTO task_extensions (tw_task_id, task_type_id, type_source, type_source_tag_name)
+    VALUES (p_task_id, v_matched_type_id, 'auto', v_matched_tag_name)
+    ON CONFLICT (tw_task_id) DO UPDATE SET
+        task_type_id = EXCLUDED.task_type_id,
+        type_source = 'auto',
+        type_source_tag_name = EXCLUDED.type_source_tag_name,
+        db_updated_at = NOW()
+    -- Only update if currently auto (don't override manual assignments)
+    WHERE task_extensions.type_source = 'auto' OR task_extensions.type_source IS NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Trigger function: Called on task insert/update
+CREATE OR REPLACE FUNCTION trigger_extract_task_type()
+RETURNS TRIGGER AS $$
+BEGIN
+    -- Extract type for the new/updated task
+    PERFORM extract_task_type(NEW.id);
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Trigger function: Called when task_tags are modified
+CREATE OR REPLACE FUNCTION trigger_task_tags_extract_type()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        PERFORM extract_task_type(OLD.task_id);
+        RETURN OLD;
+    ELSE
+        PERFORM extract_task_type(NEW.task_id);
+        RETURN NEW;
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Create triggers for automatic extraction
+CREATE TRIGGER extract_task_type_on_task_change
+    AFTER INSERT OR UPDATE ON teamwork.tasks
+    FOR EACH ROW
+    EXECUTE FUNCTION trigger_extract_task_type();
+
+CREATE TRIGGER extract_task_type_on_tags_change
+    AFTER INSERT OR UPDATE OR DELETE ON teamwork.task_tags
+    FOR EACH ROW
+    EXECUTE FUNCTION trigger_task_tags_extract_type();
+
+-- =====================================
+-- 7. BULK RE-EXTRACTION FUNCTIONS (for UI button)
+-- =====================================
+
+-- Main function to re-run extraction on all tasks
+-- Returns the extraction_run ID for status tracking
+CREATE OR REPLACE FUNCTION rerun_all_task_type_extractions()
+RETURNS UUID AS $$
+DECLARE
+    v_run_id UUID;
+    v_total_count INTEGER;
+    v_processed INTEGER := 0;
+    v_task_record RECORD;
+BEGIN
+    -- Create a new run record
+    INSERT INTO extraction_runs (status, started_at)
+    VALUES ('running', NOW())
+    RETURNING id INTO v_run_id;
+
+    -- Count total tasks
+    SELECT COUNT(*) INTO v_total_count
+    FROM teamwork.tasks
+    WHERE deleted_at IS NULL;
+
+    -- Update total count
+    UPDATE extraction_runs SET total_count = v_total_count WHERE id = v_run_id;
+
+    -- Loop through all tasks and extract types
+    FOR v_task_record IN 
+        SELECT id FROM teamwork.tasks WHERE deleted_at IS NULL
+    LOOP
+        BEGIN
+            PERFORM extract_task_type(v_task_record.id);
+            v_processed := v_processed + 1;
+            
+            -- Update progress every 100 tasks
+            IF v_processed % 100 = 0 THEN
+                UPDATE extraction_runs 
+                SET processed_count = v_processed 
+                WHERE id = v_run_id;
+            END IF;
+        EXCEPTION WHEN OTHERS THEN
+            -- Log error but continue processing
+            RAISE NOTICE 'Error processing task %: %', v_task_record.id, SQLERRM;
+        END;
+    END LOOP;
+
+    -- Mark as completed
+    UPDATE extraction_runs 
+    SET 
+        status = 'completed',
+        processed_count = v_processed,
+        completed_at = NOW()
+    WHERE id = v_run_id;
+
+    RETURN v_run_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Function to check extraction run status
+CREATE OR REPLACE FUNCTION get_extraction_run_status(p_run_id UUID)
+RETURNS TABLE (
+    id UUID,
+    status VARCHAR(50),
+    total_count INTEGER,
+    processed_count INTEGER,
+    progress_percent NUMERIC,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    error_message TEXT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT 
+        er.id,
+        er.status,
+        er.total_count,
+        er.processed_count,
+        CASE 
+            WHEN er.total_count > 0 THEN 
+                ROUND((er.processed_count::NUMERIC / er.total_count::NUMERIC) * 100, 1)
+            ELSE 0
+        END AS progress_percent,
+        er.started_at,
+        er.completed_at,
+        er.error_message
+    FROM extraction_runs er
+    WHERE er.id = p_run_id;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+-- Function to get the latest extraction run
+CREATE OR REPLACE FUNCTION get_latest_extraction_run()
+RETURNS TABLE (
+    id UUID,
+    status VARCHAR(50),
+    total_count INTEGER,
+    processed_count INTEGER,
+    progress_percent NUMERIC,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    error_message TEXT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT 
+        er.id,
+        er.status,
+        er.total_count,
+        er.processed_count,
+        CASE 
+            WHEN er.total_count > 0 THEN 
+                ROUND((er.processed_count::NUMERIC / er.total_count::NUMERIC) * 100, 1)
+            ELSE 0
+        END AS progress_percent,
+        er.started_at,
+        er.completed_at,
+        er.error_message
+    FROM extraction_runs er
+    ORDER BY er.started_at DESC
+    LIMIT 1;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+-- Add trigger for task_types table updates
+CREATE TRIGGER update_task_types_updated_at BEFORE UPDATE ON task_types
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- =====================================
 -- COMMENTS
 -- =====================================
 
@@ -372,3 +580,7 @@ COMMENT ON FUNCTION update_location_hierarchy() IS 'Maintains materialized path 
 COMMENT ON FUNCTION update_cost_group_path() IS 'Maintains materialized path for cost group hierarchy';
 COMMENT ON FUNCTION search_locations(TEXT, FLOAT) IS 'Typo-resistant location search with similarity scoring';
 COMMENT ON FUNCTION search_all_objects(TEXT, INTEGER, UUID, UUID, INTEGER) IS 'Unified full-text search across files, tasks, and conversations';
+COMMENT ON FUNCTION extract_task_type(INTEGER) IS 'Extracts and assigns task type based on tag matching rules';
+COMMENT ON FUNCTION rerun_all_task_type_extractions() IS 'Re-runs task type extraction on all tasks, returns run ID for tracking';
+COMMENT ON FUNCTION get_extraction_run_status(UUID) IS 'Gets status of an extraction run by ID';
+COMMENT ON FUNCTION get_latest_extraction_run() IS 'Gets the most recent extraction run status';
