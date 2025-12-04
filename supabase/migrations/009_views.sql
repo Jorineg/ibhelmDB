@@ -108,7 +108,7 @@ SELECT
     NULL::JSONB AS tags,
     
     -- Email-specific fields
-    m.body,
+    m.body_plain_text AS body,
     m.preview,
     from_contact.name AS from_name,
     from_contact.email AS from_email,
