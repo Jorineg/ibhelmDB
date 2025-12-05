@@ -75,3 +75,25 @@ COMMENT ON TABLE task_type_rules IS 'Maps Teamwork tag names to task types (matc
 COMMENT ON COLUMN task_type_rules.teamwork_tag_name IS 'Exact match against teamwork.tags.name';
 
 COMMENT ON TABLE extraction_runs IS 'Tracks status of bulk extraction re-run operations';
+
+-- =====================================
+-- APPEARANCE SETTINGS (Configurable via UI)
+-- =====================================
+-- Stores appearance/styling configuration for the dashboard
+
+-- Appearance Settings table (singleton - one row)
+CREATE TABLE appearance_settings (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    
+    -- Email display colors (used for badges, link buttons, color bars)
+    email_color VARCHAR(50) DEFAULT '#3b82f6',
+    
+    db_created_at TIMESTAMP DEFAULT NOW(),
+    db_updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Insert default appearance settings (singleton row)
+INSERT INTO appearance_settings (email_color) VALUES ('#3b82f6');
+
+COMMENT ON TABLE appearance_settings IS 'Singleton table for dashboard appearance configuration';
+COMMENT ON COLUMN appearance_settings.email_color IS 'Color for email items (badges, link buttons, color bars in table header)';
