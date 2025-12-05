@@ -110,6 +110,17 @@ GROUP BY cl.conversation_id;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_conversation_labels_conv_id ON mv_conversation_labels_agg(conversation_id);
 
+-- Materialized aggregates for conversation comments (for search)
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_conversation_comments_agg AS
+SELECT 
+    cc.conversation_id,
+    string_agg(cc.body, ' ') AS comments_text
+FROM missive.conversation_comments cc
+WHERE cc.body IS NOT NULL AND cc.body != ''
+GROUP BY cc.conversation_id;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_conversation_comments_conv_id ON mv_conversation_comments_agg(conversation_id);
+
 -- =====================================
 -- 3. CREATE OPTIMIZED VIEW
 -- =====================================
@@ -233,8 +244,8 @@ SELECT
     maa.attachments,
     COALESCE(maa.attachment_count, 0) AS attachment_count,
     
-    -- Removed slow string_agg - can be fetched on demand in detail view
-    NULL::TEXT AS conversation_comments_text,
+    -- Pre-aggregated conversation comments for search
+    cca.comments_text AS conversation_comments_text,
     
     -- External links
     NULL::TEXT AS teamwork_url,
@@ -255,7 +266,8 @@ LEFT JOIN teamwork.projects twp ON pc.tw_project_id = twp.id
 -- Use pre-aggregated views
 LEFT JOIN mv_message_recipients_agg mra ON m.id = mra.message_id
 LEFT JOIN mv_message_attachments_agg maa ON m.id = maa.message_id
-LEFT JOIN mv_conversation_labels_agg cla ON m.conversation_id = cla.conversation_id;
+LEFT JOIN mv_conversation_labels_agg cla ON m.conversation_id = cla.conversation_id
+LEFT JOIN mv_conversation_comments_agg cca ON m.conversation_id = cca.conversation_id;
 
 -- =====================================
 -- 4. CREATE FUNCTION TO REFRESH MATERIALIZED VIEWS
@@ -272,6 +284,7 @@ BEGIN
         REFRESH MATERIALIZED VIEW CONCURRENTLY mv_message_recipients_agg;
         REFRESH MATERIALIZED VIEW CONCURRENTLY mv_message_attachments_agg;
         REFRESH MATERIALIZED VIEW CONCURRENTLY mv_conversation_labels_agg;
+        REFRESH MATERIALIZED VIEW CONCURRENTLY mv_conversation_comments_agg;
     ELSE
         -- Blocking refresh (use for initial population)
         REFRESH MATERIALIZED VIEW mv_task_assignees_agg;
@@ -279,6 +292,7 @@ BEGIN
         REFRESH MATERIALIZED VIEW mv_message_recipients_agg;
         REFRESH MATERIALIZED VIEW mv_message_attachments_agg;
         REFRESH MATERIALIZED VIEW mv_conversation_labels_agg;
+        REFRESH MATERIALIZED VIEW mv_conversation_comments_agg;
     END IF;
 END;
 $$ LANGUAGE plpgsql;
@@ -498,6 +512,7 @@ GRANT SELECT ON mv_task_tags_agg TO authenticated;
 GRANT SELECT ON mv_message_recipients_agg TO authenticated;
 GRANT SELECT ON mv_message_attachments_agg TO authenticated;
 GRANT SELECT ON mv_conversation_labels_agg TO authenticated;
+GRANT SELECT ON mv_conversation_comments_agg TO authenticated;
 GRANT EXECUTE ON FUNCTION refresh_unified_items_aggregates() TO authenticated;
 GRANT EXECUTE ON FUNCTION get_unified_items_paginated TO authenticated;
 GRANT EXECUTE ON FUNCTION count_unified_items_fast TO authenticated;
@@ -521,7 +536,8 @@ INSERT INTO mv_refresh_status (view_name, needs_refresh, refresh_interval_minute
     ('mv_task_tags_agg', FALSE, 5),
     ('mv_message_recipients_agg', FALSE, 5),
     ('mv_message_attachments_agg', FALSE, 5),
-    ('mv_conversation_labels_agg', FALSE, 5)
+    ('mv_conversation_labels_agg', FALSE, 5),
+    ('mv_conversation_comments_agg', FALSE, 5)
 ON CONFLICT (view_name) DO NOTHING;
 
 -- Function to mark a view as needing refresh
@@ -573,6 +589,14 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+CREATE OR REPLACE FUNCTION trigger_mark_conv_comments_stale()
+RETURNS TRIGGER AS $$
+BEGIN
+    PERFORM mark_mv_needs_refresh('mv_conversation_comments_agg');
+    RETURN COALESCE(NEW, OLD);
+END;
+$$ LANGUAGE plpgsql;
+
 -- Create triggers on source tables
 DROP TRIGGER IF EXISTS trg_task_assignees_mv_stale ON teamwork.task_assignees;
 CREATE TRIGGER trg_task_assignees_mv_stale
@@ -598,6 +622,11 @@ DROP TRIGGER IF EXISTS trg_conv_labels_mv_stale ON missive.conversation_labels;
 CREATE TRIGGER trg_conv_labels_mv_stale
     AFTER INSERT OR UPDATE OR DELETE ON missive.conversation_labels
     FOR EACH STATEMENT EXECUTE FUNCTION trigger_mark_conv_labels_stale();
+
+DROP TRIGGER IF EXISTS trg_conv_comments_mv_stale ON missive.conversation_comments;
+CREATE TRIGGER trg_conv_comments_mv_stale
+    AFTER INSERT OR UPDATE OR DELETE ON missive.conversation_comments
+    FOR EACH STATEMENT EXECUTE FUNCTION trigger_mark_conv_comments_stale();
 
 -- Function to refresh only stale materialized views (uses CONCURRENTLY for non-blocking)
 CREATE OR REPLACE FUNCTION refresh_stale_unified_items_aggregates()
@@ -626,6 +655,8 @@ BEGIN
                     REFRESH MATERIALIZED VIEW CONCURRENTLY mv_message_attachments_agg;
                 WHEN 'mv_conversation_labels_agg' THEN
                     REFRESH MATERIALIZED VIEW CONCURRENTLY mv_conversation_labels_agg;
+                WHEN 'mv_conversation_comments_agg' THEN
+                    REFRESH MATERIALIZED VIEW CONCURRENTLY mv_conversation_comments_agg;
             END CASE;
         EXCEPTION WHEN OTHERS THEN
             -- If CONCURRENTLY fails, fall back to regular refresh
@@ -640,6 +671,8 @@ BEGIN
                     REFRESH MATERIALIZED VIEW mv_message_attachments_agg;
                 WHEN 'mv_conversation_labels_agg' THEN
                     REFRESH MATERIALIZED VIEW mv_conversation_labels_agg;
+                WHEN 'mv_conversation_comments_agg' THEN
+                    REFRESH MATERIALIZED VIEW mv_conversation_comments_agg;
             END CASE;
         END;
         
@@ -673,6 +706,7 @@ ANALYZE missive.messages;
 ANALYZE missive.message_recipients;
 ANALYZE missive.attachments;
 ANALYZE missive.conversation_labels;
+ANALYZE missive.conversation_comments;
 
 -- =====================================
 -- COMMENTS
@@ -683,6 +717,7 @@ COMMENT ON MATERIALIZED VIEW mv_task_tags_agg IS 'Pre-aggregated task tags for u
 COMMENT ON MATERIALIZED VIEW mv_message_recipients_agg IS 'Pre-aggregated message recipients for unified_items performance';
 COMMENT ON MATERIALIZED VIEW mv_message_attachments_agg IS 'Pre-aggregated message attachments for unified_items performance';
 COMMENT ON MATERIALIZED VIEW mv_conversation_labels_agg IS 'Pre-aggregated conversation labels for unified_items performance';
+COMMENT ON MATERIALIZED VIEW mv_conversation_comments_agg IS 'Pre-aggregated conversation comments for unified_items search';
 COMMENT ON FUNCTION refresh_unified_items_aggregates IS 'Refreshes all materialized views used by unified_items. Run periodically or after bulk updates.';
 COMMENT ON FUNCTION get_unified_items_paginated IS 'Optimized paginated query for unified items - avoids fetching large text fields';
 COMMENT ON FUNCTION count_unified_items_fast IS 'Fast count estimate for unified items - uses table statistics when no filters applied';
