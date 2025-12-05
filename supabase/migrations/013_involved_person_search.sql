@@ -239,6 +239,7 @@ RETURNS TABLE(
     recipients JSONB,
     attachments JSONB,
     attachment_count INTEGER,
+    conversation_comments_text TEXT,
     teamwork_url TEXT,
     missive_url TEXT,
     sort_date TIMESTAMP
@@ -269,7 +270,7 @@ BEGIN
             ui.task_type_id, ui.task_type_name, ui.task_type_slug, ui.task_type_color,
             ui.assignees, ui.tags, ui.body, ui.preview, ui.from_name, ui.from_email,
             ui.conversation_subject, ui.recipients, ui.attachments, ui.attachment_count,
-            ui.teamwork_url, ui.missive_url, ui.sort_date
+            ui.conversation_comments_text, ui.teamwork_url, ui.missive_url, ui.sort_date
         FROM unified_items ui
         WHERE (
             (p_show_tasks AND ui.type = 'task') OR
@@ -279,6 +280,8 @@ BEGIN
             p_text_search IS NULL 
             OR LOWER(ui.name) LIKE '%' || LOWER(p_text_search) || '%'
             OR LOWER(ui.description) LIKE '%' || LOWER(p_text_search) || '%'
+            OR LOWER(ui.body) LIKE '%' || LOWER(p_text_search) || '%'
+            OR LOWER(ui.conversation_comments_text) LIKE '%' || LOWER(p_text_search) || '%'
         )
         ORDER BY 
             CASE WHEN p_sort_field = 'sort_date' AND p_sort_order = 'desc' THEN ui.sort_date END DESC NULLS LAST,
@@ -303,7 +306,7 @@ BEGIN
             ui.task_type_id, ui.task_type_name, ui.task_type_slug, ui.task_type_color,
             ui.assignees, ui.tags, ui.body, ui.preview, ui.from_name, ui.from_email,
             ui.conversation_subject, ui.recipients, ui.attachments, ui.attachment_count,
-            ui.teamwork_url, ui.missive_url, ui.sort_date
+            ui.conversation_comments_text, ui.teamwork_url, ui.missive_url, ui.sort_date
         FROM unified_items ui
         INNER JOIN matching_items mi ON ui.id = mi.item_id AND ui.type = mi.item_type
         WHERE (
@@ -314,6 +317,8 @@ BEGIN
             p_text_search IS NULL 
             OR LOWER(ui.name) LIKE '%' || LOWER(p_text_search) || '%'
             OR LOWER(ui.description) LIKE '%' || LOWER(p_text_search) || '%'
+            OR LOWER(ui.body) LIKE '%' || LOWER(p_text_search) || '%'
+            OR LOWER(ui.conversation_comments_text) LIKE '%' || LOWER(p_text_search) || '%'
         )
         ORDER BY 
             CASE WHEN p_sort_field = 'sort_date' AND p_sort_order = 'desc' THEN ui.sort_date END DESC NULLS LAST,
@@ -359,6 +364,8 @@ BEGIN
             p_text_search IS NULL 
             OR LOWER(ui.name) LIKE '%' || LOWER(p_text_search) || '%'
             OR LOWER(ui.description) LIKE '%' || LOWER(p_text_search) || '%'
+            OR LOWER(ui.body) LIKE '%' || LOWER(p_text_search) || '%'
+            OR LOWER(ui.conversation_comments_text) LIKE '%' || LOWER(p_text_search) || '%'
         );
     ELSE
         -- Count items filtered by involved person
@@ -377,6 +384,8 @@ BEGIN
             p_text_search IS NULL 
             OR LOWER(ui.name) LIKE '%' || LOWER(p_text_search) || '%'
             OR LOWER(ui.description) LIKE '%' || LOWER(p_text_search) || '%'
+            OR LOWER(ui.body) LIKE '%' || LOWER(p_text_search) || '%'
+            OR LOWER(ui.conversation_comments_text) LIKE '%' || LOWER(p_text_search) || '%'
         );
     END IF;
     

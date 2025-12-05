@@ -69,6 +69,7 @@ SELECT
     NULL::JSONB AS recipients,
     NULL::JSONB AS attachments,
     0 AS attachment_count,
+    NULL::TEXT AS conversation_comments_text,
     
     -- External links
     t.source_links->>'teamwork_url' AS teamwork_url,
@@ -172,6 +173,13 @@ SELECT
         FROM missive.attachments a
         WHERE a.message_id = m.id
     ) AS attachment_count,
+    
+    -- Aggregated conversation comments text for full-text search
+    (
+        SELECT string_agg(cc.body, ' ')
+        FROM missive.conversation_comments cc
+        WHERE cc.conversation_id = m.conversation_id
+    ) AS conversation_comments_text,
     
     -- External links
     NULL::TEXT AS teamwork_url,
