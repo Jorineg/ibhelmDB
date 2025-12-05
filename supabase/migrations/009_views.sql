@@ -119,7 +119,18 @@ SELECT
     
     -- Task-specific fields (null for emails)
     NULL::JSONB AS assignees,
-    NULL::JSONB AS tags,
+    
+    -- Aggregate conversation labels as tags (all messages in a conversation get all labels)
+    (
+        SELECT jsonb_agg(jsonb_build_object(
+            'id', sl.id, 
+            'name', sl.name, 
+            'color', NULL
+        ))
+        FROM missive.conversation_labels cl
+        JOIN missive.shared_labels sl ON cl.label_id = sl.id
+        WHERE cl.conversation_id = m.conversation_id
+    ) AS tags,
     
     -- Email-specific fields
     m.body_plain_text AS body,
