@@ -35,8 +35,22 @@ DB_NAME="postgres"
 BACKUP_DIR="./backups"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 BACKUP_FILE="$BACKUP_DIR/schema_backup_$TIMESTAMP.sql"
-LAUNCHD_LABEL="com.teamworkmissive.connector"
 CONNECTOR_DIR="../TeamworkMissiveConnector"
+
+# macOS launchd config
+LAUNCHD_LABEL="com.teamworkmissive.connector"
+
+# Linux systemd config (user services)
+SYSTEMD_CONNECTOR_SERVICE="teamwork-missive-connector"
+SYSTEMD_WORKER_SERVICE="teamwork-missive-worker"
+
+# Detect OS
+OS_TYPE="unknown"
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    OS_TYPE="macos"
+elif [[ "$OSTYPE" == "linux"* ]]; then
+    OS_TYPE="linux"
+fi
 
 # Parse arguments
 FORCE=false
@@ -100,16 +114,41 @@ fi
 echo -e "${CYAN}=== Step 1: Stopping TeamworkMissiveConnector Services ===${NC}"
 
 SERVICES_WERE_RUNNING=false
+LAUNCHD_WAS_RUNNING=false
+SYSTEMD_WAS_RUNNING=false
 
-# Check and stop launchd service (macOS)
-if launchctl list 2>/dev/null | grep -q "$LAUNCHD_LABEL"; then
-    echo "Stopping launchd service ($LAUNCHD_LABEL)..."
-    launchctl unload "$HOME/Library/LaunchAgents/$LAUNCHD_LABEL.plist" 2>/dev/null || true
-    SERVICES_WERE_RUNNING=true
-    echo -e "${GREEN}✓ LaunchAgent stopped${NC}"
+# macOS: Check and stop launchd service
+if [ "$OS_TYPE" = "macos" ]; then
+    if launchctl list 2>/dev/null | grep -q "$LAUNCHD_LABEL"; then
+        echo "Stopping launchd service ($LAUNCHD_LABEL)..."
+        launchctl unload "$HOME/Library/LaunchAgents/$LAUNCHD_LABEL.plist" 2>/dev/null || true
+        SERVICES_WERE_RUNNING=true
+        LAUNCHD_WAS_RUNNING=true
+        echo -e "${GREEN}✓ LaunchAgent stopped${NC}"
+    fi
 fi
 
-# Kill any running connector processes
+# Linux: Check and stop systemd user services
+if [ "$OS_TYPE" = "linux" ]; then
+    # Check if systemd user services exist and are running
+    if systemctl --user is-active --quiet "$SYSTEMD_CONNECTOR_SERVICE" 2>/dev/null; then
+        echo "Stopping systemd service ($SYSTEMD_CONNECTOR_SERVICE)..."
+        systemctl --user stop "$SYSTEMD_CONNECTOR_SERVICE" 2>/dev/null || true
+        SERVICES_WERE_RUNNING=true
+        SYSTEMD_WAS_RUNNING=true
+        echo -e "${GREEN}✓ Connector service stopped${NC}"
+    fi
+    
+    if systemctl --user is-active --quiet "$SYSTEMD_WORKER_SERVICE" 2>/dev/null; then
+        echo "Stopping systemd service ($SYSTEMD_WORKER_SERVICE)..."
+        systemctl --user stop "$SYSTEMD_WORKER_SERVICE" 2>/dev/null || true
+        SERVICES_WERE_RUNNING=true
+        SYSTEMD_WAS_RUNNING=true
+        echo -e "${GREEN}✓ Worker service stopped${NC}"
+    fi
+fi
+
+# Kill any running connector processes (fallback for manual runs)
 echo "Checking for running connector processes..."
 CONNECTOR_PIDS=$(pgrep -f "src\.app|src\.workers\.dispatcher|src\.startup" 2>/dev/null || true)
 if [ -n "$CONNECTOR_PIDS" ]; then
@@ -250,23 +289,70 @@ echo ""
 # =====================================
 echo -e "${CYAN}=== Step 7: Restarting TeamworkMissiveConnector Services ===${NC}"
 
-# Check if launchd plist exists
-PLIST_PATH="$HOME/Library/LaunchAgents/$LAUNCHD_LABEL.plist"
-if [ -f "$PLIST_PATH" ]; then
-    echo "Starting launchd service..."
-    launchctl load "$PLIST_PATH" 2>/dev/null || true
-    sleep 2
-    
-    if launchctl list | grep -q "$LAUNCHD_LABEL"; then
-        echo -e "${GREEN}✓ LaunchAgent started successfully${NC}"
-    else
-        echo -e "${YELLOW}⚠ LaunchAgent may not have started. Check: launchctl list | grep teamworkmissive${NC}"
+SERVICES_RESTARTED=false
+
+# macOS: Restart launchd service
+if [ "$OS_TYPE" = "macos" ]; then
+    PLIST_PATH="$HOME/Library/LaunchAgents/$LAUNCHD_LABEL.plist"
+    if [ -f "$PLIST_PATH" ]; then
+        echo "Starting launchd service..."
+        launchctl load "$PLIST_PATH" 2>/dev/null || true
+        sleep 2
+        
+        if launchctl list | grep -q "$LAUNCHD_LABEL"; then
+            echo -e "${GREEN}✓ LaunchAgent started successfully${NC}"
+            SERVICES_RESTARTED=true
+        else
+            echo -e "${YELLOW}⚠ LaunchAgent may not have started. Check: launchctl list | grep teamworkmissive${NC}"
+        fi
+    elif [ "$LAUNCHD_WAS_RUNNING" = true ]; then
+        echo -e "${YELLOW}⚠ LaunchAgent was running but plist not found${NC}"
     fi
-elif [ "$SERVICES_WERE_RUNNING" = true ]; then
-    echo -e "${YELLOW}Note: Services were running but LaunchAgent not found.${NC}"
+fi
+
+# Linux: Restart systemd user services
+if [ "$OS_TYPE" = "linux" ]; then
+    # Check if systemd service files exist
+    CONNECTOR_SERVICE_FILE="$HOME/.config/systemd/user/$SYSTEMD_CONNECTOR_SERVICE.service"
+    WORKER_SERVICE_FILE="$HOME/.config/systemd/user/$SYSTEMD_WORKER_SERVICE.service"
+    
+    if [ -f "$CONNECTOR_SERVICE_FILE" ] || [ -f "$WORKER_SERVICE_FILE" ]; then
+        echo "Starting systemd services..."
+        
+        if [ -f "$CONNECTOR_SERVICE_FILE" ]; then
+            systemctl --user start "$SYSTEMD_CONNECTOR_SERVICE" 2>/dev/null || true
+            sleep 1
+            if systemctl --user is-active --quiet "$SYSTEMD_CONNECTOR_SERVICE"; then
+                echo -e "${GREEN}✓ Connector service started${NC}"
+                SERVICES_RESTARTED=true
+            else
+                echo -e "${YELLOW}⚠ Connector service may not have started${NC}"
+                echo "  Check: systemctl --user status $SYSTEMD_CONNECTOR_SERVICE"
+            fi
+        fi
+        
+        if [ -f "$WORKER_SERVICE_FILE" ]; then
+            systemctl --user start "$SYSTEMD_WORKER_SERVICE" 2>/dev/null || true
+            sleep 1
+            if systemctl --user is-active --quiet "$SYSTEMD_WORKER_SERVICE"; then
+                echo -e "${GREEN}✓ Worker service started${NC}"
+                SERVICES_RESTARTED=true
+            else
+                echo -e "${YELLOW}⚠ Worker service may not have started${NC}"
+                echo "  Check: systemctl --user status $SYSTEMD_WORKER_SERVICE"
+            fi
+        fi
+    elif [ "$SYSTEMD_WAS_RUNNING" = true ]; then
+        echo -e "${YELLOW}⚠ Systemd services were running but service files not found${NC}"
+    fi
+fi
+
+# If no service manager was used but services were running manually
+if [ "$SERVICES_RESTARTED" = false ] && [ "$SERVICES_WERE_RUNNING" = true ]; then
+    echo -e "${YELLOW}Note: Services were running manually (not via launchd/systemd).${NC}"
     echo "You may need to manually restart the connector:"
     echo "  cd $CONNECTOR_DIR && ./scripts/run_local.sh"
-else
+elif [ "$SERVICES_RESTARTED" = false ] && [ "$SERVICES_WERE_RUNNING" = false ]; then
     echo "No services to restart (none were running before)"
 fi
 echo ""
