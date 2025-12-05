@@ -36,6 +36,9 @@ CREATE TRIGGER update_cost_groups_updated_at BEFORE UPDATE ON cost_groups
 CREATE TRIGGER update_files_updated_at BEFORE UPDATE ON files
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+CREATE TRIGGER update_craft_documents_updated_at BEFORE UPDATE ON craft_documents
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
 CREATE TRIGGER update_task_extensions_updated_at BEFORE UPDATE ON task_extensions
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 

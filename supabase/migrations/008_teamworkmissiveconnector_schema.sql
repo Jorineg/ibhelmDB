@@ -27,7 +27,7 @@ CREATE TABLE teamworkmissiveconnector.checkpoints (
     last_cursor TEXT,
     updated_at TIMESTAMP DEFAULT NOW(),
     
-    CONSTRAINT checkpoints_valid_source CHECK (source IN ('teamwork', 'missive'))
+    CONSTRAINT checkpoints_valid_source CHECK (source IN ('teamwork', 'missive', 'craft'))
 );
 
 CREATE INDEX idx_checkpoints_source ON teamworkmissiveconnector.checkpoints(source);
@@ -70,7 +70,7 @@ CREATE TABLE teamworkmissiveconnector.queue_items (
     worker_id VARCHAR(100),
     processing_time_ms INTEGER,
     
-    CONSTRAINT queue_items_valid_source CHECK (source IN ('teamwork', 'missive')),
+    CONSTRAINT queue_items_valid_source CHECK (source IN ('teamwork', 'missive', 'craft')),
     CONSTRAINT queue_items_valid_status CHECK (
         status IN ('pending', 'processing', 'completed', 'failed', 'dead_letter')
     ),
@@ -111,7 +111,7 @@ CREATE TABLE teamworkmissiveconnector.webhook_config (
     updated_at TIMESTAMP DEFAULT NOW() NOT NULL,
     last_verified_at TIMESTAMP,
     
-    CONSTRAINT webhook_config_valid_source CHECK (source IN ('teamwork', 'missive'))
+    CONSTRAINT webhook_config_valid_source CHECK (source IN ('teamwork', 'missive', 'craft'))
 );
 
 CREATE INDEX idx_webhook_config_source ON teamworkmissiveconnector.webhook_config(source);
@@ -149,7 +149,7 @@ CREATE TABLE teamworkmissiveconnector.processing_stats (
     updated_at TIMESTAMP DEFAULT NOW() NOT NULL,
     
     CONSTRAINT processing_stats_unique_hour UNIQUE (source, event_type, stat_hour),
-    CONSTRAINT processing_stats_valid_source CHECK (source IN ('teamwork', 'missive'))
+    CONSTRAINT processing_stats_valid_source CHECK (source IN ('teamwork', 'missive', 'craft'))
 );
 
 CREATE INDEX idx_processing_stats_source_hour ON teamworkmissiveconnector.processing_stats(source, stat_hour DESC);

@@ -149,6 +149,27 @@ CREATE TABLE task_extensions (
 -- 5. FILES & CONTENT
 -- =====================================
 
+-- Craft Documents (stores Craft documents as markdown)
+CREATE TABLE craft_documents (
+    id TEXT PRIMARY KEY,  -- Craft document ID (same as root block ID)
+    
+    title TEXT NOT NULL,
+    markdown_content TEXT,  -- Full document content as markdown
+    
+    is_deleted BOOLEAN DEFAULT FALSE,
+    
+    -- Metadata from Craft API (when fetchMetadata=true)
+    craft_created_at TIMESTAMP WITH TIME ZONE,
+    craft_last_modified_at TIMESTAMP WITH TIME ZONE,
+    
+    -- Internal tracking
+    db_created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    db_updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    
+    -- Store raw API response for debugging/future use
+    raw_data JSONB
+);
+
 -- Document Types
 CREATE TABLE document_types (
     id SERIAL PRIMARY KEY,
@@ -302,6 +323,15 @@ CREATE INDEX idx_project_contractors_contractor_person_id ON project_contractors
 CREATE INDEX idx_task_extensions_task_type_id ON task_extensions(task_type_id);
 CREATE INDEX idx_task_extensions_type_source ON task_extensions(type_source);
 
+CREATE INDEX idx_craft_documents_title ON craft_documents(title);
+CREATE INDEX idx_craft_documents_is_deleted ON craft_documents(is_deleted);
+CREATE INDEX idx_craft_documents_craft_last_modified_at ON craft_documents(craft_last_modified_at);
+CREATE INDEX idx_craft_documents_db_updated_at ON craft_documents(db_updated_at);
+
+-- Full-text search index on Craft document content
+CREATE INDEX idx_craft_documents_content_fts ON craft_documents 
+    USING GIN(to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(markdown_content, '')));
+
 CREATE INDEX idx_document_types_slug ON document_types(slug);
 
 CREATE INDEX idx_files_filename ON files(filename);
@@ -360,6 +390,15 @@ COMMENT ON TABLE task_extensions IS 'Decorator pattern: extends Teamwork tasks w
 COMMENT ON COLUMN task_extensions.task_type_id IS 'References configurable task_types table';
 COMMENT ON COLUMN task_extensions.type_source IS 'auto (from tag matching rules) or manual';
 COMMENT ON COLUMN task_extensions.type_source_tag_name IS 'The Teamwork tag name that triggered the auto-assignment';
+
+COMMENT ON TABLE craft_documents IS 'Stores Craft documents with their full markdown content';
+COMMENT ON COLUMN craft_documents.id IS 'Craft document ID (same as the root block ID)';
+COMMENT ON COLUMN craft_documents.title IS 'Document title from Craft';
+COMMENT ON COLUMN craft_documents.markdown_content IS 'Full document content rendered as markdown';
+COMMENT ON COLUMN craft_documents.is_deleted IS 'Whether the document has been deleted in Craft';
+COMMENT ON COLUMN craft_documents.craft_created_at IS 'Creation timestamp from Craft API metadata';
+COMMENT ON COLUMN craft_documents.craft_last_modified_at IS 'Last modification timestamp from Craft API metadata';
+COMMENT ON COLUMN craft_documents.raw_data IS 'Raw JSON response from Craft API for debugging';
 
 COMMENT ON TABLE files IS 'File references with metadata and links to Supabase Storage';
 
