@@ -309,109 +309,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- =====================================
--- 5. CREATE OPTIMIZED PAGINATED QUERY FUNCTION
--- =====================================
--- This function is much faster than querying the view directly
--- because it avoids fetching large text fields and uses better execution plan
-
-CREATE OR REPLACE FUNCTION get_unified_items_paginated(
-    p_type_filter TEXT DEFAULT NULL,  -- 'task', 'email', 'craft', or NULL for all
-    p_task_type_ids UUID[] DEFAULT NULL,
-    p_search TEXT DEFAULT NULL,
-    p_project_filter TEXT DEFAULT NULL,
-    p_location_filter TEXT DEFAULT NULL,
-    p_sort_field TEXT DEFAULT 'sort_date',
-    p_sort_order TEXT DEFAULT 'desc',
-    p_limit INTEGER DEFAULT 50,
-    p_offset INTEGER DEFAULT 0
-)
-RETURNS TABLE (
-    id TEXT, type TEXT, name TEXT, description TEXT, status TEXT, project TEXT,
-    customer TEXT, location TEXT, location_path TEXT, cost_group TEXT, cost_group_code TEXT,
-    due_date TIMESTAMP, created_at TIMESTAMP, updated_at TIMESTAMP, priority TEXT,
-    progress INTEGER, tasklist TEXT, task_type_id UUID, task_type_name TEXT,
-    task_type_slug TEXT, task_type_color VARCHAR(50), assignees JSONB, tags JSONB,
-    preview TEXT, from_name TEXT, from_email TEXT, conversation_subject TEXT,
-    attachment_count INTEGER, craft_url TEXT, teamwork_url TEXT, missive_url TEXT, sort_date TIMESTAMP
-) AS $$
-BEGIN
-    RETURN QUERY
-    SELECT ui.id, ui.type, ui.name, LEFT(ui.description, 300), ui.status, ui.project,
-        ui.customer, ui.location, ui.location_path, ui.cost_group, ui.cost_group_code,
-        ui.due_date, ui.created_at, ui.updated_at, ui.priority, ui.progress, ui.tasklist,
-        ui.task_type_id, ui.task_type_name, ui.task_type_slug, ui.task_type_color,
-        ui.assignees, ui.tags, ui.preview, ui.from_name, ui.from_email, ui.conversation_subject,
-        ui.attachment_count, ui.craft_url, ui.teamwork_url, ui.missive_url, ui.sort_date
-    FROM unified_items ui
-    WHERE (p_type_filter IS NULL OR ui.type = p_type_filter)
-        AND (p_task_type_ids IS NULL OR ui.type IN ('email', 'craft') 
-             OR (ui.type = 'task' AND ui.task_type_id = ANY(p_task_type_ids)))
-        AND (p_search IS NULL OR ui.name ILIKE '%' || p_search || '%'
-             OR ui.description ILIKE '%' || p_search || '%' OR ui.body ILIKE '%' || p_search || '%')
-        AND (p_project_filter IS NULL OR ui.project ILIKE '%' || p_project_filter || '%')
-        AND (p_location_filter IS NULL OR ui.location_path ILIKE '%' || p_location_filter || '%')
-    ORDER BY 
-        CASE WHEN p_sort_order = 'desc' THEN
-            CASE p_sort_field WHEN 'sort_date' THEN ui.sort_date WHEN 'created_at' THEN ui.created_at
-                WHEN 'updated_at' THEN ui.updated_at WHEN 'due_date' THEN ui.due_date ELSE ui.sort_date END
-        END DESC NULLS LAST,
-        CASE WHEN p_sort_order = 'asc' THEN
-            CASE p_sort_field WHEN 'sort_date' THEN ui.sort_date WHEN 'created_at' THEN ui.created_at
-                WHEN 'updated_at' THEN ui.updated_at WHEN 'due_date' THEN ui.due_date ELSE ui.sort_date END
-        END ASC NULLS LAST,
-        CASE WHEN p_sort_order = 'desc' THEN
-            CASE p_sort_field WHEN 'name' THEN ui.name WHEN 'project' THEN ui.project 
-                WHEN 'status' THEN ui.status ELSE NULL END
-        END DESC NULLS LAST,
-        CASE WHEN p_sort_order = 'asc' THEN
-            CASE p_sort_field WHEN 'name' THEN ui.name WHEN 'project' THEN ui.project 
-                WHEN 'status' THEN ui.status ELSE NULL END
-        END ASC NULLS LAST
-    LIMIT p_limit OFFSET p_offset;
-END;
-$$ LANGUAGE plpgsql STABLE;
-
--- =====================================
--- 6. CREATE FAST COUNT FUNCTION
--- =====================================
--- Uses estimate for large tables, exact for small tables
-
-CREATE OR REPLACE FUNCTION count_unified_items_fast(
-    p_type_filter TEXT DEFAULT NULL,
-    p_task_type_ids UUID[] DEFAULT NULL,
-    p_search TEXT DEFAULT NULL,
-    p_project_filter TEXT DEFAULT NULL,
-    p_location_filter TEXT DEFAULT NULL
-)
-RETURNS BIGINT AS $$
-DECLARE
-    v_count BIGINT;
-BEGIN
-    -- If no filters, use fast estimate from table statistics
-    IF p_type_filter IS NULL AND p_task_type_ids IS NULL AND p_search IS NULL 
-       AND p_project_filter IS NULL AND p_location_filter IS NULL THEN
-        SELECT COALESCE((SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'tasks' AND schemaname = 'teamwork'), 0)
-             + COALESCE((SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'messages' AND schemaname = 'missive'), 0)
-             + COALESCE((SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'craft_documents' AND schemaname = 'public'), 0)
-        INTO v_count;
-        RETURN v_count;
-    END IF;
-    
-    -- With filters, do actual count
-    SELECT COUNT(*) INTO v_count FROM unified_items ui
-    WHERE (p_type_filter IS NULL OR ui.type = p_type_filter)
-        AND (p_task_type_ids IS NULL OR ui.type IN ('email', 'craft') 
-             OR (ui.type = 'task' AND ui.task_type_id = ANY(p_task_type_ids)))
-        AND (p_search IS NULL OR ui.name ILIKE '%' || p_search || '%' 
-             OR ui.description ILIKE '%' || p_search || '%' OR ui.body ILIKE '%' || p_search || '%')
-        AND (p_project_filter IS NULL OR ui.project ILIKE '%' || p_project_filter || '%')
-        AND (p_location_filter IS NULL OR ui.location_path ILIKE '%' || p_location_filter || '%');
-    RETURN v_count;
-END;
-$$ LANGUAGE plpgsql STABLE;
-
--- =====================================
--- 7. GRANT PERMISSIONS
+-- 5. GRANT PERMISSIONS
 -- =====================================
 
 GRANT SELECT ON mv_task_assignees_agg TO authenticated;
@@ -421,11 +319,9 @@ GRANT SELECT ON mv_message_attachments_agg TO authenticated;
 GRANT SELECT ON mv_conversation_labels_agg TO authenticated;
 GRANT SELECT ON mv_conversation_comments_agg TO authenticated;
 GRANT EXECUTE ON FUNCTION refresh_unified_items_aggregates() TO authenticated;
-GRANT EXECUTE ON FUNCTION get_unified_items_paginated TO authenticated;
-GRANT EXECUTE ON FUNCTION count_unified_items_fast TO authenticated;
 
 -- =====================================
--- 8. TRIGGERS TO MARK MATERIALIZED VIEWS FOR REFRESH
+-- 6. TRIGGERS TO MARK MATERIALIZED VIEWS FOR REFRESH
 -- =====================================
 -- Instead of refreshing on every change (expensive), 
 -- we track if refresh is needed and do it periodically
@@ -455,138 +351,59 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Trigger functions to mark MVs as stale
-CREATE OR REPLACE FUNCTION trigger_mark_task_assignees_stale()
+-- Single parameterized trigger function for marking MVs as stale (uses TG_ARGV[0] for view name)
+CREATE OR REPLACE FUNCTION trigger_mark_mv_stale()
 RETURNS TRIGGER AS $$
 BEGIN
-    PERFORM mark_mv_needs_refresh('mv_task_assignees_agg');
-    RETURN COALESCE(NEW, OLD);
+    PERFORM mark_mv_needs_refresh(TG_ARGV[0]);
+    RETURN NULL; -- For AFTER statement triggers, return value is ignored
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION trigger_mark_task_tags_stale()
-RETURNS TRIGGER AS $$
-BEGIN
-    PERFORM mark_mv_needs_refresh('mv_task_tags_agg');
-    RETURN COALESCE(NEW, OLD);
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE OR REPLACE FUNCTION trigger_mark_message_recipients_stale()
-RETURNS TRIGGER AS $$
-BEGIN
-    PERFORM mark_mv_needs_refresh('mv_message_recipients_agg');
-    RETURN COALESCE(NEW, OLD);
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE OR REPLACE FUNCTION trigger_mark_attachments_stale()
-RETURNS TRIGGER AS $$
-BEGIN
-    PERFORM mark_mv_needs_refresh('mv_message_attachments_agg');
-    RETURN COALESCE(NEW, OLD);
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE OR REPLACE FUNCTION trigger_mark_conv_labels_stale()
-RETURNS TRIGGER AS $$
-BEGIN
-    PERFORM mark_mv_needs_refresh('mv_conversation_labels_agg');
-    RETURN COALESCE(NEW, OLD);
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE OR REPLACE FUNCTION trigger_mark_conv_comments_stale()
-RETURNS TRIGGER AS $$
-BEGIN
-    PERFORM mark_mv_needs_refresh('mv_conversation_comments_agg');
-    RETURN COALESCE(NEW, OLD);
-END;
-$$ LANGUAGE plpgsql;
-
--- Create triggers on source tables
+-- Create triggers on source tables (using parameterized function)
 DROP TRIGGER IF EXISTS trg_task_assignees_mv_stale ON teamwork.task_assignees;
-CREATE TRIGGER trg_task_assignees_mv_stale
-    AFTER INSERT OR UPDATE OR DELETE ON teamwork.task_assignees
-    FOR EACH STATEMENT EXECUTE FUNCTION trigger_mark_task_assignees_stale();
+CREATE TRIGGER trg_task_assignees_mv_stale AFTER INSERT OR UPDATE OR DELETE ON teamwork.task_assignees
+    FOR EACH STATEMENT EXECUTE FUNCTION trigger_mark_mv_stale('mv_task_assignees_agg');
 
 DROP TRIGGER IF EXISTS trg_task_tags_mv_stale ON teamwork.task_tags;
-CREATE TRIGGER trg_task_tags_mv_stale
-    AFTER INSERT OR UPDATE OR DELETE ON teamwork.task_tags
-    FOR EACH STATEMENT EXECUTE FUNCTION trigger_mark_task_tags_stale();
+CREATE TRIGGER trg_task_tags_mv_stale AFTER INSERT OR UPDATE OR DELETE ON teamwork.task_tags
+    FOR EACH STATEMENT EXECUTE FUNCTION trigger_mark_mv_stale('mv_task_tags_agg');
 
 DROP TRIGGER IF EXISTS trg_message_recipients_mv_stale ON missive.message_recipients;
-CREATE TRIGGER trg_message_recipients_mv_stale
-    AFTER INSERT OR UPDATE OR DELETE ON missive.message_recipients
-    FOR EACH STATEMENT EXECUTE FUNCTION trigger_mark_message_recipients_stale();
+CREATE TRIGGER trg_message_recipients_mv_stale AFTER INSERT OR UPDATE OR DELETE ON missive.message_recipients
+    FOR EACH STATEMENT EXECUTE FUNCTION trigger_mark_mv_stale('mv_message_recipients_agg');
 
 DROP TRIGGER IF EXISTS trg_attachments_mv_stale ON missive.attachments;
-CREATE TRIGGER trg_attachments_mv_stale
-    AFTER INSERT OR UPDATE OR DELETE ON missive.attachments
-    FOR EACH STATEMENT EXECUTE FUNCTION trigger_mark_attachments_stale();
+CREATE TRIGGER trg_attachments_mv_stale AFTER INSERT OR UPDATE OR DELETE ON missive.attachments
+    FOR EACH STATEMENT EXECUTE FUNCTION trigger_mark_mv_stale('mv_message_attachments_agg');
 
 DROP TRIGGER IF EXISTS trg_conv_labels_mv_stale ON missive.conversation_labels;
-CREATE TRIGGER trg_conv_labels_mv_stale
-    AFTER INSERT OR UPDATE OR DELETE ON missive.conversation_labels
-    FOR EACH STATEMENT EXECUTE FUNCTION trigger_mark_conv_labels_stale();
+CREATE TRIGGER trg_conv_labels_mv_stale AFTER INSERT OR UPDATE OR DELETE ON missive.conversation_labels
+    FOR EACH STATEMENT EXECUTE FUNCTION trigger_mark_mv_stale('mv_conversation_labels_agg');
 
 DROP TRIGGER IF EXISTS trg_conv_comments_mv_stale ON missive.conversation_comments;
-CREATE TRIGGER trg_conv_comments_mv_stale
-    AFTER INSERT OR UPDATE OR DELETE ON missive.conversation_comments
-    FOR EACH STATEMENT EXECUTE FUNCTION trigger_mark_conv_comments_stale();
+CREATE TRIGGER trg_conv_comments_mv_stale AFTER INSERT OR UPDATE OR DELETE ON missive.conversation_comments
+    FOR EACH STATEMENT EXECUTE FUNCTION trigger_mark_mv_stale('mv_conversation_comments_agg');
 
--- Function to refresh only stale materialized views (uses CONCURRENTLY for non-blocking)
+-- Function to refresh only stale materialized views (uses dynamic SQL to avoid duplication)
 CREATE OR REPLACE FUNCTION refresh_stale_unified_items_aggregates()
 RETURNS TABLE(view_name TEXT, refreshed BOOLEAN) AS $$
 DECLARE
     r RECORD;
 BEGIN
     FOR r IN 
-        SELECT mrs.view_name 
-        FROM mv_refresh_status mrs 
+        SELECT mrs.view_name FROM mv_refresh_status mrs 
         WHERE mrs.needs_refresh = TRUE 
            OR (NOW() - mrs.last_refreshed_at) > (mrs.refresh_interval_minutes || ' minutes')::INTERVAL
     LOOP
         view_name := r.view_name;
-        
-        -- Use CONCURRENTLY for non-blocking refresh (safe after initial population)
         BEGIN
-            CASE r.view_name
-                WHEN 'mv_task_assignees_agg' THEN
-                    REFRESH MATERIALIZED VIEW CONCURRENTLY mv_task_assignees_agg;
-                WHEN 'mv_task_tags_agg' THEN
-                    REFRESH MATERIALIZED VIEW CONCURRENTLY mv_task_tags_agg;
-                WHEN 'mv_message_recipients_agg' THEN
-                    REFRESH MATERIALIZED VIEW CONCURRENTLY mv_message_recipients_agg;
-                WHEN 'mv_message_attachments_agg' THEN
-                    REFRESH MATERIALIZED VIEW CONCURRENTLY mv_message_attachments_agg;
-                WHEN 'mv_conversation_labels_agg' THEN
-                    REFRESH MATERIALIZED VIEW CONCURRENTLY mv_conversation_labels_agg;
-                WHEN 'mv_conversation_comments_agg' THEN
-                    REFRESH MATERIALIZED VIEW CONCURRENTLY mv_conversation_comments_agg;
-            END CASE;
+            EXECUTE format('REFRESH MATERIALIZED VIEW CONCURRENTLY %I', r.view_name);
         EXCEPTION WHEN OTHERS THEN
-            -- If CONCURRENTLY fails, fall back to regular refresh
-            CASE r.view_name
-                WHEN 'mv_task_assignees_agg' THEN
-                    REFRESH MATERIALIZED VIEW mv_task_assignees_agg;
-                WHEN 'mv_task_tags_agg' THEN
-                    REFRESH MATERIALIZED VIEW mv_task_tags_agg;
-                WHEN 'mv_message_recipients_agg' THEN
-                    REFRESH MATERIALIZED VIEW mv_message_recipients_agg;
-                WHEN 'mv_message_attachments_agg' THEN
-                    REFRESH MATERIALIZED VIEW mv_message_attachments_agg;
-                WHEN 'mv_conversation_labels_agg' THEN
-                    REFRESH MATERIALIZED VIEW mv_conversation_labels_agg;
-                WHEN 'mv_conversation_comments_agg' THEN
-                    REFRESH MATERIALIZED VIEW mv_conversation_comments_agg;
-            END CASE;
+            EXECUTE format('REFRESH MATERIALIZED VIEW %I', r.view_name);
         END;
-        
-        UPDATE mv_refresh_status 
-        SET needs_refresh = FALSE, last_refreshed_at = NOW() 
+        UPDATE mv_refresh_status SET needs_refresh = FALSE, last_refreshed_at = NOW() 
         WHERE mv_refresh_status.view_name = r.view_name;
-        
         refreshed := TRUE;
         RETURN NEXT;
     END LOOP;
@@ -599,7 +416,7 @@ GRANT EXECUTE ON FUNCTION mark_mv_needs_refresh TO authenticated;
 GRANT EXECUTE ON FUNCTION refresh_stale_unified_items_aggregates TO authenticated;
 
 -- =====================================
--- 9. INITIAL REFRESH OF MATERIALIZED VIEWS
+-- 7. INITIAL REFRESH OF MATERIALIZED VIEWS
 -- =====================================
 -- Note: Initial refresh uses non-concurrent mode (blocking but necessary)
 
@@ -626,6 +443,4 @@ COMMENT ON MATERIALIZED VIEW mv_message_attachments_agg IS 'Pre-aggregated messa
 COMMENT ON MATERIALIZED VIEW mv_conversation_labels_agg IS 'Pre-aggregated conversation labels for unified_items performance';
 COMMENT ON MATERIALIZED VIEW mv_conversation_comments_agg IS 'Pre-aggregated conversation comments for unified_items search';
 COMMENT ON FUNCTION refresh_unified_items_aggregates IS 'Refreshes all materialized views used by unified_items. Run periodically or after bulk updates.';
-COMMENT ON FUNCTION get_unified_items_paginated IS 'Optimized paginated query for unified items - avoids fetching large text fields';
-COMMENT ON FUNCTION count_unified_items_fast IS 'Fast count estimate for unified items - uses table statistics when no filters applied';
 

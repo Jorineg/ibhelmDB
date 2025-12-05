@@ -197,177 +197,7 @@ CREATE TRIGGER cost_group_path_trigger
     EXECUTE FUNCTION update_cost_group_path();
 
 -- =====================================
--- 4. FUZZY LOCATION SEARCH FUNCTION
--- =====================================
-
--- Function for typo-resistant, multi-level location search
--- Implements requirements from additional_requirements_unstructured.md
-CREATE OR REPLACE FUNCTION search_locations(
-    search_query TEXT,
-    match_threshold FLOAT DEFAULT 0.3
-)
-RETURNS TABLE (
-    location_id UUID,
-    location_name TEXT,
-    location_type location_type,
-    full_path TEXT,
-    similarity_score FLOAT,
-    exact_match BOOLEAN
-) AS $$
-BEGIN
-    RETURN QUERY
-    SELECT 
-        l.id AS location_id,
-        l.name AS location_name,
-        l.type AS location_type,
-        l.search_text AS full_path,
-        GREATEST(
-            similarity(l.name, search_query),
-            similarity(l.search_text, search_query)
-        ) AS similarity_score,
-        (
-            l.name ILIKE '%' || search_query || '%' OR
-            l.search_text ILIKE '%' || search_query || '%'
-        ) AS exact_match
-    FROM locations l
-    WHERE 
-        -- Trigram similarity match
-        (
-            similarity(l.name, search_query) > match_threshold OR
-            similarity(l.search_text, search_query) > match_threshold
-        )
-        OR
-        -- Exact substring match (for autocomplete)
-        (
-            l.name ILIKE '%' || search_query || '%' OR
-            l.search_text ILIKE '%' || search_query || '%'
-        )
-    ORDER BY
-        -- Prioritize: exact matches first, then by similarity, then by depth (specific first)
-        exact_match DESC,
-        similarity_score DESC,
-        l.depth DESC,
-        l.name ASC
-    LIMIT 50;
-END;
-$$ LANGUAGE plpgsql STABLE;
-
--- =====================================
--- 5. UNIFIED SEARCH FUNCTION
--- =====================================
-
--- Function to search across all objects (files, tasks, conversations)
-CREATE OR REPLACE FUNCTION search_all_objects(
-    search_query TEXT,
-    filter_project_id INTEGER DEFAULT NULL,
-    filter_location_id UUID DEFAULT NULL,
-    filter_cost_group_id UUID DEFAULT NULL,
-    limit_results INTEGER DEFAULT 50
-)
-RETURNS TABLE (
-    object_id TEXT,
-    object_type TEXT,
-    name TEXT,
-    description TEXT,
-    project_name TEXT,
-    location_name TEXT,
-    cost_group_name TEXT,
-    relevance FLOAT
-) AS $$
-BEGIN
-    RETURN QUERY
-    WITH ranked_files AS (
-        SELECT 
-            f.id::TEXT AS object_id,
-            'file'::TEXT AS object_type,
-            f.filename AS name,
-            COALESCE(f.extracted_text, '') AS description,
-            p.name AS project_name,
-            l.search_text AS location_name,
-            cg.name AS cost_group_name,
-            ts_rank(
-                to_tsvector('german', COALESCE(f.filename || ' ' || f.extracted_text, '')),
-                plainto_tsquery('german', search_query)
-            ) AS relevance
-        FROM files f
-        LEFT JOIN project_files pf ON f.id = pf.file_id
-        LEFT JOIN teamwork.projects p ON pf.tw_project_id = p.id
-        LEFT JOIN object_locations ol ON f.id = ol.file_id
-        LEFT JOIN locations l ON ol.location_id = l.id
-        LEFT JOIN object_cost_groups ocg ON f.id = ocg.file_id
-        LEFT JOIN cost_groups cg ON ocg.cost_group_id = cg.id
-        WHERE 
-            (filter_project_id IS NULL OR p.id = filter_project_id)
-            AND (filter_location_id IS NULL OR l.id = filter_location_id)
-            AND (filter_cost_group_id IS NULL OR cg.id = filter_cost_group_id)
-            AND to_tsvector('german', COALESCE(f.filename || ' ' || f.extracted_text, '')) @@ plainto_tsquery('german', search_query)
-    ),
-    ranked_tasks AS (
-        SELECT 
-            t.id::TEXT AS object_id,
-            'task'::TEXT AS object_type,
-            t.name AS name,
-            COALESCE(t.description, '') AS description,
-            p.name AS project_name,
-            l.search_text AS location_name,
-            cg.name AS cost_group_name,
-            ts_rank(
-                to_tsvector('german', COALESCE(t.name || ' ' || t.description, '')),
-                plainto_tsquery('german', search_query)
-            ) AS relevance
-        FROM teamwork.tasks t
-        LEFT JOIN teamwork.projects p ON t.project_id = p.id
-        LEFT JOIN object_locations ol ON t.id = ol.tw_task_id
-        LEFT JOIN locations l ON ol.location_id = l.id
-        LEFT JOIN object_cost_groups ocg ON t.id = ocg.tw_task_id
-        LEFT JOIN cost_groups cg ON ocg.cost_group_id = cg.id
-        WHERE 
-            t.deleted_at IS NULL
-            AND (filter_project_id IS NULL OR p.id = filter_project_id)
-            AND (filter_location_id IS NULL OR l.id = filter_location_id)
-            AND (filter_cost_group_id IS NULL OR cg.id = filter_cost_group_id)
-            AND to_tsvector('german', COALESCE(t.name || ' ' || t.description, '')) @@ plainto_tsquery('german', search_query)
-    ),
-    ranked_conversations AS (
-        SELECT 
-            c.id::TEXT AS object_id,
-            'conversation'::TEXT AS object_type,
-            c.subject AS name,
-            COALESCE(c.latest_message_subject, '') AS description,
-            p.name AS project_name,
-            l.search_text AS location_name,
-            cg.name AS cost_group_name,
-            ts_rank(
-                to_tsvector('german', COALESCE(c.subject || ' ' || c.latest_message_subject, '')),
-                plainto_tsquery('german', search_query)
-            ) AS relevance
-        FROM missive.conversations c
-        LEFT JOIN project_conversations pc ON c.id = pc.m_conversation_id
-        LEFT JOIN teamwork.projects p ON pc.tw_project_id = p.id
-        LEFT JOIN object_locations ol ON c.id = ol.m_conversation_id
-        LEFT JOIN locations l ON ol.location_id = l.id
-        LEFT JOIN object_cost_groups ocg ON c.id = ocg.m_conversation_id
-        LEFT JOIN cost_groups cg ON ocg.cost_group_id = cg.id
-        WHERE 
-            (filter_project_id IS NULL OR p.id = filter_project_id)
-            AND (filter_location_id IS NULL OR l.id = filter_location_id)
-            AND (filter_cost_group_id IS NULL OR cg.id = filter_cost_group_id)
-            AND to_tsvector('german', COALESCE(c.subject || ' ' || c.latest_message_subject, '')) @@ plainto_tsquery('german', search_query)
-    )
-    SELECT * FROM (
-        SELECT * FROM ranked_files
-        UNION ALL
-        SELECT * FROM ranked_tasks
-        UNION ALL
-        SELECT * FROM ranked_conversations
-    ) combined
-    ORDER BY relevance DESC
-    LIMIT limit_results;
-END;
-$$ LANGUAGE plpgsql STABLE;
-
--- =====================================
--- 6. TASK TYPE EXTRACTION
+-- 4. TASK TYPE EXTRACTION
 -- =====================================
 
 -- Core function: Extract task type for a single task based on rules
@@ -447,11 +277,10 @@ CREATE TRIGGER extract_task_type_on_tags_change
     EXECUTE FUNCTION trigger_task_tags_extract_type();
 
 -- =====================================
--- 7. BULK RE-EXTRACTION FUNCTIONS (for UI button)
+-- 5. BULK RE-EXTRACTION FUNCTIONS (for UI button)
 -- =====================================
 
 -- Main function to re-run extraction on all tasks
--- Returns the extraction_run ID for status tracking
 CREATE OR REPLACE FUNCTION rerun_all_task_type_extractions()
 RETURNS UUID 
 SECURITY DEFINER
@@ -463,119 +292,87 @@ DECLARE
     v_processed INTEGER := 0;
     v_task_record RECORD;
 BEGIN
-    -- Create a new run record
-    INSERT INTO extraction_runs (status, started_at)
-    VALUES ('running', NOW())
+    INSERT INTO operation_runs (run_type, status, started_at)
+    VALUES ('task_type_extraction', 'running', NOW())
     RETURNING id INTO v_run_id;
 
-    -- Count total tasks
-    SELECT COUNT(*) INTO v_total_count
-    FROM teamwork.tasks
-    WHERE deleted_at IS NULL;
+    SELECT COUNT(*) INTO v_total_count FROM teamwork.tasks WHERE deleted_at IS NULL;
+    UPDATE operation_runs SET total_count = v_total_count WHERE id = v_run_id;
 
-    -- Update total count
-    UPDATE extraction_runs SET total_count = v_total_count WHERE id = v_run_id;
-
-    -- Loop through all tasks and extract types
-    FOR v_task_record IN 
-        SELECT id FROM teamwork.tasks WHERE deleted_at IS NULL
-    LOOP
+    FOR v_task_record IN SELECT id FROM teamwork.tasks WHERE deleted_at IS NULL LOOP
         BEGIN
             PERFORM extract_task_type(v_task_record.id);
             v_processed := v_processed + 1;
-            
-            -- Update progress every 100 tasks
             IF v_processed % 100 = 0 THEN
-                UPDATE extraction_runs 
-                SET processed_count = v_processed 
-                WHERE id = v_run_id;
+                UPDATE operation_runs SET processed_count = v_processed WHERE id = v_run_id;
             END IF;
         EXCEPTION WHEN OTHERS THEN
-            -- Log error but continue processing
             RAISE NOTICE 'Error processing task %: %', v_task_record.id, SQLERRM;
         END;
     END LOOP;
 
-    -- Mark as completed
-    UPDATE extraction_runs 
-    SET 
-        status = 'completed',
-        processed_count = v_processed,
-        completed_at = NOW()
+    UPDATE operation_runs SET status = 'completed', processed_count = v_processed, completed_at = NOW()
     WHERE id = v_run_id;
-
     RETURN v_run_id;
 END;
 $$ LANGUAGE plpgsql;
 
--- Function to check extraction run status
-CREATE OR REPLACE FUNCTION get_extraction_run_status(p_run_id UUID)
+-- Generic function to get operation run status by ID
+CREATE OR REPLACE FUNCTION get_operation_run_status(p_run_id UUID)
 RETURNS TABLE (
-    id UUID,
-    status VARCHAR(50),
-    total_count INTEGER,
-    processed_count INTEGER,
-    progress_percent NUMERIC,
-    started_at TIMESTAMP,
-    completed_at TIMESTAMP,
-    error_message TEXT
+    id UUID, status VARCHAR(50), total_count INTEGER, processed_count INTEGER,
+    created_count INTEGER, linked_count INTEGER, skipped_count INTEGER,
+    progress_percent NUMERIC, started_at TIMESTAMP, completed_at TIMESTAMP, error_message TEXT
 )
-SECURITY DEFINER
-SET search_path = public
-AS $$
+SECURITY DEFINER SET search_path = public AS $$
 BEGIN
-    RETURN QUERY
-    SELECT 
-        er.id,
-        er.status,
-        er.total_count,
-        er.processed_count,
-        CASE 
-            WHEN er.total_count > 0 THEN 
-                ROUND((er.processed_count::NUMERIC / er.total_count::NUMERIC) * 100, 1)
-            ELSE 0
-        END AS progress_percent,
-        er.started_at,
-        er.completed_at,
-        er.error_message
-    FROM extraction_runs er
-    WHERE er.id = p_run_id;
+    RETURN QUERY SELECT r.id, r.status, r.total_count, r.processed_count,
+        r.created_count, r.linked_count, r.skipped_count,
+        CASE WHEN r.total_count > 0 THEN ROUND((r.processed_count::NUMERIC / r.total_count::NUMERIC) * 100, 1) ELSE 0 END,
+        r.started_at, r.completed_at, r.error_message
+    FROM operation_runs r WHERE r.id = p_run_id;
 END;
 $$ LANGUAGE plpgsql STABLE;
 
--- Function to get the latest extraction run
-CREATE OR REPLACE FUNCTION get_latest_extraction_run()
+-- Generic function to get latest operation run by type
+CREATE OR REPLACE FUNCTION get_latest_operation_run(p_run_type VARCHAR(50))
 RETURNS TABLE (
-    id UUID,
-    status VARCHAR(50),
-    total_count INTEGER,
-    processed_count INTEGER,
-    progress_percent NUMERIC,
-    started_at TIMESTAMP,
-    completed_at TIMESTAMP,
-    error_message TEXT
+    id UUID, status VARCHAR(50), total_count INTEGER, processed_count INTEGER,
+    created_count INTEGER, linked_count INTEGER, skipped_count INTEGER,
+    progress_percent NUMERIC, started_at TIMESTAMP, completed_at TIMESTAMP, error_message TEXT
 )
-SECURITY DEFINER
-SET search_path = public
-AS $$
+SECURITY DEFINER SET search_path = public AS $$
 BEGIN
-    RETURN QUERY
-    SELECT 
-        er.id,
-        er.status,
-        er.total_count,
-        er.processed_count,
-        CASE 
-            WHEN er.total_count > 0 THEN 
-                ROUND((er.processed_count::NUMERIC / er.total_count::NUMERIC) * 100, 1)
-            ELSE 0
-        END AS progress_percent,
-        er.started_at,
-        er.completed_at,
-        er.error_message
-    FROM extraction_runs er
-    ORDER BY er.started_at DESC
-    LIMIT 1;
+    RETURN QUERY SELECT r.id, r.status, r.total_count, r.processed_count,
+        r.created_count, r.linked_count, r.skipped_count,
+        CASE WHEN r.total_count > 0 THEN ROUND((r.processed_count::NUMERIC / r.total_count::NUMERIC) * 100, 1) ELSE 0 END,
+        r.started_at, r.completed_at, r.error_message
+    FROM operation_runs r WHERE r.run_type = p_run_type ORDER BY r.started_at DESC LIMIT 1;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+-- Wrapper for backwards compatibility
+CREATE OR REPLACE FUNCTION get_extraction_run_status(p_run_id UUID)
+RETURNS TABLE (id UUID, status VARCHAR(50), total_count INTEGER, processed_count INTEGER,
+    progress_percent NUMERIC, started_at TIMESTAMP, completed_at TIMESTAMP, error_message TEXT)
+SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+    RETURN QUERY SELECT r.id, r.status, r.total_count, r.processed_count,
+        CASE WHEN r.total_count > 0 THEN ROUND((r.processed_count::NUMERIC / r.total_count::NUMERIC) * 100, 1) ELSE 0 END,
+        r.started_at, r.completed_at, r.error_message
+    FROM operation_runs r WHERE r.id = p_run_id;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+CREATE OR REPLACE FUNCTION get_latest_extraction_run()
+RETURNS TABLE (id UUID, status VARCHAR(50), total_count INTEGER, processed_count INTEGER,
+    progress_percent NUMERIC, started_at TIMESTAMP, completed_at TIMESTAMP, error_message TEXT)
+SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+    RETURN QUERY SELECT r.id, r.status, r.total_count, r.processed_count,
+        CASE WHEN r.total_count > 0 THEN ROUND((r.processed_count::NUMERIC / r.total_count::NUMERIC) * 100, 1) ELSE 0 END,
+        r.started_at, r.completed_at, r.error_message
+    FROM operation_runs r WHERE r.run_type = 'task_type_extraction' ORDER BY r.started_at DESC LIMIT 1;
 END;
 $$ LANGUAGE plpgsql STABLE;
 
@@ -590,8 +387,6 @@ CREATE TRIGGER update_task_types_updated_at BEFORE UPDATE ON task_types
 COMMENT ON FUNCTION update_updated_at_column() IS 'Generic trigger function to update db_updated_at timestamp';
 COMMENT ON FUNCTION update_location_hierarchy() IS 'Maintains materialized path and search_text for location hierarchy';
 COMMENT ON FUNCTION update_cost_group_path() IS 'Maintains materialized path for cost group hierarchy';
-COMMENT ON FUNCTION search_locations(TEXT, FLOAT) IS 'Typo-resistant location search with similarity scoring';
-COMMENT ON FUNCTION search_all_objects(TEXT, INTEGER, UUID, UUID, INTEGER) IS 'Unified full-text search across files, tasks, and conversations';
 COMMENT ON FUNCTION extract_task_type(INTEGER) IS 'Extracts and assigns task type based on tag matching rules';
 COMMENT ON FUNCTION rerun_all_task_type_extractions() IS 'Re-runs task type extraction on all tasks, returns run ID for tracking';
 COMMENT ON FUNCTION get_extraction_run_status(UUID) IS 'Gets status of an extraction run by ID';

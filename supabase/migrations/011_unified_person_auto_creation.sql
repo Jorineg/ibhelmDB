@@ -3,32 +3,10 @@
 -- =====================================
 -- Automatically creates unified persons when contacts/users are added
 -- and links them to the source system (Missive or Teamwork)
+-- Uses operation_runs table (from 002) for run tracking
 
 -- =====================================
--- 1. PERSON LINKING RUN TRACKING
--- =====================================
-
--- Similar to extraction_runs, tracks bulk person linking operations
-CREATE TABLE person_linking_runs (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    status VARCHAR(50) NOT NULL DEFAULT 'running',  -- 'running', 'completed', 'failed'
-    total_count INTEGER,
-    processed_count INTEGER DEFAULT 0,
-    created_count INTEGER DEFAULT 0,  -- New unified persons created
-    linked_count INTEGER DEFAULT 0,   -- Links to existing unified persons created
-    skipped_count INTEGER DEFAULT 0,  -- Already linked items skipped
-    error_message TEXT,
-    started_at TIMESTAMP DEFAULT NOW(),
-    completed_at TIMESTAMP
-);
-
-CREATE INDEX idx_person_linking_runs_status ON person_linking_runs(status);
-CREATE INDEX idx_person_linking_runs_started_at ON person_linking_runs(started_at);
-
-COMMENT ON TABLE person_linking_runs IS 'Tracks status of bulk person linking operations';
-
--- =====================================
--- 2. CORE LINKING FUNCTIONS
+-- 1. CORE LINKING FUNCTIONS
 -- =====================================
 
 -- Function to create/link unified person from a Missive contact
@@ -158,7 +136,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- =====================================
--- 3. TRIGGER FUNCTIONS
+-- 2. TRIGGER FUNCTIONS
 -- =====================================
 
 -- Trigger function for Missive contacts
@@ -193,16 +171,12 @@ CREATE TRIGGER auto_link_person_on_teamwork_user
     EXECUTE FUNCTION trigger_link_person_from_teamwork_user();
 
 -- =====================================
--- 4. BULK LINKING FUNCTIONS (for UI button)
+-- 3. BULK LINKING FUNCTIONS (for UI button)
 -- =====================================
 
 -- Main function to run person linking on all existing contacts and users
--- Returns the run ID for status tracking
 CREATE OR REPLACE FUNCTION rerun_all_person_linking()
-RETURNS UUID 
-SECURITY DEFINER
-SET search_path = public
-AS $$
+RETURNS UUID SECURITY DEFINER SET search_path = public AS $$
 DECLARE
     v_run_id UUID;
     v_total_count INTEGER;
@@ -213,182 +187,68 @@ DECLARE
     v_record RECORD;
     v_result TEXT;
 BEGIN
-    -- Create a new run record
-    INSERT INTO person_linking_runs (status, started_at)
-    VALUES ('running', NOW())
+    INSERT INTO operation_runs (run_type, status, started_at)
+    VALUES ('person_linking', 'running', NOW())
     RETURNING id INTO v_run_id;
 
-    -- Count total items (missive contacts + teamwork users)
-    SELECT 
-        (SELECT COUNT(*) FROM missive.contacts) + 
-        (SELECT COUNT(*) FROM teamwork.users)
-    INTO v_total_count;
+    SELECT (SELECT COUNT(*) FROM missive.contacts) + (SELECT COUNT(*) FROM teamwork.users) INTO v_total_count;
+    UPDATE operation_runs SET total_count = v_total_count WHERE id = v_run_id;
 
-    -- Update total count
-    UPDATE person_linking_runs SET total_count = v_total_count WHERE id = v_run_id;
-
-    -- Process all Missive contacts
-    FOR v_record IN 
-        SELECT id FROM missive.contacts ORDER BY id
-    LOOP
+    FOR v_record IN SELECT id FROM missive.contacts ORDER BY id LOOP
         BEGIN
             v_result := link_person_from_missive_contact(v_record.id);
             v_processed := v_processed + 1;
-            
-            IF v_result = 'created' THEN
-                v_created := v_created + 1;
-            ELSIF v_result = 'linked' THEN
-                v_linked := v_linked + 1;
-            ELSE
-                v_skipped := v_skipped + 1;
-            END IF;
-            
-            -- Update progress every 100 items
+            IF v_result = 'created' THEN v_created := v_created + 1;
+            ELSIF v_result = 'linked' THEN v_linked := v_linked + 1;
+            ELSE v_skipped := v_skipped + 1; END IF;
             IF v_processed % 100 = 0 THEN
-                UPDATE person_linking_runs 
-                SET processed_count = v_processed,
-                    created_count = v_created,
-                    linked_count = v_linked,
-                    skipped_count = v_skipped
-                WHERE id = v_run_id;
+                UPDATE operation_runs SET processed_count = v_processed, created_count = v_created,
+                    linked_count = v_linked, skipped_count = v_skipped WHERE id = v_run_id;
             END IF;
         EXCEPTION WHEN OTHERS THEN
-            -- Log error but continue processing
             RAISE NOTICE 'Error processing missive contact %: %', v_record.id, SQLERRM;
-            v_processed := v_processed + 1;
-            v_skipped := v_skipped + 1;
+            v_processed := v_processed + 1; v_skipped := v_skipped + 1;
         END;
     END LOOP;
 
-    -- Process all Teamwork users
-    FOR v_record IN 
-        SELECT id FROM teamwork.users ORDER BY id
-    LOOP
+    FOR v_record IN SELECT id FROM teamwork.users ORDER BY id LOOP
         BEGIN
             v_result := link_person_from_teamwork_user(v_record.id);
             v_processed := v_processed + 1;
-            
-            IF v_result = 'created' THEN
-                v_created := v_created + 1;
-            ELSIF v_result = 'linked' THEN
-                v_linked := v_linked + 1;
-            ELSE
-                v_skipped := v_skipped + 1;
-            END IF;
-            
-            -- Update progress every 100 items
+            IF v_result = 'created' THEN v_created := v_created + 1;
+            ELSIF v_result = 'linked' THEN v_linked := v_linked + 1;
+            ELSE v_skipped := v_skipped + 1; END IF;
             IF v_processed % 100 = 0 THEN
-                UPDATE person_linking_runs 
-                SET processed_count = v_processed,
-                    created_count = v_created,
-                    linked_count = v_linked,
-                    skipped_count = v_skipped
-                WHERE id = v_run_id;
+                UPDATE operation_runs SET processed_count = v_processed, created_count = v_created,
+                    linked_count = v_linked, skipped_count = v_skipped WHERE id = v_run_id;
             END IF;
         EXCEPTION WHEN OTHERS THEN
-            -- Log error but continue processing
             RAISE NOTICE 'Error processing teamwork user %: %', v_record.id, SQLERRM;
-            v_processed := v_processed + 1;
-            v_skipped := v_skipped + 1;
+            v_processed := v_processed + 1; v_skipped := v_skipped + 1;
         END;
     END LOOP;
 
-    -- Mark as completed
-    UPDATE person_linking_runs 
-    SET 
-        status = 'completed',
-        processed_count = v_processed,
-        created_count = v_created,
-        linked_count = v_linked,
-        skipped_count = v_skipped,
-        completed_at = NOW()
-    WHERE id = v_run_id;
-
+    UPDATE operation_runs SET status = 'completed', processed_count = v_processed, created_count = v_created,
+        linked_count = v_linked, skipped_count = v_skipped, completed_at = NOW() WHERE id = v_run_id;
     RETURN v_run_id;
 END;
 $$ LANGUAGE plpgsql;
 
--- Function to check person linking run status
+-- Wrapper functions for backwards compatibility (use generic get_operation_run_status from 007)
 CREATE OR REPLACE FUNCTION get_person_linking_run_status(p_run_id UUID)
-RETURNS TABLE (
-    id UUID,
-    status VARCHAR(50),
-    total_count INTEGER,
-    processed_count INTEGER,
-    created_count INTEGER,
-    linked_count INTEGER,
-    skipped_count INTEGER,
-    progress_percent NUMERIC,
-    started_at TIMESTAMP,
-    completed_at TIMESTAMP,
-    error_message TEXT
-)
-SECURITY DEFINER
-SET search_path = public
-AS $$
-BEGIN
-    RETURN QUERY
-    SELECT 
-        plr.id,
-        plr.status,
-        plr.total_count,
-        plr.processed_count,
-        plr.created_count,
-        plr.linked_count,
-        plr.skipped_count,
-        CASE 
-            WHEN plr.total_count > 0 THEN 
-                ROUND((plr.processed_count::NUMERIC / plr.total_count::NUMERIC) * 100, 1)
-            ELSE 0
-        END AS progress_percent,
-        plr.started_at,
-        plr.completed_at,
-        plr.error_message
-    FROM person_linking_runs plr
-    WHERE plr.id = p_run_id;
-END;
+RETURNS TABLE (id UUID, status VARCHAR(50), total_count INTEGER, processed_count INTEGER,
+    created_count INTEGER, linked_count INTEGER, skipped_count INTEGER,
+    progress_percent NUMERIC, started_at TIMESTAMP, completed_at TIMESTAMP, error_message TEXT)
+SECURITY DEFINER SET search_path = public AS $$
+BEGIN RETURN QUERY SELECT * FROM get_operation_run_status(p_run_id); END;
 $$ LANGUAGE plpgsql STABLE;
 
--- Function to get the latest person linking run
 CREATE OR REPLACE FUNCTION get_latest_person_linking_run()
-RETURNS TABLE (
-    id UUID,
-    status VARCHAR(50),
-    total_count INTEGER,
-    processed_count INTEGER,
-    created_count INTEGER,
-    linked_count INTEGER,
-    skipped_count INTEGER,
-    progress_percent NUMERIC,
-    started_at TIMESTAMP,
-    completed_at TIMESTAMP,
-    error_message TEXT
-)
-SECURITY DEFINER
-SET search_path = public
-AS $$
-BEGIN
-    RETURN QUERY
-    SELECT 
-        plr.id,
-        plr.status,
-        plr.total_count,
-        plr.processed_count,
-        plr.created_count,
-        plr.linked_count,
-        plr.skipped_count,
-        CASE 
-            WHEN plr.total_count > 0 THEN 
-                ROUND((plr.processed_count::NUMERIC / plr.total_count::NUMERIC) * 100, 1)
-            ELSE 0
-        END AS progress_percent,
-        plr.started_at,
-        plr.completed_at,
-        plr.error_message
-    FROM person_linking_runs plr
-    ORDER BY plr.started_at DESC
-    LIMIT 1;
-END;
+RETURNS TABLE (id UUID, status VARCHAR(50), total_count INTEGER, processed_count INTEGER,
+    created_count INTEGER, linked_count INTEGER, skipped_count INTEGER,
+    progress_percent NUMERIC, started_at TIMESTAMP, completed_at TIMESTAMP, error_message TEXT)
+SECURITY DEFINER SET search_path = public AS $$
+BEGIN RETURN QUERY SELECT * FROM get_latest_operation_run('person_linking'); END;
 $$ LANGUAGE plpgsql STABLE;
 
 -- =====================================

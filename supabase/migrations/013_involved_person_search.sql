@@ -196,7 +196,6 @@ $$;
 -- =====================================
 
 -- Main function to be called from the frontend
--- Returns full unified_items rows filtered by involved person search
 CREATE OR REPLACE FUNCTION get_unified_items_by_involved_person(
     p_search_text TEXT,
     p_show_tasks BOOLEAN DEFAULT TRUE,
@@ -208,128 +207,52 @@ CREATE OR REPLACE FUNCTION get_unified_items_by_involved_person(
     p_offset INTEGER DEFAULT 0
 )
 RETURNS TABLE(
-    id TEXT,
-    type TEXT,
-    name TEXT,
-    description TEXT,
-    status VARCHAR,
-    project TEXT,
-    customer TEXT,
-    location TEXT,
-    location_path TEXT,
-    cost_group TEXT,
-    cost_group_code VARCHAR(50),
-    due_date TIMESTAMP,
-    created_at TIMESTAMP,
-    updated_at TIMESTAMP,
-    priority VARCHAR,
-    progress INTEGER,
-    tasklist TEXT,
-    task_type_id UUID,
-    task_type_name TEXT,
-    task_type_slug TEXT,
-    task_type_color VARCHAR(50),
-    assignees JSONB,
-    tags JSONB,
-    body TEXT,
-    preview TEXT,
-    from_name TEXT,
-    from_email TEXT,
-    conversation_subject TEXT,
-    recipients JSONB,
-    attachments JSONB,
-    attachment_count INTEGER,
-    conversation_comments_text TEXT,
-    teamwork_url TEXT,
-    missive_url TEXT,
-    sort_date TIMESTAMP
+    id TEXT, type TEXT, name TEXT, description TEXT, status VARCHAR, project TEXT, customer TEXT,
+    location TEXT, location_path TEXT, cost_group TEXT, cost_group_code VARCHAR(50),
+    due_date TIMESTAMP, created_at TIMESTAMP, updated_at TIMESTAMP, priority VARCHAR,
+    progress INTEGER, tasklist TEXT, task_type_id UUID, task_type_name TEXT,
+    task_type_slug TEXT, task_type_color VARCHAR(50), assignees JSONB, tags JSONB,
+    body TEXT, preview TEXT, from_name TEXT, from_email TEXT, conversation_subject TEXT,
+    recipients JSONB, attachments JSONB, attachment_count INTEGER, conversation_comments_text TEXT,
+    teamwork_url TEXT, missive_url TEXT, sort_date TIMESTAMP
 )
-LANGUAGE plpgsql
-STABLE
-SECURITY DEFINER
-SET search_path = public
-AS $$
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
 DECLARE
-    v_order_clause TEXT;
+    v_has_person_search BOOLEAN := p_search_text IS NOT NULL AND TRIM(p_search_text) != '';
 BEGIN
-    -- Build order clause (with SQL injection protection)
     IF p_sort_field NOT IN ('id', 'type', 'name', 'status', 'project', 'customer', 'due_date', 'created_at', 'updated_at', 'priority', 'progress', 'sort_date') THEN
         p_sort_field := 'sort_date';
     END IF;
-    IF p_sort_order NOT IN ('asc', 'desc') THEN
-        p_sort_order := 'desc';
-    END IF;
+    IF p_sort_order NOT IN ('asc', 'desc') THEN p_sort_order := 'desc'; END IF;
     
-    -- If no involved person search, return regular unified_items
-    IF p_search_text IS NULL OR TRIM(p_search_text) = '' THEN
-        RETURN QUERY
-        SELECT 
-            ui.id, ui.type, ui.name, ui.description, ui.status, ui.project, ui.customer,
-            ui.location, ui.location_path, ui.cost_group, ui.cost_group_code,
-            ui.due_date, ui.created_at, ui.updated_at, ui.priority, ui.progress, ui.tasklist,
-            ui.task_type_id, ui.task_type_name, ui.task_type_slug, ui.task_type_color,
-            ui.assignees, ui.tags, ui.body, ui.preview, ui.from_name, ui.from_email,
-            ui.conversation_subject, ui.recipients, ui.attachments, ui.attachment_count,
-            ui.conversation_comments_text, ui.teamwork_url, ui.missive_url, ui.sort_date
-        FROM unified_items ui
-        WHERE (
-            (p_show_tasks AND ui.type = 'task') OR
-            (p_show_emails AND ui.type = 'email')
-        )
-        AND (
-            p_text_search IS NULL 
-            OR LOWER(ui.name) LIKE '%' || LOWER(p_text_search) || '%'
+    RETURN QUERY
+    WITH matching_items AS (
+        SELECT siip.item_id, siip.item_type FROM search_items_by_involved_person(p_search_text) siip
+        WHERE v_has_person_search
+    )
+    SELECT ui.id, ui.type, ui.name, ui.description, ui.status, ui.project, ui.customer,
+        ui.location, ui.location_path, ui.cost_group, ui.cost_group_code,
+        ui.due_date, ui.created_at, ui.updated_at, ui.priority, ui.progress, ui.tasklist,
+        ui.task_type_id, ui.task_type_name, ui.task_type_slug, ui.task_type_color,
+        ui.assignees, ui.tags, ui.body, ui.preview, ui.from_name, ui.from_email,
+        ui.conversation_subject, ui.recipients, ui.attachments, ui.attachment_count,
+        ui.conversation_comments_text, ui.teamwork_url, ui.missive_url, ui.sort_date
+    FROM unified_items ui
+    LEFT JOIN matching_items mi ON ui.id = mi.item_id AND ui.type = mi.item_type
+    WHERE ((p_show_tasks AND ui.type = 'task') OR (p_show_emails AND ui.type = 'email'))
+        AND (NOT v_has_person_search OR mi.item_id IS NOT NULL)
+        AND (p_text_search IS NULL OR LOWER(ui.name) LIKE '%' || LOWER(p_text_search) || '%'
             OR LOWER(ui.description) LIKE '%' || LOWER(p_text_search) || '%'
             OR LOWER(ui.body) LIKE '%' || LOWER(p_text_search) || '%'
-            OR LOWER(ui.conversation_comments_text) LIKE '%' || LOWER(p_text_search) || '%'
-        )
-        ORDER BY 
-            CASE WHEN p_sort_field = 'sort_date' AND p_sort_order = 'desc' THEN ui.sort_date END DESC NULLS LAST,
-            CASE WHEN p_sort_field = 'sort_date' AND p_sort_order = 'asc' THEN ui.sort_date END ASC NULLS LAST,
-            CASE WHEN p_sort_field = 'name' AND p_sort_order = 'desc' THEN ui.name END DESC NULLS LAST,
-            CASE WHEN p_sort_field = 'name' AND p_sort_order = 'asc' THEN ui.name END ASC NULLS LAST,
-            CASE WHEN p_sort_field = 'created_at' AND p_sort_order = 'desc' THEN ui.created_at END DESC NULLS LAST,
-            CASE WHEN p_sort_field = 'created_at' AND p_sort_order = 'asc' THEN ui.created_at END ASC NULLS LAST
-        LIMIT p_limit
-        OFFSET p_offset;
-    ELSE
-        -- Return items filtered by involved person
-        RETURN QUERY
-        WITH matching_items AS (
-            SELECT siip.item_id, siip.item_type
-            FROM search_items_by_involved_person(p_search_text) siip
-        )
-        SELECT 
-            ui.id, ui.type, ui.name, ui.description, ui.status, ui.project, ui.customer,
-            ui.location, ui.location_path, ui.cost_group, ui.cost_group_code,
-            ui.due_date, ui.created_at, ui.updated_at, ui.priority, ui.progress, ui.tasklist,
-            ui.task_type_id, ui.task_type_name, ui.task_type_slug, ui.task_type_color,
-            ui.assignees, ui.tags, ui.body, ui.preview, ui.from_name, ui.from_email,
-            ui.conversation_subject, ui.recipients, ui.attachments, ui.attachment_count,
-            ui.conversation_comments_text, ui.teamwork_url, ui.missive_url, ui.sort_date
-        FROM unified_items ui
-        INNER JOIN matching_items mi ON ui.id = mi.item_id AND ui.type = mi.item_type
-        WHERE (
-            (p_show_tasks AND ui.type = 'task') OR
-            (p_show_emails AND ui.type = 'email')
-        )
-        AND (
-            p_text_search IS NULL 
-            OR LOWER(ui.name) LIKE '%' || LOWER(p_text_search) || '%'
-            OR LOWER(ui.description) LIKE '%' || LOWER(p_text_search) || '%'
-            OR LOWER(ui.body) LIKE '%' || LOWER(p_text_search) || '%'
-            OR LOWER(ui.conversation_comments_text) LIKE '%' || LOWER(p_text_search) || '%'
-        )
-        ORDER BY 
-            CASE WHEN p_sort_field = 'sort_date' AND p_sort_order = 'desc' THEN ui.sort_date END DESC NULLS LAST,
-            CASE WHEN p_sort_field = 'sort_date' AND p_sort_order = 'asc' THEN ui.sort_date END ASC NULLS LAST,
-            CASE WHEN p_sort_field = 'name' AND p_sort_order = 'desc' THEN ui.name END DESC NULLS LAST,
-            CASE WHEN p_sort_field = 'name' AND p_sort_order = 'asc' THEN ui.name END ASC NULLS LAST,
-            CASE WHEN p_sort_field = 'created_at' AND p_sort_order = 'desc' THEN ui.created_at END DESC NULLS LAST,
-            CASE WHEN p_sort_field = 'created_at' AND p_sort_order = 'asc' THEN ui.created_at END ASC NULLS LAST
-        LIMIT p_limit
-        OFFSET p_offset;
-    END IF;
+            OR LOWER(ui.conversation_comments_text) LIKE '%' || LOWER(p_text_search) || '%')
+    ORDER BY 
+        CASE WHEN p_sort_field = 'sort_date' AND p_sort_order = 'desc' THEN ui.sort_date END DESC NULLS LAST,
+        CASE WHEN p_sort_field = 'sort_date' AND p_sort_order = 'asc' THEN ui.sort_date END ASC NULLS LAST,
+        CASE WHEN p_sort_field = 'name' AND p_sort_order = 'desc' THEN ui.name END DESC NULLS LAST,
+        CASE WHEN p_sort_field = 'name' AND p_sort_order = 'asc' THEN ui.name END ASC NULLS LAST,
+        CASE WHEN p_sort_field = 'created_at' AND p_sort_order = 'desc' THEN ui.created_at END DESC NULLS LAST,
+        CASE WHEN p_sort_field = 'created_at' AND p_sort_order = 'asc' THEN ui.created_at END ASC NULLS LAST
+    LIMIT p_limit OFFSET p_offset;
 END;
 $$;
 
@@ -343,52 +266,24 @@ CREATE OR REPLACE FUNCTION count_unified_items_by_involved_person(
     p_show_emails BOOLEAN DEFAULT TRUE,
     p_text_search TEXT DEFAULT NULL
 )
-RETURNS INTEGER
-LANGUAGE plpgsql
-STABLE
-SECURITY DEFINER
-SET search_path = public
-AS $$
+RETURNS INTEGER LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
 DECLARE
     v_count INTEGER;
+    v_has_person_search BOOLEAN := p_search_text IS NOT NULL AND TRIM(p_search_text) != '';
 BEGIN
-    -- If no involved person search, count regular unified_items
-    IF p_search_text IS NULL OR TRIM(p_search_text) = '' THEN
-        SELECT COUNT(*)::INTEGER INTO v_count
-        FROM unified_items ui
-        WHERE (
-            (p_show_tasks AND ui.type = 'task') OR
-            (p_show_emails AND ui.type = 'email')
-        )
-        AND (
-            p_text_search IS NULL 
-            OR LOWER(ui.name) LIKE '%' || LOWER(p_text_search) || '%'
+    WITH matching_items AS (
+        SELECT siip.item_id, siip.item_type FROM search_items_by_involved_person(p_search_text) siip
+        WHERE v_has_person_search
+    )
+    SELECT COUNT(*)::INTEGER INTO v_count
+    FROM unified_items ui
+    LEFT JOIN matching_items mi ON ui.id = mi.item_id AND ui.type = mi.item_type
+    WHERE ((p_show_tasks AND ui.type = 'task') OR (p_show_emails AND ui.type = 'email'))
+        AND (NOT v_has_person_search OR mi.item_id IS NOT NULL)
+        AND (p_text_search IS NULL OR LOWER(ui.name) LIKE '%' || LOWER(p_text_search) || '%'
             OR LOWER(ui.description) LIKE '%' || LOWER(p_text_search) || '%'
             OR LOWER(ui.body) LIKE '%' || LOWER(p_text_search) || '%'
-            OR LOWER(ui.conversation_comments_text) LIKE '%' || LOWER(p_text_search) || '%'
-        );
-    ELSE
-        -- Count items filtered by involved person
-        WITH matching_items AS (
-            SELECT siip.item_id, siip.item_type
-            FROM search_items_by_involved_person(p_search_text) siip
-        )
-        SELECT COUNT(*)::INTEGER INTO v_count
-        FROM unified_items ui
-        INNER JOIN matching_items mi ON ui.id = mi.item_id AND ui.type = mi.item_type
-        WHERE (
-            (p_show_tasks AND ui.type = 'task') OR
-            (p_show_emails AND ui.type = 'email')
-        )
-        AND (
-            p_text_search IS NULL 
-            OR LOWER(ui.name) LIKE '%' || LOWER(p_text_search) || '%'
-            OR LOWER(ui.description) LIKE '%' || LOWER(p_text_search) || '%'
-            OR LOWER(ui.body) LIKE '%' || LOWER(p_text_search) || '%'
-            OR LOWER(ui.conversation_comments_text) LIKE '%' || LOWER(p_text_search) || '%'
-        );
-    END IF;
-    
+            OR LOWER(ui.conversation_comments_text) LIKE '%' || LOWER(p_text_search) || '%');
     RETURN v_count;
 END;
 $$;

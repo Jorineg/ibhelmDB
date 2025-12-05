@@ -39,12 +39,18 @@ CREATE TABLE task_type_rules (
     UNIQUE(teamwork_tag_name)
 );
 
--- Extraction Run Tracking (for UI status of re-run operations)
-CREATE TABLE extraction_runs (
+-- Operation Run Tracking (for UI status of bulk operations)
+-- Generic table for: task_type_extraction, person_linking, project_linking
+CREATE TABLE operation_runs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    run_type VARCHAR(50) NOT NULL,  -- 'task_type_extraction', 'person_linking', 'project_linking'
     status VARCHAR(50) NOT NULL DEFAULT 'running',  -- 'running', 'completed', 'failed'
     total_count INTEGER,
     processed_count INTEGER DEFAULT 0,
+    -- Additional counters used by some operation types
+    created_count INTEGER DEFAULT 0,
+    linked_count INTEGER DEFAULT 0,
+    skipped_count INTEGER DEFAULT 0,
     error_message TEXT,
     started_at TIMESTAMP DEFAULT NOW(),
     completed_at TIMESTAMP
@@ -58,8 +64,10 @@ CREATE INDEX idx_task_types_display_order ON task_types(display_order);
 CREATE INDEX idx_task_type_rules_task_type_id ON task_type_rules(task_type_id);
 CREATE INDEX idx_task_type_rules_tag_name ON task_type_rules(teamwork_tag_name);
 
-CREATE INDEX idx_extraction_runs_status ON extraction_runs(status);
-CREATE INDEX idx_extraction_runs_started_at ON extraction_runs(started_at);
+CREATE INDEX idx_operation_runs_run_type ON operation_runs(run_type);
+CREATE INDEX idx_operation_runs_status ON operation_runs(status);
+CREATE INDEX idx_operation_runs_started_at ON operation_runs(started_at);
+CREATE INDEX idx_operation_runs_run_type_started ON operation_runs(run_type, started_at DESC);
 
 -- Insert default task types
 INSERT INTO task_types (name, slug, description, is_default, display_order) VALUES
@@ -74,7 +82,7 @@ COMMENT ON COLUMN task_types.slug IS 'URL-safe identifier, used for filtering';
 COMMENT ON TABLE task_type_rules IS 'Maps Teamwork tag names to task types (match any rule)';
 COMMENT ON COLUMN task_type_rules.teamwork_tag_name IS 'Exact match against teamwork.tags.name';
 
-COMMENT ON TABLE extraction_runs IS 'Tracks status of bulk extraction re-run operations';
+COMMENT ON TABLE operation_runs IS 'Tracks status of bulk operations (task_type_extraction, person_linking, project_linking)';
 
 -- =====================================
 -- APPEARANCE SETTINGS (Configurable via UI)

@@ -19,9 +19,12 @@ Diese Migrations implementieren das vollständige Schema für das ibhelm Datenma
 
 ### 002_types_and_enums.sql
 - Custom Types und ENUMs:
-  - `party_type` - 'company' oder 'person'
   - `location_type` - 'building', 'level', 'room'
-  - `task_extension_type` - 'todo', 'info_item'
+- Configuration Tables:
+  - `task_types` - Configurable task categories
+  - `task_type_rules` - Maps Teamwork tags to task types
+  - `appearance_settings` - Dashboard styling configuration
+  - `operation_runs` - Generic tracking for bulk operations (task_type_extraction, person_linking, project_linking)
 
 ### 003_teamwork_schema.sql
 - Schema `teamwork` mit allen Tabellen:
@@ -74,9 +77,11 @@ Diese Migrations implementieren das vollständige Schema für das ibhelm Datenma
   - `update_location_children()` - Rekursives Update bei Parent-Änderungen
 - **Cost Group Hierarchy:**
   - `update_cost_group_path()` - Automatische Pflege von path
-- **Search Functions:**
-  - `search_locations(TEXT, FLOAT)` - Typo-resistente Location-Suche
-  - `search_all_objects(...)` - Unified Search über Files, Tasks, Messages
+- **Task Type Extraction:**
+  - `extract_task_type()` - Extracts task type based on tag matching rules
+  - `rerun_all_task_type_extractions()` - Bulk re-extraction
+- **Operation Run Tracking:**
+  - `get_operation_run_status()` / `get_latest_operation_run()` - Generic status functions
 
 ### 008_teamworkmissiveconnector_schema.sql
 - Schema `teamworkmissiveconnector` (Application State):
@@ -105,9 +110,9 @@ Diese Migrations implementieren das vollständige Schema für das ibhelm Datenma
 ## Features
 
 ### 🔍 Fuzzy Search (Tippfehler-Resistent)
-- Trigram-basierte Ähnlichkeitssuche
-- Funktioniert für Locations, Files, Parties, etc.
-- `search_locations()` Function implementiert Requirements aus `additional_requirements_unstructured.md`
+- Trigram-basierte Ähnlichkeitssuche via GiST indexes
+- Funktioniert für Locations, Files, Persons, etc.
+- Autocomplete functions: `search_projects_autocomplete()`, `search_persons_autocomplete()`
 
 ### 🌳 Hierarchische Strukturen
 - Locations: Building > Level > Room

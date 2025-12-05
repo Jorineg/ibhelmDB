@@ -3,31 +3,10 @@
 -- =====================================
 -- Automatically links conversations to projects based on matching
 -- Missive label names with Teamwork project names
+-- Uses operation_runs table (from 002) for run tracking
 
 -- =====================================
--- 1. PROJECT LINKING RUN TRACKING
--- =====================================
-
--- Tracks bulk project linking operations
-CREATE TABLE project_linking_runs (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    status VARCHAR(50) NOT NULL DEFAULT 'running',  -- 'running', 'completed', 'failed'
-    total_count INTEGER,
-    processed_count INTEGER DEFAULT 0,
-    linked_count INTEGER DEFAULT 0,   -- New links created
-    skipped_count INTEGER DEFAULT 0,  -- Already linked or no matches
-    error_message TEXT,
-    started_at TIMESTAMP DEFAULT NOW(),
-    completed_at TIMESTAMP
-);
-
-CREATE INDEX idx_project_linking_runs_status ON project_linking_runs(status);
-CREATE INDEX idx_project_linking_runs_started_at ON project_linking_runs(started_at);
-
-COMMENT ON TABLE project_linking_runs IS 'Tracks status of bulk project-conversation linking operations';
-
--- =====================================
--- 2. CORE LINKING FUNCTION
+-- 1. CORE LINKING FUNCTION
 -- =====================================
 
 -- Function to link a single conversation to projects based on label matching
@@ -88,7 +67,7 @@ $$ LANGUAGE plpgsql;
 COMMENT ON FUNCTION link_projects_for_conversation(UUID) IS 'Links a conversation to all projects whose names match conversation labels';
 
 -- =====================================
--- 3. TRIGGER FUNCTIONS
+-- 2. TRIGGER FUNCTIONS
 -- =====================================
 
 -- Trigger function for new conversations
@@ -123,16 +102,12 @@ CREATE TRIGGER auto_link_projects_on_label_add
     EXECUTE FUNCTION trigger_link_projects_on_label_add();
 
 -- =====================================
--- 4. BULK LINKING FUNCTIONS (for UI button)
+-- 3. BULK LINKING FUNCTIONS (for UI button)
 -- =====================================
 
 -- Main function to run project linking on all existing conversations
--- Returns the run ID for status tracking
 CREATE OR REPLACE FUNCTION rerun_all_project_conversation_linking()
-RETURNS UUID 
-SECURITY DEFINER
-SET search_path = public
-AS $$
+RETURNS UUID SECURITY DEFINER SET search_path = public AS $$
 DECLARE
     v_run_id UUID;
     v_total_count INTEGER;
@@ -142,140 +117,59 @@ DECLARE
     v_record RECORD;
     v_result INTEGER;
 BEGIN
-    -- Create a new run record
-    INSERT INTO project_linking_runs (status, started_at)
-    VALUES ('running', NOW())
+    INSERT INTO operation_runs (run_type, status, started_at)
+    VALUES ('project_linking', 'running', NOW())
     RETURNING id INTO v_run_id;
 
-    -- Count total conversations that have labels
-    SELECT COUNT(DISTINCT cl.conversation_id) INTO v_total_count
-    FROM missive.conversation_labels cl;
+    SELECT COUNT(DISTINCT cl.conversation_id) INTO v_total_count FROM missive.conversation_labels cl;
+    UPDATE operation_runs SET total_count = v_total_count WHERE id = v_run_id;
 
-    -- Update total count
-    UPDATE project_linking_runs SET total_count = v_total_count WHERE id = v_run_id;
-
-    -- Process all conversations that have labels
-    FOR v_record IN 
-        SELECT DISTINCT cl.conversation_id
-        FROM missive.conversation_labels cl
-        ORDER BY cl.conversation_id
-    LOOP
+    FOR v_record IN SELECT DISTINCT cl.conversation_id FROM missive.conversation_labels cl ORDER BY cl.conversation_id LOOP
         BEGIN
             v_result := link_projects_for_conversation(v_record.conversation_id);
             v_processed := v_processed + 1;
-            
-            IF v_result > 0 THEN
-                v_linked := v_linked + v_result;
-            ELSE
-                v_skipped := v_skipped + 1;
-            END IF;
-            
-            -- Update progress every 100 items
+            IF v_result > 0 THEN v_linked := v_linked + v_result;
+            ELSE v_skipped := v_skipped + 1; END IF;
             IF v_processed % 100 = 0 THEN
-                UPDATE project_linking_runs 
-                SET processed_count = v_processed,
-                    linked_count = v_linked,
-                    skipped_count = v_skipped
+                UPDATE operation_runs SET processed_count = v_processed, linked_count = v_linked, skipped_count = v_skipped
                 WHERE id = v_run_id;
             END IF;
         EXCEPTION WHEN OTHERS THEN
-            -- Log error but continue processing
             RAISE NOTICE 'Error processing conversation %: %', v_record.conversation_id, SQLERRM;
-            v_processed := v_processed + 1;
-            v_skipped := v_skipped + 1;
+            v_processed := v_processed + 1; v_skipped := v_skipped + 1;
         END;
     END LOOP;
 
-    -- Mark as completed
-    UPDATE project_linking_runs 
-    SET 
-        status = 'completed',
-        processed_count = v_processed,
-        linked_count = v_linked,
-        skipped_count = v_skipped,
-        completed_at = NOW()
-    WHERE id = v_run_id;
-
+    UPDATE operation_runs SET status = 'completed', processed_count = v_processed, linked_count = v_linked,
+        skipped_count = v_skipped, completed_at = NOW() WHERE id = v_run_id;
     RETURN v_run_id;
 END;
 $$ LANGUAGE plpgsql;
 
--- Function to check project linking run status
+-- Wrapper functions for backwards compatibility (use generic get_operation_run_status from 007)
 CREATE OR REPLACE FUNCTION get_project_linking_run_status(p_run_id UUID)
-RETURNS TABLE (
-    id UUID,
-    status VARCHAR(50),
-    total_count INTEGER,
-    processed_count INTEGER,
-    linked_count INTEGER,
-    skipped_count INTEGER,
-    progress_percent NUMERIC,
-    started_at TIMESTAMP,
-    completed_at TIMESTAMP,
-    error_message TEXT
-)
-SECURITY DEFINER
-SET search_path = public
-AS $$
+RETURNS TABLE (id UUID, status VARCHAR(50), total_count INTEGER, processed_count INTEGER,
+    linked_count INTEGER, skipped_count INTEGER, progress_percent NUMERIC,
+    started_at TIMESTAMP, completed_at TIMESTAMP, error_message TEXT)
+SECURITY DEFINER SET search_path = public AS $$
 BEGIN
-    RETURN QUERY
-    SELECT 
-        plr.id,
-        plr.status,
-        plr.total_count,
-        plr.processed_count,
-        plr.linked_count,
-        plr.skipped_count,
-        CASE 
-            WHEN plr.total_count > 0 THEN 
-                ROUND((plr.processed_count::NUMERIC / plr.total_count::NUMERIC) * 100, 1)
-            ELSE 0
-        END AS progress_percent,
-        plr.started_at,
-        plr.completed_at,
-        plr.error_message
-    FROM project_linking_runs plr
-    WHERE plr.id = p_run_id;
+    RETURN QUERY SELECT r.id, r.status, r.total_count, r.processed_count, r.linked_count, r.skipped_count,
+        CASE WHEN r.total_count > 0 THEN ROUND((r.processed_count::NUMERIC / r.total_count::NUMERIC) * 100, 1) ELSE 0 END,
+        r.started_at, r.completed_at, r.error_message
+    FROM operation_runs r WHERE r.id = p_run_id;
 END;
 $$ LANGUAGE plpgsql STABLE;
 
--- Function to get the latest project linking run
 CREATE OR REPLACE FUNCTION get_latest_project_linking_run()
-RETURNS TABLE (
-    id UUID,
-    status VARCHAR(50),
-    total_count INTEGER,
-    processed_count INTEGER,
-    linked_count INTEGER,
-    skipped_count INTEGER,
-    progress_percent NUMERIC,
-    started_at TIMESTAMP,
-    completed_at TIMESTAMP,
-    error_message TEXT
-)
-SECURITY DEFINER
-SET search_path = public
-AS $$
+RETURNS TABLE (id UUID, status VARCHAR(50), total_count INTEGER, processed_count INTEGER,
+    linked_count INTEGER, skipped_count INTEGER, progress_percent NUMERIC,
+    started_at TIMESTAMP, completed_at TIMESTAMP, error_message TEXT)
+SECURITY DEFINER SET search_path = public AS $$
 BEGIN
-    RETURN QUERY
-    SELECT 
-        plr.id,
-        plr.status,
-        plr.total_count,
-        plr.processed_count,
-        plr.linked_count,
-        plr.skipped_count,
-        CASE 
-            WHEN plr.total_count > 0 THEN 
-                ROUND((plr.processed_count::NUMERIC / plr.total_count::NUMERIC) * 100, 1)
-            ELSE 0
-        END AS progress_percent,
-        plr.started_at,
-        plr.completed_at,
-        plr.error_message
-    FROM project_linking_runs plr
-    ORDER BY plr.started_at DESC
-    LIMIT 1;
+    RETURN QUERY SELECT r.id, r.status, r.total_count, r.processed_count, r.linked_count, r.skipped_count,
+        CASE WHEN r.total_count > 0 THEN ROUND((r.processed_count::NUMERIC / r.total_count::NUMERIC) * 100, 1) ELSE 0 END,
+        r.started_at, r.completed_at, r.error_message
+    FROM operation_runs r WHERE r.run_type = 'project_linking' ORDER BY r.started_at DESC LIMIT 1;
 END;
 $$ LANGUAGE plpgsql STABLE;
 
