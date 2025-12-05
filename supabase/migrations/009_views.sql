@@ -5,79 +5,27 @@
 -- =====================================
 -- 1. UNIFIED ITEMS VIEW
 -- =====================================
--- Combines tasks and emails into a single queryable structure
+-- Combines tasks, emails, and Craft documents into a single queryable structure
+-- Note: Migration 015 recreates this view with pre-aggregated materialized views for better performance
 
 CREATE OR REPLACE VIEW unified_items AS
 
 -- Tasks from Teamwork
 SELECT 
-    t.id::TEXT AS id,
-    'task' AS type,
-    t.name,
-    t.description,
-    t.status,
-    p.name AS project,
-    c.name AS customer,
-    l.name AS location,
-    l.search_text AS location_path,
-    cg.name AS cost_group,
-    cg.code AS cost_group_code,
-    t.due_date,
-    t.created_at,
-    t.updated_at,
-    t.priority,
-    t.progress,
-    tl.name AS tasklist,
-    
-    -- Task type from task_extensions
-    tt.id AS task_type_id,
-    tt.name AS task_type_name,
-    tt.slug AS task_type_slug,
-    tt.color AS task_type_color,
-    
-    -- Aggregate assignees
-    (
-        SELECT jsonb_agg(jsonb_build_object(
-            'id', u.id, 
-            'first_name', u.first_name, 
-            'last_name', u.last_name, 
-            'email', u.email
-        ))
-        FROM teamwork.task_assignees ta
-        JOIN teamwork.users u ON ta.user_id = u.id
-        WHERE ta.task_id = t.id
-    ) AS assignees,
-    
-    -- Aggregate tags
-    (
-        SELECT jsonb_agg(jsonb_build_object(
-            'id', tag.id, 
-            'name', tag.name, 
-            'color', tag.color
-        ))
-        FROM teamwork.task_tags tt
-        JOIN teamwork.tags tag ON tt.tag_id = tag.id
-        WHERE tt.task_id = t.id
-    ) AS tags,
-    
-    -- Email-specific fields (null for tasks)
-    NULL::TEXT AS body,
-    NULL::TEXT AS preview,
-    NULL::TEXT AS from_name,
-    NULL::TEXT AS from_email,
-    NULL::TEXT AS conversation_subject,
-    NULL::JSONB AS recipients,
-    NULL::JSONB AS attachments,
-    0 AS attachment_count,
-    NULL::TEXT AS conversation_comments_text,
-    
-    -- External links
-    t.source_links->>'teamwork_url' AS teamwork_url,
-    NULL::TEXT AS missive_url,
-    
-    -- Sort key
+    t.id::TEXT AS id, 'task' AS type, t.name, t.description, t.status,
+    p.name AS project, c.name AS customer, l.name AS location, l.search_text AS location_path,
+    cg.name AS cost_group, cg.code AS cost_group_code, t.due_date, t.created_at, t.updated_at,
+    t.priority, t.progress, tl.name AS tasklist,
+    tt.id AS task_type_id, tt.name AS task_type_name, tt.slug AS task_type_slug, tt.color AS task_type_color,
+    (SELECT jsonb_agg(jsonb_build_object('id', u.id, 'first_name', u.first_name, 'last_name', u.last_name, 'email', u.email))
+     FROM teamwork.task_assignees ta JOIN teamwork.users u ON ta.user_id = u.id WHERE ta.task_id = t.id) AS assignees,
+    (SELECT jsonb_agg(jsonb_build_object('id', tag.id, 'name', tag.name, 'color', tag.color))
+     FROM teamwork.task_tags tt2 JOIN teamwork.tags tag ON tt2.tag_id = tag.id WHERE tt2.task_id = t.id) AS tags,
+    NULL::TEXT AS body, NULL::TEXT AS preview, NULL::TEXT AS from_name, NULL::TEXT AS from_email,
+    NULL::TEXT AS conversation_subject, NULL::JSONB AS recipients, NULL::JSONB AS attachments,
+    0 AS attachment_count, NULL::TEXT AS conversation_comments_text,
+    NULL::TEXT AS craft_url, t.source_links->>'teamwork_url' AS teamwork_url, NULL::TEXT AS missive_url,
     COALESCE(t.updated_at, t.created_at) AS sort_date
-    
 FROM teamwork.tasks t
 LEFT JOIN teamwork.projects p ON t.project_id = p.id
 LEFT JOIN teamwork.companies c ON p.company_id = c.id
@@ -92,113 +40,59 @@ WHERE t.deleted_at IS NULL
 
 UNION ALL
 
--- Emails from Missive (via conversations for location/cost group linking)
+-- Emails from Missive
 SELECT 
-    m.id::TEXT AS id,
-    'email' AS type,
-    m.subject AS name,
-    COALESCE(m.preview, LEFT(m.body, 200)) AS description,
-    '' AS status,
-    COALESCE(twp.name, '') AS project,
-    '' AS customer,
-    l.name AS location,
-    l.search_text AS location_path,
-    cg.name AS cost_group,
-    cg.code AS cost_group_code,
-    NULL AS due_date,
-    m.created_at,
-    m.updated_at,
-    '' AS priority,
-    NULL AS progress,
-    '' AS tasklist,
-    
-    -- Task type fields (null for emails)
-    NULL::UUID AS task_type_id,
-    NULL::TEXT AS task_type_name,
-    NULL::TEXT AS task_type_slug,
-    NULL::VARCHAR(50) AS task_type_color,
-    
-    -- Task-specific fields (null for emails)
+    m.id::TEXT AS id, 'email' AS type, m.subject AS name,
+    COALESCE(m.preview, LEFT(m.body, 200)) AS description, '' AS status,
+    COALESCE(twp.name, '') AS project, '' AS customer, l.name AS location, l.search_text AS location_path,
+    cg.name AS cost_group, cg.code AS cost_group_code, NULL AS due_date, m.created_at, m.updated_at,
+    '' AS priority, NULL AS progress, '' AS tasklist,
+    NULL::UUID AS task_type_id, NULL::TEXT AS task_type_name, NULL::TEXT AS task_type_slug, NULL::VARCHAR(50) AS task_type_color,
     NULL::JSONB AS assignees,
-    
-    -- Aggregate conversation labels as tags (all messages in a conversation get all labels)
-    (
-        SELECT jsonb_agg(jsonb_build_object(
-            'id', sl.id, 
-            'name', sl.name, 
-            'color', NULL
-        ))
-        FROM missive.conversation_labels cl
-        JOIN missive.shared_labels sl ON cl.label_id = sl.id
-        WHERE cl.conversation_id = m.conversation_id
-    ) AS tags,
-    
-    -- Email-specific fields
-    m.body_plain_text AS body,
-    m.preview,
-    from_contact.name AS from_name,
-    from_contact.email AS from_email,
+    (SELECT jsonb_agg(jsonb_build_object('id', sl.id, 'name', sl.name, 'color', NULL))
+     FROM missive.conversation_labels cl JOIN missive.shared_labels sl ON cl.label_id = sl.id
+     WHERE cl.conversation_id = m.conversation_id) AS tags,
+    m.body_plain_text AS body, m.preview, from_contact.name AS from_name, from_contact.email AS from_email,
     conv.subject AS conversation_subject,
-    
-    -- Aggregate recipients
-    (
-        SELECT jsonb_agg(jsonb_build_object(
-            'id', mr.id, 
-            'recipient_type', mr.recipient_type, 
-            'contact', jsonb_build_object(
-                'id', rc.id, 
-                'name', rc.name, 
-                'email', rc.email
-            )
-        ))
-        FROM missive.message_recipients mr
-        LEFT JOIN missive.contacts rc ON mr.contact_id = rc.id
-        WHERE mr.message_id = m.id
-    ) AS recipients,
-    
-    -- Aggregate attachments
-    (
-        SELECT jsonb_agg(jsonb_build_object(
-            'id', a.id, 
-            'filename', a.filename, 
-            'extension', a.extension, 
-            'size', a.size
-        ))
-        FROM missive.attachments a
-        WHERE a.message_id = m.id
-    ) AS attachments,
-    
-    (
-        SELECT COUNT(*)::INTEGER
-        FROM missive.attachments a
-        WHERE a.message_id = m.id
-    ) AS attachment_count,
-    
-    -- Aggregated conversation comments text for full-text search
-    (
-        SELECT string_agg(cc.body, ' ')
-        FROM missive.conversation_comments cc
-        WHERE cc.conversation_id = m.conversation_id
-    ) AS conversation_comments_text,
-    
-    -- External links
-    NULL::TEXT AS teamwork_url,
-    conv.app_url AS missive_url,
-    
-    -- Sort key
+    (SELECT jsonb_agg(jsonb_build_object('id', mr.id, 'recipient_type', mr.recipient_type,
+        'contact', jsonb_build_object('id', rc.id, 'name', rc.name, 'email', rc.email)))
+     FROM missive.message_recipients mr LEFT JOIN missive.contacts rc ON mr.contact_id = rc.id
+     WHERE mr.message_id = m.id) AS recipients,
+    (SELECT jsonb_agg(jsonb_build_object('id', a.id, 'filename', a.filename, 'extension', a.extension, 'size', a.size))
+     FROM missive.attachments a WHERE a.message_id = m.id) AS attachments,
+    (SELECT COUNT(*)::INTEGER FROM missive.attachments a WHERE a.message_id = m.id) AS attachment_count,
+    (SELECT string_agg(cc.body, ' ') FROM missive.conversation_comments cc WHERE cc.conversation_id = m.conversation_id) AS conversation_comments_text,
+    NULL::TEXT AS craft_url, NULL::TEXT AS teamwork_url, conv.app_url AS missive_url,
     COALESCE(m.delivered_at, m.updated_at, m.created_at) AS sort_date
-    
 FROM missive.messages m
 LEFT JOIN missive.conversations conv ON m.conversation_id = conv.id
 LEFT JOIN missive.contacts from_contact ON m.from_contact_id = from_contact.id
--- Join locations and cost groups via conversation (not message)
 LEFT JOIN object_locations ol ON conv.id = ol.m_conversation_id
 LEFT JOIN locations l ON ol.location_id = l.id
 LEFT JOIN object_cost_groups ocg ON conv.id = ocg.m_conversation_id
 LEFT JOIN cost_groups cg ON ocg.cost_group_id = cg.id
--- Join project via project_conversations
 LEFT JOIN project_conversations pc ON conv.id = pc.m_conversation_id
-LEFT JOIN teamwork.projects twp ON pc.tw_project_id = twp.id;
+LEFT JOIN teamwork.projects twp ON pc.tw_project_id = twp.id
+
+UNION ALL
+
+-- Craft Documents
+SELECT 
+    cd.id::TEXT AS id, 'craft' AS type, cd.title AS name, LEFT(cd.markdown_content, 300) AS description,
+    CASE WHEN cd.is_deleted THEN 'deleted' ELSE 'active' END AS status,
+    '' AS project, '' AS customer, NULL AS location, NULL AS location_path,
+    NULL AS cost_group, NULL AS cost_group_code, NULL AS due_date,
+    cd.craft_created_at AS created_at, cd.craft_last_modified_at AS updated_at,
+    '' AS priority, NULL AS progress, '' AS tasklist,
+    NULL::UUID AS task_type_id, NULL::TEXT AS task_type_name, NULL::TEXT AS task_type_slug, NULL::VARCHAR(50) AS task_type_color,
+    NULL::JSONB AS assignees, NULL::JSONB AS tags,
+    cd.markdown_content AS body, LEFT(cd.markdown_content, 200) AS preview,
+    NULL AS from_name, NULL AS from_email, NULL AS conversation_subject,
+    NULL::JSONB AS recipients, NULL::JSONB AS attachments, 0 AS attachment_count, NULL AS conversation_comments_text,
+    'craftdocs://open?blockId=' || cd.id AS craft_url, NULL::TEXT AS teamwork_url, NULL::TEXT AS missive_url,
+    COALESCE(cd.craft_last_modified_at, cd.db_updated_at, cd.db_created_at) AS sort_date
+FROM craft_documents cd
+WHERE cd.is_deleted = FALSE;
 
 -- =====================================
 -- 2. UNIFIED PERSON DETAILS VIEW
@@ -412,7 +306,7 @@ LEFT JOIN LATERAL (
 -- COMMENTS
 -- =====================================
 
-COMMENT ON VIEW unified_items IS 'Unified view combining tasks and emails for dashboard display';
+COMMENT ON VIEW unified_items IS 'Unified view combining tasks, emails, and Craft documents for dashboard display';
 COMMENT ON VIEW unified_person_details IS 'Enriched unified person view with linked external system data';
 COMMENT ON VIEW project_overview IS 'Teamwork project overview with ibhelm extensions and aggregated counts';
 COMMENT ON VIEW file_details IS 'File details with all metadata and relationships';

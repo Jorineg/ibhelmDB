@@ -150,20 +150,12 @@ SELECT
     t.priority,
     t.progress,
     tl.name AS tasklist,
-    
-    -- Task type from task_extensions
     tt.id AS task_type_id,
     tt.name AS task_type_name,
     tt.slug AS task_type_slug,
     tt.color AS task_type_color,
-    
-    -- Pre-aggregated assignees
     taa.assignees,
-    
-    -- Pre-aggregated tags
     tta.tags,
-    
-    -- Email-specific fields (null for tasks)
     NULL::TEXT AS body,
     NULL::TEXT AS preview,
     NULL::TEXT AS from_name,
@@ -173,14 +165,10 @@ SELECT
     NULL::JSONB AS attachments,
     0 AS attachment_count,
     NULL::TEXT AS conversation_comments_text,
-    
-    -- External links
+    NULL::TEXT AS craft_url,
     t.source_links->>'teamwork_url' AS teamwork_url,
     NULL::TEXT AS missive_url,
-    
-    -- Sort key
     COALESCE(t.updated_at, t.created_at) AS sort_date
-    
 FROM teamwork.tasks t
 LEFT JOIN teamwork.projects p ON t.project_id = p.id
 LEFT JOIN teamwork.companies c ON p.company_id = c.id
@@ -191,7 +179,6 @@ LEFT JOIN object_cost_groups ocg ON t.id = ocg.tw_task_id
 LEFT JOIN cost_groups cg ON ocg.cost_group_id = cg.id
 LEFT JOIN task_extensions te ON t.id = te.tw_task_id
 LEFT JOIN task_types tt ON te.task_type_id = tt.id
--- Use pre-aggregated views instead of correlated subqueries
 LEFT JOIN mv_task_assignees_agg taa ON t.id = taa.task_id
 LEFT JOIN mv_task_tags_agg tta ON t.id = tta.task_id
 WHERE t.deleted_at IS NULL
@@ -217,43 +204,25 @@ SELECT
     '' AS priority,
     NULL AS progress,
     '' AS tasklist,
-    
-    -- Task type fields (null for emails)
     NULL::UUID AS task_type_id,
     NULL::TEXT AS task_type_name,
     NULL::TEXT AS task_type_slug,
     NULL::VARCHAR(50) AS task_type_color,
-    
-    -- Task-specific fields (null for emails)
     NULL::JSONB AS assignees,
-    
-    -- Pre-aggregated conversation labels as tags
     cla.tags,
-    
-    -- Email-specific fields
     m.body_plain_text AS body,
     m.preview,
     from_contact.name AS from_name,
     from_contact.email AS from_email,
     conv.subject AS conversation_subject,
-    
-    -- Pre-aggregated recipients
     mra.recipients,
-    
-    -- Pre-aggregated attachments
     maa.attachments,
     COALESCE(maa.attachment_count, 0) AS attachment_count,
-    
-    -- Pre-aggregated conversation comments for search
     cca.comments_text AS conversation_comments_text,
-    
-    -- External links
+    NULL::TEXT AS craft_url,
     NULL::TEXT AS teamwork_url,
     conv.app_url AS missive_url,
-    
-    -- Sort key
     COALESCE(m.delivered_at, m.updated_at, m.created_at) AS sort_date
-    
 FROM missive.messages m
 LEFT JOIN missive.conversations conv ON m.conversation_id = conv.id
 LEFT JOIN missive.contacts from_contact ON m.from_contact_id = from_contact.id
@@ -263,11 +232,53 @@ LEFT JOIN object_cost_groups ocg ON conv.id = ocg.m_conversation_id
 LEFT JOIN cost_groups cg ON ocg.cost_group_id = cg.id
 LEFT JOIN project_conversations pc ON conv.id = pc.m_conversation_id
 LEFT JOIN teamwork.projects twp ON pc.tw_project_id = twp.id
--- Use pre-aggregated views
 LEFT JOIN mv_message_recipients_agg mra ON m.id = mra.message_id
 LEFT JOIN mv_message_attachments_agg maa ON m.id = maa.message_id
 LEFT JOIN mv_conversation_labels_agg cla ON m.conversation_id = cla.conversation_id
-LEFT JOIN mv_conversation_comments_agg cca ON m.conversation_id = cca.conversation_id;
+LEFT JOIN mv_conversation_comments_agg cca ON m.conversation_id = cca.conversation_id
+
+UNION ALL
+
+-- Craft Documents
+SELECT 
+    cd.id::TEXT AS id,
+    'craft' AS type,
+    cd.title AS name,
+    LEFT(cd.markdown_content, 300) AS description,
+    CASE WHEN cd.is_deleted THEN 'deleted' ELSE 'active' END AS status,
+    '' AS project,
+    '' AS customer,
+    NULL AS location,
+    NULL AS location_path,
+    NULL AS cost_group,
+    NULL AS cost_group_code,
+    NULL AS due_date,
+    cd.craft_created_at AS created_at,
+    cd.craft_last_modified_at AS updated_at,
+    '' AS priority,
+    NULL AS progress,
+    '' AS tasklist,
+    NULL::UUID AS task_type_id,
+    NULL::TEXT AS task_type_name,
+    NULL::TEXT AS task_type_slug,
+    NULL::VARCHAR(50) AS task_type_color,
+    NULL::JSONB AS assignees,
+    NULL::JSONB AS tags,
+    cd.markdown_content AS body,
+    LEFT(cd.markdown_content, 200) AS preview,
+    NULL AS from_name,
+    NULL AS from_email,
+    NULL AS conversation_subject,
+    NULL::JSONB AS recipients,
+    NULL::JSONB AS attachments,
+    0 AS attachment_count,
+    NULL AS conversation_comments_text,
+    'craftdocs://open?blockId=' || cd.id AS craft_url,
+    NULL::TEXT AS teamwork_url,
+    NULL::TEXT AS missive_url,
+    COALESCE(cd.craft_last_modified_at, cd.db_updated_at, cd.db_created_at) AS sort_date
+FROM craft_documents cd
+WHERE cd.is_deleted = FALSE;
 
 -- =====================================
 -- 4. CREATE FUNCTION TO REFRESH MATERIALIZED VIEWS
@@ -304,8 +315,8 @@ $$ LANGUAGE plpgsql;
 -- because it avoids fetching large text fields and uses better execution plan
 
 CREATE OR REPLACE FUNCTION get_unified_items_paginated(
-    p_type_filter TEXT DEFAULT NULL,  -- 'task', 'email', or NULL for both
-    p_task_type_ids UUID[] DEFAULT NULL,  -- Filter by specific task types
+    p_type_filter TEXT DEFAULT NULL,  -- 'task', 'email', 'craft', or NULL for all
+    p_task_type_ids UUID[] DEFAULT NULL,
     p_search TEXT DEFAULT NULL,
     p_project_filter TEXT DEFAULT NULL,
     p_location_filter TEXT DEFAULT NULL,
@@ -315,131 +326,48 @@ CREATE OR REPLACE FUNCTION get_unified_items_paginated(
     p_offset INTEGER DEFAULT 0
 )
 RETURNS TABLE (
-    id TEXT,
-    type TEXT,
-    name TEXT,
-    description TEXT,
-    status TEXT,
-    project TEXT,
-    customer TEXT,
-    location TEXT,
-    location_path TEXT,
-    cost_group TEXT,
-    cost_group_code TEXT,
-    due_date TIMESTAMP,
-    created_at TIMESTAMP,
-    updated_at TIMESTAMP,
-    priority TEXT,
-    progress INTEGER,
-    tasklist TEXT,
-    task_type_id UUID,
-    task_type_name TEXT,
-    task_type_slug TEXT,
-    task_type_color VARCHAR(50),
-    assignees JSONB,
-    tags JSONB,
-    preview TEXT,
-    from_name TEXT,
-    from_email TEXT,
-    conversation_subject TEXT,
-    attachment_count INTEGER,
-    teamwork_url TEXT,
-    missive_url TEXT,
-    sort_date TIMESTAMP
+    id TEXT, type TEXT, name TEXT, description TEXT, status TEXT, project TEXT,
+    customer TEXT, location TEXT, location_path TEXT, cost_group TEXT, cost_group_code TEXT,
+    due_date TIMESTAMP, created_at TIMESTAMP, updated_at TIMESTAMP, priority TEXT,
+    progress INTEGER, tasklist TEXT, task_type_id UUID, task_type_name TEXT,
+    task_type_slug TEXT, task_type_color VARCHAR(50), assignees JSONB, tags JSONB,
+    preview TEXT, from_name TEXT, from_email TEXT, conversation_subject TEXT,
+    attachment_count INTEGER, craft_url TEXT, teamwork_url TEXT, missive_url TEXT, sort_date TIMESTAMP
 ) AS $$
 BEGIN
     RETURN QUERY
-    SELECT 
-        ui.id,
-        ui.type,
-        ui.name,
-        -- Truncate description for list view performance
-        LEFT(ui.description, 300) AS description,
-        ui.status,
-        ui.project,
-        ui.customer,
-        ui.location,
-        ui.location_path,
-        ui.cost_group,
-        ui.cost_group_code,
-        ui.due_date,
-        ui.created_at,
-        ui.updated_at,
-        ui.priority,
-        ui.progress,
-        ui.tasklist,
-        ui.task_type_id,
-        ui.task_type_name,
-        ui.task_type_slug,
-        ui.task_type_color,
-        ui.assignees,
-        ui.tags,
-        ui.preview,
-        ui.from_name,
-        ui.from_email,
-        ui.conversation_subject,
-        ui.attachment_count,
-        ui.teamwork_url,
-        ui.missive_url,
-        ui.sort_date
+    SELECT ui.id, ui.type, ui.name, LEFT(ui.description, 300), ui.status, ui.project,
+        ui.customer, ui.location, ui.location_path, ui.cost_group, ui.cost_group_code,
+        ui.due_date, ui.created_at, ui.updated_at, ui.priority, ui.progress, ui.tasklist,
+        ui.task_type_id, ui.task_type_name, ui.task_type_slug, ui.task_type_color,
+        ui.assignees, ui.tags, ui.preview, ui.from_name, ui.from_email, ui.conversation_subject,
+        ui.attachment_count, ui.craft_url, ui.teamwork_url, ui.missive_url, ui.sort_date
     FROM unified_items ui
-    WHERE 
-        -- Type filter
-        (p_type_filter IS NULL OR ui.type = p_type_filter)
-        -- Task type filter for tasks
-        AND (
-            p_task_type_ids IS NULL 
-            OR ui.type = 'email' 
-            OR (ui.type = 'task' AND ui.task_type_id = ANY(p_task_type_ids))
-        )
-        -- Search filter
-        AND (
-            p_search IS NULL 
-            OR ui.name ILIKE '%' || p_search || '%'
-            OR ui.description ILIKE '%' || p_search || '%'
-            OR ui.preview ILIKE '%' || p_search || '%'
-        )
-        -- Project filter
+    WHERE (p_type_filter IS NULL OR ui.type = p_type_filter)
+        AND (p_task_type_ids IS NULL OR ui.type IN ('email', 'craft') 
+             OR (ui.type = 'task' AND ui.task_type_id = ANY(p_task_type_ids)))
+        AND (p_search IS NULL OR ui.name ILIKE '%' || p_search || '%'
+             OR ui.description ILIKE '%' || p_search || '%' OR ui.body ILIKE '%' || p_search || '%')
         AND (p_project_filter IS NULL OR ui.project ILIKE '%' || p_project_filter || '%')
-        -- Location filter
         AND (p_location_filter IS NULL OR ui.location_path ILIKE '%' || p_location_filter || '%')
     ORDER BY 
         CASE WHEN p_sort_order = 'desc' THEN
-            CASE p_sort_field
-                WHEN 'sort_date' THEN ui.sort_date
-                WHEN 'created_at' THEN ui.created_at
-                WHEN 'updated_at' THEN ui.updated_at
-                WHEN 'due_date' THEN ui.due_date
-                ELSE ui.sort_date
-            END
+            CASE p_sort_field WHEN 'sort_date' THEN ui.sort_date WHEN 'created_at' THEN ui.created_at
+                WHEN 'updated_at' THEN ui.updated_at WHEN 'due_date' THEN ui.due_date ELSE ui.sort_date END
         END DESC NULLS LAST,
         CASE WHEN p_sort_order = 'asc' THEN
-            CASE p_sort_field
-                WHEN 'sort_date' THEN ui.sort_date
-                WHEN 'created_at' THEN ui.created_at
-                WHEN 'updated_at' THEN ui.updated_at
-                WHEN 'due_date' THEN ui.due_date
-                ELSE ui.sort_date
-            END
+            CASE p_sort_field WHEN 'sort_date' THEN ui.sort_date WHEN 'created_at' THEN ui.created_at
+                WHEN 'updated_at' THEN ui.updated_at WHEN 'due_date' THEN ui.due_date ELSE ui.sort_date END
         END ASC NULLS LAST,
         CASE WHEN p_sort_order = 'desc' THEN
-            CASE p_sort_field
-                WHEN 'name' THEN ui.name
-                WHEN 'project' THEN ui.project
-                WHEN 'status' THEN ui.status
-                ELSE NULL
-            END
+            CASE p_sort_field WHEN 'name' THEN ui.name WHEN 'project' THEN ui.project 
+                WHEN 'status' THEN ui.status ELSE NULL END
         END DESC NULLS LAST,
         CASE WHEN p_sort_order = 'asc' THEN
-            CASE p_sort_field
-                WHEN 'name' THEN ui.name
-                WHEN 'project' THEN ui.project
-                WHEN 'status' THEN ui.status
-                ELSE NULL
-            END
+            CASE p_sort_field WHEN 'name' THEN ui.name WHEN 'project' THEN ui.project 
+                WHEN 'status' THEN ui.status ELSE NULL END
         END ASC NULLS LAST
-    LIMIT p_limit
-    OFFSET p_offset;
+    LIMIT p_limit OFFSET p_offset;
 END;
 $$ LANGUAGE plpgsql STABLE;
 
@@ -458,47 +386,26 @@ CREATE OR REPLACE FUNCTION count_unified_items_fast(
 RETURNS BIGINT AS $$
 DECLARE
     v_count BIGINT;
-    v_has_filters BOOLEAN;
 BEGIN
-    -- Check if any filters are applied
-    v_has_filters := p_type_filter IS NOT NULL 
-        OR p_task_type_ids IS NOT NULL 
-        OR p_search IS NOT NULL
-        OR p_project_filter IS NOT NULL
-        OR p_location_filter IS NOT NULL;
-    
-    -- If no filters, use fast estimate
-    IF NOT v_has_filters THEN
-        -- Get estimate from pg_stat_user_tables
-        SELECT COALESCE(
-            (SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'tasks' AND schemaname = 'teamwork'),
-            0
-        ) + COALESCE(
-            (SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'messages' AND schemaname = 'missive'),
-            0
-        ) INTO v_count;
-        
+    -- If no filters, use fast estimate from table statistics
+    IF p_type_filter IS NULL AND p_task_type_ids IS NULL AND p_search IS NULL 
+       AND p_project_filter IS NULL AND p_location_filter IS NULL THEN
+        SELECT COALESCE((SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'tasks' AND schemaname = 'teamwork'), 0)
+             + COALESCE((SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'messages' AND schemaname = 'missive'), 0)
+             + COALESCE((SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'craft_documents' AND schemaname = 'public'), 0)
+        INTO v_count;
         RETURN v_count;
     END IF;
     
-    -- With filters, do actual count (but still optimized)
-    SELECT COUNT(*) INTO v_count
-    FROM unified_items ui
-    WHERE 
-        (p_type_filter IS NULL OR ui.type = p_type_filter)
-        AND (
-            p_task_type_ids IS NULL 
-            OR ui.type = 'email' 
-            OR (ui.type = 'task' AND ui.task_type_id = ANY(p_task_type_ids))
-        )
-        AND (
-            p_search IS NULL 
-            OR ui.name ILIKE '%' || p_search || '%'
-            OR ui.description ILIKE '%' || p_search || '%'
-        )
+    -- With filters, do actual count
+    SELECT COUNT(*) INTO v_count FROM unified_items ui
+    WHERE (p_type_filter IS NULL OR ui.type = p_type_filter)
+        AND (p_task_type_ids IS NULL OR ui.type IN ('email', 'craft') 
+             OR (ui.type = 'task' AND ui.task_type_id = ANY(p_task_type_ids)))
+        AND (p_search IS NULL OR ui.name ILIKE '%' || p_search || '%' 
+             OR ui.description ILIKE '%' || p_search || '%' OR ui.body ILIKE '%' || p_search || '%')
         AND (p_project_filter IS NULL OR ui.project ILIKE '%' || p_project_filter || '%')
         AND (p_location_filter IS NULL OR ui.location_path ILIKE '%' || p_location_filter || '%');
-    
     RETURN v_count;
 END;
 $$ LANGUAGE plpgsql STABLE;

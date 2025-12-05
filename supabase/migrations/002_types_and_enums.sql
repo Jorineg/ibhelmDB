@@ -85,15 +85,17 @@ COMMENT ON TABLE extraction_runs IS 'Tracks status of bulk extraction re-run ope
 CREATE TABLE appearance_settings (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     
-    -- Email display colors (used for badges, link buttons, color bars)
+    -- Item type display colors (used for badges, link buttons, color bars)
     email_color VARCHAR(50) DEFAULT '#3b82f6',
+    craft_color VARCHAR(50) DEFAULT '#8b5cf6',
     
     db_created_at TIMESTAMP DEFAULT NOW(),
     db_updated_at TIMESTAMP DEFAULT NOW()
 );
 
 -- Insert default appearance settings (singleton row)
-INSERT INTO appearance_settings (email_color) VALUES ('#3b82f6');
+INSERT INTO appearance_settings (email_color, craft_color) VALUES ('#3b82f6', '#8b5cf6');
 
 COMMENT ON TABLE appearance_settings IS 'Singleton table for dashboard appearance configuration';
-COMMENT ON COLUMN appearance_settings.email_color IS 'Color for email items (badges, link buttons, color bars in table header)';
+COMMENT ON COLUMN appearance_settings.email_color IS 'Color for email items (badges, link buttons, color bars)';
+COMMENT ON COLUMN appearance_settings.craft_color IS 'Color for Craft document items (badges, link buttons, color bars)';
