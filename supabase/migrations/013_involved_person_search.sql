@@ -209,12 +209,12 @@ CREATE OR REPLACE FUNCTION get_unified_items_by_involved_person(
 RETURNS TABLE(
     id TEXT, type TEXT, name TEXT, description TEXT, status VARCHAR, project TEXT, customer TEXT,
     location TEXT, location_path TEXT, cost_group TEXT, cost_group_code VARCHAR(50),
-    due_date TIMESTAMP, created_at TIMESTAMP, updated_at TIMESTAMP, priority VARCHAR,
+    due_date TIMESTAMPTZ, created_at TIMESTAMPTZ, updated_at TIMESTAMPTZ, priority VARCHAR,
     progress INTEGER, tasklist TEXT, task_type_id UUID, task_type_name TEXT,
     task_type_slug TEXT, task_type_color VARCHAR(50), assignees JSONB, tags JSONB,
     body TEXT, preview TEXT, from_name TEXT, from_email TEXT, conversation_subject TEXT,
     recipients JSONB, attachments JSONB, attachment_count INTEGER, conversation_comments_text TEXT,
-    teamwork_url TEXT, missive_url TEXT, sort_date TIMESTAMP
+    craft_url TEXT, teamwork_url TEXT, missive_url TEXT, sort_date TIMESTAMPTZ
 )
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
 DECLARE
@@ -236,7 +236,7 @@ BEGIN
         ui.task_type_id, ui.task_type_name, ui.task_type_slug, ui.task_type_color,
         ui.assignees, ui.tags, ui.body, ui.preview, ui.from_name, ui.from_email,
         ui.conversation_subject, ui.recipients, ui.attachments, ui.attachment_count,
-        ui.conversation_comments_text, ui.teamwork_url, ui.missive_url, ui.sort_date
+        ui.conversation_comments_text, ui.craft_url, ui.teamwork_url, ui.missive_url, ui.sort_date
     FROM unified_items ui
     LEFT JOIN matching_items mi ON ui.id = mi.item_id AND ui.type = mi.item_type
     WHERE ((p_show_tasks AND ui.type = 'task') OR (p_show_emails AND ui.type = 'email'))
