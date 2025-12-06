@@ -199,10 +199,6 @@ SELECT COUNT(*) FROM mv_message_attachments_agg;
 \echo 'mv_conversation_labels_agg:'
 SELECT COUNT(*) FROM mv_conversation_labels_agg;
 
-\echo ''
-\echo 'mv_conversation_comments_agg:'
-SELECT COUNT(*) FROM mv_conversation_comments_agg;
-
 -- =====================================
 -- 10. PAGINATION SIMULATION
 -- =====================================
