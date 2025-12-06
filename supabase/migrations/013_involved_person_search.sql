@@ -209,7 +209,7 @@ CREATE OR REPLACE FUNCTION get_unified_items_by_involved_person(
 RETURNS TABLE(
     id TEXT, type TEXT, name TEXT, description TEXT, status VARCHAR, project TEXT, customer TEXT,
     location TEXT, location_path TEXT, cost_group TEXT, cost_group_code VARCHAR(50),
-    due_date TIMESTAMPTZ, created_at TIMESTAMPTZ, updated_at TIMESTAMPTZ, priority VARCHAR,
+    due_date TIMESTAMP, created_at TIMESTAMPTZ, updated_at TIMESTAMPTZ, priority VARCHAR,
     progress INTEGER, tasklist TEXT, task_type_id UUID, task_type_name TEXT,
     task_type_slug TEXT, task_type_color VARCHAR(50), assignees JSONB, tags JSONB,
     body TEXT, preview TEXT, from_name TEXT, from_email TEXT, conversation_subject TEXT,
