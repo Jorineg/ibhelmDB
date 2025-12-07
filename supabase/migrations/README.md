@@ -23,7 +23,7 @@ Diese Migrations implementieren das vollständige Schema für das ibhelm Datenma
 - Configuration Tables:
   - `task_types` - Configurable task categories
   - `task_type_rules` - Maps Teamwork tags to task types
-  - `appearance_settings` - Dashboard styling configuration
+  - `app_settings` - Single-row JSONB settings (schema: docs/app_settings_schema.md)
   - `operation_runs` - Generic tracking for bulk operations (task_type_extraction, person_linking, project_linking)
 
 ### 003_teamwork_schema.sql

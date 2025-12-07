@@ -85,25 +85,16 @@ COMMENT ON COLUMN task_type_rules.teamwork_tag_name IS 'Exact match against team
 COMMENT ON TABLE operation_runs IS 'Tracks status of bulk operations (task_type_extraction, person_linking, project_linking)';
 
 -- =====================================
--- APPEARANCE SETTINGS (Configurable via UI)
+-- APP SETTINGS (Single-row JSONB config)
 -- =====================================
--- Stores appearance/styling configuration for the dashboard
+-- Schema documentation: ibhelmDB/docs/app_settings_schema.md (keep in sync with app logic)
 
--- Appearance Settings table (singleton - one row)
-CREATE TABLE appearance_settings (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    
-    -- Item type display colors (used for badges, link buttons, color bars)
-    email_color VARCHAR(50) DEFAULT '#3b82f6',
-    craft_color VARCHAR(50) DEFAULT '#8b5cf6',
-    
-    db_created_at TIMESTAMP DEFAULT NOW(),
-    db_updated_at TIMESTAMP DEFAULT NOW()
+CREATE TABLE app_settings (
+    lock CHAR(1) PRIMARY KEY DEFAULT 'X',
+    CONSTRAINT single_row CHECK (lock = 'X'),
+    body JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
--- Insert default appearance settings (singleton row)
-INSERT INTO appearance_settings (email_color, craft_color) VALUES ('#3b82f6', '#8b5cf6');
+INSERT INTO app_settings (body) VALUES ('{"email_color": "#3b82f6", "craft_color": "#8b5cf6"}'::jsonb);
 
-COMMENT ON TABLE appearance_settings IS 'Singleton table for dashboard appearance configuration';
-COMMENT ON COLUMN appearance_settings.email_color IS 'Color for email items (badges, link buttons, color bars)';
-COMMENT ON COLUMN appearance_settings.craft_color IS 'Color for Craft document items (badges, link buttons, color bars)';
+COMMENT ON TABLE app_settings IS 'Single-row settings table. Schema in ibhelmDB/docs/app_settings_schema.md';
