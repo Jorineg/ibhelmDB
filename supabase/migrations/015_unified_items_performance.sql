@@ -422,16 +422,6 @@ GRANT EXECUTE ON FUNCTION refresh_stale_unified_items_aggregates TO authenticate
 
 SELECT refresh_unified_items_aggregates(FALSE);
 
--- Update statistics for query planner
-ANALYZE teamwork.tasks;
-ANALYZE teamwork.task_assignees;
-ANALYZE teamwork.task_tags;
-ANALYZE missive.messages;
-ANALYZE missive.message_recipients;
-ANALYZE missive.attachments;
-ANALYZE missive.conversation_labels;
-ANALYZE missive.conversation_comments;
-
 -- =====================================
 -- 8. SCHEDULED MV REFRESH (pg_cron)
 -- =====================================
