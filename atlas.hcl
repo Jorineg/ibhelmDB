@@ -6,18 +6,32 @@ env "dev" {
   // Format: postgres://user:pass@host:port/dbname?sslmode=disable&search_path=public
   url = getenv("DATABASE_URL")
   
-  // Schemas we manage + storage (needed for FK resolution, but excluded from changes)
-  schemas = ["public", "teamwork", "missive", "teamworkmissiveconnector", "storage"]
+  // Schemas we manage (excludes supabase internals)
+  schemas = ["public", "teamwork", "missive", "teamworkmissiveconnector"]
   
   // Schema definition files
   src = "file://supabase/schema"
   
-  // Temporary database for computing diffs (requires Docker)
-  dev = "docker://postgres/16"
+  // Temporary database for computing diffs
+  // Default: Use Docker (requires docker daemon)
+  // Override: Set ATLAS_DEV_URL="postgres://user:pass@localhost:5432/dev_db?sslmode=disable"
+  dev = getenv("ATLAS_DEV_URL") != "" ? getenv("ATLAS_DEV_URL") : "docker://postgres/16"
   
   // Exclude objects we don't manage
   exclude = [
-    "storage.*",  // Supabase manages storage, we just need it for FK resolution
+    "auth.*",
+    "storage.*",
+    "realtime.*",
+    "extensions.*",
+    "graphql.*",
+    "graphql_public.*",
+    "pgsodium.*",
+    "pgsodium_masks.*",
+    "vault.*",
+    "supabase_*",
+    "_realtime.*",
+    "pg_*",
+    "cron.*",
     "public.uuid_generate_*",
     "public.gen_random_*",
   ]

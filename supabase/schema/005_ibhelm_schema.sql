@@ -187,8 +187,8 @@ CREATE TABLE document_types (
 CREATE TABLE files (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     
-    -- Reference to Supabase storage.objects(id)
-    storage_object_id UUID REFERENCES storage.objects(id) ON DELETE SET NULL,
+    -- Reference to Supabase storage.objects(id) - FK removed to decouple schemas
+    storage_object_id UUID,
     filename TEXT,
     folder_path TEXT,
     content_hash VARCHAR(64),
