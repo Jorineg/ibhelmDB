@@ -3,3 +3,4 @@ supabase/seed.sql
 supabase/_seed.sql
 supabase/.branches
 context
+.env
