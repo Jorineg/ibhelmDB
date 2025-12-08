@@ -6,17 +6,18 @@ env "dev" {
   // Format: postgres://user:pass@host:port/dbname?sslmode=disable&search_path=public
   url = getenv("DATABASE_URL")
   
-  // Schemas we manage (excludes supabase internals: auth, storage, realtime, etc.)
-  schemas = ["public", "teamwork", "missive", "teamworkmissiveconnector"]
+  // Schemas we manage + storage (needed for FK resolution, but excluded from changes)
+  schemas = ["public", "teamwork", "missive", "teamworkmissiveconnector", "storage"]
   
   // Schema definition files
   src = "file://supabase/schema"
   
   // Temporary database for computing diffs (requires Docker)
-  dev = "docker://postgres/15"
+  dev = "docker://postgres/16"
   
-  // Exclude objects we don't manage within public schema
+  // Exclude objects we don't manage
   exclude = [
+    "storage.*",  // Supabase manages storage, we just need it for FK resolution
     "public.uuid_generate_*",
     "public.gen_random_*",
   ]
