@@ -167,3 +167,4 @@ COMMENT ON FUNCTION search_projects_autocomplete(TEXT, INTEGER) IS
 COMMENT ON FUNCTION search_persons_autocomplete(TEXT, INTEGER) IS 
     'Returns person suggestions for autocomplete, searching across all linked entities';
 
+

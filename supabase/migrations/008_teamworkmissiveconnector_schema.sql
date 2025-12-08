@@ -23,9 +23,9 @@ CREATE SCHEMA IF NOT EXISTS teamworkmissiveconnector;
 
 CREATE TABLE teamworkmissiveconnector.checkpoints (
     source VARCHAR(50) PRIMARY KEY,
-    last_event_time TIMESTAMP NOT NULL,
+    last_event_time TIMESTAMPTZ NOT NULL,
     last_cursor TEXT,
-    updated_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
     
     CONSTRAINT checkpoints_valid_source CHECK (source IN ('teamwork', 'missive', 'craft'))
 );
@@ -60,11 +60,11 @@ CREATE TABLE teamworkmissiveconnector.queue_items (
     error_message TEXT,
     
     -- Timestamps
-    created_at TIMESTAMP DEFAULT NOW() NOT NULL,
-    updated_at TIMESTAMP DEFAULT NOW() NOT NULL,
-    processing_started_at TIMESTAMP,
-    processed_at TIMESTAMP,
-    next_retry_at TIMESTAMP,
+    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+    processing_started_at TIMESTAMPTZ,
+    processed_at TIMESTAMPTZ,
+    next_retry_at TIMESTAMPTZ,
     
     -- Processing metadata
     worker_id VARCHAR(100),
@@ -107,9 +107,9 @@ CREATE TABLE teamworkmissiveconnector.webhook_config (
     webhook_ids JSONB NOT NULL,
     webhook_url TEXT,
     is_active BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMP DEFAULT NOW() NOT NULL,
-    updated_at TIMESTAMP DEFAULT NOW() NOT NULL,
-    last_verified_at TIMESTAMP,
+    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+    last_verified_at TIMESTAMPTZ,
     
     CONSTRAINT webhook_config_valid_source CHECK (source IN ('teamwork', 'missive', 'craft'))
 );
@@ -135,7 +135,7 @@ CREATE TABLE teamworkmissiveconnector.processing_stats (
     event_type VARCHAR(100) NOT NULL,
     
     -- Aggregate statistics (per hour)
-    stat_hour TIMESTAMP NOT NULL,
+    stat_hour TIMESTAMPTZ NOT NULL,
     
     events_received INTEGER DEFAULT 0,
     events_processed INTEGER DEFAULT 0,
@@ -145,8 +145,8 @@ CREATE TABLE teamworkmissiveconnector.processing_stats (
     max_processing_time_ms INTEGER,
     min_processing_time_ms INTEGER,
     
-    created_at TIMESTAMP DEFAULT NOW() NOT NULL,
-    updated_at TIMESTAMP DEFAULT NOW() NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
     
     CONSTRAINT processing_stats_unique_hour UNIQUE (source, event_type, stat_hour),
     CONSTRAINT processing_stats_valid_source CHECK (source IN ('teamwork', 'missive', 'craft'))

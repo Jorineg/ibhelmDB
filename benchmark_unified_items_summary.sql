@@ -128,3 +128,4 @@ SELECT
 FROM mv_refresh_status
 ORDER BY view_name;
 
+
