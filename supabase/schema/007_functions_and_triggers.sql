@@ -283,8 +283,6 @@ CREATE TRIGGER extract_task_type_on_tags_change
 -- Main function to re-run extraction on all tasks
 CREATE OR REPLACE FUNCTION rerun_all_task_type_extractions()
 RETURNS UUID 
-SECURITY DEFINER
-SET search_path = public
 AS $$
 DECLARE
     v_run_id UUID;
@@ -324,7 +322,7 @@ RETURNS TABLE (
     created_count INTEGER, linked_count INTEGER, skipped_count INTEGER,
     progress_percent NUMERIC, started_at TIMESTAMP, completed_at TIMESTAMP, error_message TEXT
 )
-SECURITY DEFINER SET search_path = public AS $$
+AS $$
 BEGIN
     RETURN QUERY SELECT r.id, r.status, r.total_count, r.processed_count,
         r.created_count, r.linked_count, r.skipped_count,
@@ -341,7 +339,7 @@ RETURNS TABLE (
     created_count INTEGER, linked_count INTEGER, skipped_count INTEGER,
     progress_percent NUMERIC, started_at TIMESTAMP, completed_at TIMESTAMP, error_message TEXT
 )
-SECURITY DEFINER SET search_path = public AS $$
+AS $$
 BEGIN
     RETURN QUERY SELECT r.id, r.status, r.total_count, r.processed_count,
         r.created_count, r.linked_count, r.skipped_count,
@@ -355,7 +353,7 @@ $$ LANGUAGE plpgsql STABLE;
 CREATE OR REPLACE FUNCTION get_extraction_run_status(p_run_id UUID)
 RETURNS TABLE (id UUID, status VARCHAR(50), total_count INTEGER, processed_count INTEGER,
     progress_percent NUMERIC, started_at TIMESTAMP, completed_at TIMESTAMP, error_message TEXT)
-SECURITY DEFINER SET search_path = public AS $$
+AS $$
 BEGIN
     RETURN QUERY SELECT r.id, r.status, r.total_count, r.processed_count,
         CASE WHEN r.total_count > 0 THEN ROUND((r.processed_count::NUMERIC / r.total_count::NUMERIC) * 100, 1) ELSE 0 END,
@@ -367,7 +365,7 @@ $$ LANGUAGE plpgsql STABLE;
 CREATE OR REPLACE FUNCTION get_latest_extraction_run()
 RETURNS TABLE (id UUID, status VARCHAR(50), total_count INTEGER, processed_count INTEGER,
     progress_percent NUMERIC, started_at TIMESTAMP, completed_at TIMESTAMP, error_message TEXT)
-SECURITY DEFINER SET search_path = public AS $$
+AS $$
 BEGIN
     RETURN QUERY SELECT r.id, r.status, r.total_count, r.processed_count,
         CASE WHEN r.total_count > 0 THEN ROUND((r.processed_count::NUMERIC / r.total_count::NUMERIC) * 100, 1) ELSE 0 END,
@@ -539,8 +537,6 @@ $$ LANGUAGE plpgsql;
 -- Bulk re-run cost group extraction for all tasks and conversations
 CREATE OR REPLACE FUNCTION rerun_all_cost_group_linking()
 RETURNS UUID 
-SECURITY DEFINER
-SET search_path = public
 AS $$
 DECLARE
     v_run_id UUID;
@@ -624,7 +620,7 @@ RETURNS TABLE (
     created_count INTEGER, linked_count INTEGER, skipped_count INTEGER,
     progress_percent NUMERIC, started_at TIMESTAMP, completed_at TIMESTAMP, error_message TEXT
 )
-SECURITY DEFINER SET search_path = public AS $$
+AS $$
 BEGIN
     RETURN QUERY SELECT * FROM get_operation_run_status(p_run_id);
 END;
@@ -636,7 +632,7 @@ RETURNS TABLE (
     created_count INTEGER, linked_count INTEGER, skipped_count INTEGER,
     progress_percent NUMERIC, started_at TIMESTAMP, completed_at TIMESTAMP, error_message TEXT
 )
-SECURITY DEFINER SET search_path = public AS $$
+AS $$
 BEGIN
     RETURN QUERY SELECT * FROM get_latest_operation_run('cost_group_linking');
 END;
