@@ -101,9 +101,9 @@ CREATE INDEX idx_locations_parent_type ON locations(parent_id, type);
 -- COMMENTS
 -- =====================================
 
-COMMENT ON INDEX idx_locations_name_trgm IS 'Trigram index for typo-resistant location name search';
-COMMENT ON INDEX idx_locations_search_text_fts IS 'Full-text search index for location hierarchy search';
-COMMENT ON INDEX idx_files_extracted_text_fts IS 'Full-text search index for PDF content search';
-COMMENT ON INDEX idx_files_auto_extracted_metadata_gin IS 'GIN index for JSONB metadata queries';
+-- COMMENT ON INDEX idx_locations_name_trgm IS 'Trigram index for typo-resistant location name search';
+-- COMMENT ON INDEX idx_locations_search_text_fts IS 'Full-text search index for location hierarchy search';
+-- COMMENT ON INDEX idx_files_extracted_text_fts IS 'Full-text search index for PDF content search';
+-- COMMENT ON INDEX idx_files_auto_extracted_metadata_gin IS 'GIN index for JSONB metadata queries';
 
 
