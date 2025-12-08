@@ -253,6 +253,104 @@ END;
 $$;
 
 -- =====================================
+-- 4. TAG AUTOCOMPLETE SEARCH
+-- =====================================
+
+-- Returns tag suggestions matching a search term
+-- Searches across teamwork.tags and missive.shared_labels (deduplicated by name)
+CREATE OR REPLACE FUNCTION search_tags_autocomplete(
+    p_search_text TEXT,
+    p_limit INTEGER DEFAULT 10
+)
+RETURNS TABLE(
+    id TEXT,
+    name TEXT,
+    color TEXT,
+    source TEXT
+)
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_search_pattern TEXT;
+BEGIN
+    -- Handle empty search - return most used tags
+    IF p_search_text IS NULL OR TRIM(p_search_text) = '' THEN
+        RETURN QUERY
+        WITH combined_tags AS (
+            -- Teamwork tags with usage count
+            SELECT 
+                'tw_' || t.id::TEXT AS id,
+                t.name::TEXT AS name,
+                t.color::TEXT AS color,
+                'teamwork'::TEXT AS source,
+                (SELECT COUNT(*) FROM teamwork.task_tags tt WHERE tt.tag_id = t.id) AS usage_count
+            FROM teamwork.tags t
+            
+            UNION ALL
+            
+            -- Missive labels with usage count
+            SELECT 
+                'm_' || sl.id::TEXT AS id,
+                sl.name::TEXT AS name,
+                NULL::TEXT AS color,
+                'missive'::TEXT AS source,
+                (SELECT COUNT(*) FROM missive.conversation_labels cl WHERE cl.label_id = sl.id) AS usage_count
+            FROM missive.shared_labels sl
+        )
+        SELECT DISTINCT ON (LOWER(ct.name))
+            ct.id,
+            ct.name,
+            ct.color,
+            ct.source
+        FROM combined_tags ct
+        ORDER BY LOWER(ct.name), ct.usage_count DESC
+        LIMIT p_limit;
+        RETURN;
+    END IF;
+    
+    -- Create case-insensitive search pattern
+    v_search_pattern := '%' || LOWER(p_search_text) || '%';
+    
+    RETURN QUERY
+    WITH combined_tags AS (
+        -- Teamwork tags
+        SELECT 
+            'tw_' || t.id::TEXT AS id,
+            t.name::TEXT AS name,
+            t.color::TEXT AS color,
+            'teamwork'::TEXT AS source
+        FROM teamwork.tags t
+        WHERE LOWER(t.name) LIKE v_search_pattern
+        
+        UNION ALL
+        
+        -- Missive labels
+        SELECT 
+            'm_' || sl.id::TEXT AS id,
+            sl.name::TEXT AS name,
+            NULL::TEXT AS color,
+            'missive'::TEXT AS source
+        FROM missive.shared_labels sl
+        WHERE LOWER(sl.name) LIKE v_search_pattern
+    )
+    SELECT DISTINCT ON (LOWER(ct.name))
+        ct.id,
+        ct.name,
+        ct.color,
+        ct.source
+    FROM combined_tags ct
+    ORDER BY 
+        LOWER(ct.name),
+        -- Prioritize exact matches at start
+        CASE WHEN LOWER(ct.name) LIKE LOWER(p_search_text) || '%' THEN 0 ELSE 1 END
+    LIMIT p_limit;
+END;
+$$;
+
+-- =====================================
 -- COMMENTS
 -- =====================================
 
@@ -264,4 +362,7 @@ COMMENT ON FUNCTION search_persons_autocomplete(TEXT, INTEGER) IS
 
 COMMENT ON FUNCTION search_cost_groups_autocomplete(TEXT, INTEGER) IS 
     'Returns cost group suggestions with hierarchical code matching (400 matches 4xx, 450 matches 45x)';
+
+COMMENT ON FUNCTION search_tags_autocomplete(TEXT, INTEGER) IS 
+    'Returns tag suggestions for autocomplete, searching across teamwork tags and missive labels';
 
