@@ -331,8 +331,8 @@ CREATE INDEX idx_craft_documents_craft_last_modified_at ON craft_documents(craft
 CREATE INDEX idx_craft_documents_db_updated_at ON craft_documents(db_updated_at);
 
 -- Full-text search index on Craft document content
-CREATE INDEX idx_craft_documents_content_fts ON craft_documents 
-    USING GIN(to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(markdown_content, '')));
+-- CREATE INDEX idx_craft_documents_content_fts ON craft_documents 
+--    USING GIN(to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(markdown_content, '')));
 
 CREATE INDEX idx_document_types_slug ON document_types(slug);
 
