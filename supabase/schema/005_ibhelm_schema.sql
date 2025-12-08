@@ -188,7 +188,7 @@ CREATE TABLE files (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     
     -- Reference to Supabase storage.objects(id)
-    storage_object_id UUID,  -- References storage.objects(id), managed by Supabase    
+    storage_object_id UUID REFERENCES storage.objects(id) ON DELETE SET NULL,
     filename TEXT,
     folder_path TEXT,
     content_hash VARCHAR(64),
