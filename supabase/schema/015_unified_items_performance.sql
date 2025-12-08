@@ -318,7 +318,7 @@ GRANT SELECT ON mv_message_recipients_agg TO authenticated;
 GRANT SELECT ON mv_message_attachments_agg TO authenticated;
 GRANT SELECT ON mv_conversation_labels_agg TO authenticated;
 GRANT SELECT ON mv_conversation_comments_agg TO authenticated;
-GRANT EXECUTE ON FUNCTION refresh_unified_items_aggregates() TO authenticated;
+GRANT EXECUTE ON FUNCTION refresh_unified_items_aggregates(BOOLEAN) TO authenticated;
 
 -- =====================================
 -- 6. TRIGGERS TO MARK MATERIALIZED VIEWS FOR REFRESH
@@ -412,8 +412,8 @@ $$ LANGUAGE plpgsql;
 
 -- Grant permissions on new objects
 GRANT SELECT, UPDATE ON mv_refresh_status TO authenticated;
-GRANT EXECUTE ON FUNCTION mark_mv_needs_refresh TO authenticated;
-GRANT EXECUTE ON FUNCTION refresh_stale_unified_items_aggregates TO authenticated;
+GRANT EXECUTE ON FUNCTION mark_mv_needs_refresh(TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION refresh_stale_unified_items_aggregates() TO authenticated;
 
 -- =====================================
 -- 7. INITIAL REFRESH OF MATERIALIZED VIEWS
