@@ -1,19 +1,15 @@
 -- =====================================
 -- EXTENSIONS
 -- =====================================
--- Enable required PostgreSQL extensions
 
--- UUID generation
--- Note: gen_random_uuid() is built-in since Postgres 13, no extension needed for it.
--- We only enable pg_trgm and unaccent.
+-- Supabase best practice: Extensions in eigenem Schema
+CREATE SCHEMA IF NOT EXISTS extensions;
 
--- Trigram similarity search for fuzzy matching
--- Used for location search and typo-resistant queries
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
+-- Extension für Trigramm-Suche (in extensions schema)
+CREATE EXTENSION IF NOT EXISTS pg_trgm SCHEMA extensions;
 
--- Full-text search support
-CREATE EXTENSION IF NOT EXISTS unaccent;
+-- Extension für Akzent-Entfernung (in extensions schema)
+CREATE Extension IF NOT EXISTS unaccent SCHEMA extensions;
 
-COMMENT ON EXTENSION pg_trgm IS 'Trigram similarity for fuzzy search in locations and files';
-COMMENT ON EXTENSION unaccent IS 'Text search dictionary that removes accents';
-
+-- Search Path für die aktuelle Session setzen, damit nachfolgende Skripte die Extensions finden
+SET search_path TO public, extensions;
