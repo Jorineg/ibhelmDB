@@ -82,18 +82,21 @@ CREATE TABLE locations (
     db_updated_at TIMESTAMP DEFAULT NOW()
 );
 
--- Cost Groups (Hierarchical: 300 > 310 > 311.5)
+-- Cost Groups (Hierarchical: 400 > 450 > 456)
+-- Code must be exactly 3 digits (100-999)
 CREATE TABLE cost_groups (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     parent_id UUID REFERENCES cost_groups(id) ON DELETE CASCADE,
-    code VARCHAR(50),
+    code INTEGER NOT NULL UNIQUE,
     name TEXT,
     
     -- Materialized path for efficient hierarchy queries
     path TEXT,
     
     db_created_at TIMESTAMP DEFAULT NOW(),
-    db_updated_at TIMESTAMP DEFAULT NOW()
+    db_updated_at TIMESTAMP DEFAULT NOW(),
+    
+    CONSTRAINT cost_groups_code_3_digits CHECK (code >= 100 AND code <= 999)
 );
 
 -- =====================================
@@ -359,6 +362,14 @@ CREATE INDEX idx_object_cost_groups_m_conversation_id ON object_cost_groups(m_co
 CREATE INDEX idx_object_cost_groups_file_id ON object_cost_groups(file_id);
 CREATE INDEX idx_object_cost_groups_source ON object_cost_groups(source);
 
+-- Unique constraints to prevent duplicate cost group links
+CREATE UNIQUE INDEX idx_object_cost_groups_unique_task 
+    ON object_cost_groups(cost_group_id, tw_task_id) WHERE tw_task_id IS NOT NULL;
+CREATE UNIQUE INDEX idx_object_cost_groups_unique_conversation 
+    ON object_cost_groups(cost_group_id, m_conversation_id) WHERE m_conversation_id IS NOT NULL;
+CREATE UNIQUE INDEX idx_object_cost_groups_unique_file 
+    ON object_cost_groups(cost_group_id, file_id) WHERE file_id IS NOT NULL;
+
 -- =====================================
 -- COMMENTS
 -- =====================================
@@ -376,8 +387,9 @@ COMMENT ON COLUMN locations.path IS 'Materialized path for efficient hierarchy q
 COMMENT ON COLUMN locations.teamwork_tag_pattern IS 'Regex or prefix for auto-matching, e.g. LOC_GEB_A_EG';
 COMMENT ON COLUMN locations.search_text IS 'Generated search text including all parent names';
 
-COMMENT ON TABLE cost_groups IS 'Hierarchical cost groups (Kostengruppen)';
-COMMENT ON COLUMN cost_groups.path IS 'Materialized path, e.g. 300.410.411.2';
+COMMENT ON TABLE cost_groups IS 'Hierarchical cost groups (Kostengruppen) - DIN 276 structure';
+COMMENT ON COLUMN cost_groups.code IS '3-digit cost group code (100-999). Parent hierarchy: 456->450->400';
+COMMENT ON COLUMN cost_groups.path IS 'Materialized path, e.g. 400.450.456';
 
 COMMENT ON TABLE project_extensions IS '1:1 extension to tw_projects - only ibhelm-specific data';
 COMMENT ON COLUMN project_extensions.nas_folder_path IS 'e.g. /projects/2024-001-Neubau-XY/ for auto-assignment';

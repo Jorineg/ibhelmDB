@@ -158,6 +158,101 @@ END;
 $$;
 
 -- =====================================
+-- 3. COST GROUP AUTOCOMPLETE SEARCH
+-- =====================================
+
+-- Returns cost group suggestions matching a search term
+-- Supports hierarchical filtering: 400 matches 4xx, 450 matches 45x, 456 matches exactly
+CREATE OR REPLACE FUNCTION search_cost_groups_autocomplete(
+    p_search_text TEXT,
+    p_limit INTEGER DEFAULT 10
+)
+RETURNS TABLE(
+    id UUID,
+    code INTEGER,
+    name TEXT,
+    path TEXT
+)
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_search_code INTEGER;
+    v_code_min INTEGER;
+    v_code_max INTEGER;
+BEGIN
+    -- Handle empty search - return most common/recent cost groups
+    IF p_search_text IS NULL OR TRIM(p_search_text) = '' THEN
+        RETURN QUERY
+        SELECT 
+            cg.id,
+            cg.code,
+            cg.name::TEXT,
+            cg.path::TEXT
+        FROM cost_groups cg
+        ORDER BY cg.code ASC
+        LIMIT p_limit;
+        RETURN;
+    END IF;
+    
+    -- Try to parse as code for hierarchical search
+    BEGIN
+        v_search_code := TRIM(p_search_text)::INTEGER;
+        
+        -- Determine range based on entered digits
+        IF v_search_code >= 100 AND v_search_code <= 999 THEN
+            -- Full 3-digit code - exact match
+            v_code_min := v_search_code;
+            v_code_max := v_search_code;
+        ELSIF v_search_code >= 10 AND v_search_code <= 99 THEN
+            -- 2-digit code - match all in that range (45 -> 450-459)
+            v_code_min := v_search_code * 10;
+            v_code_max := v_search_code * 10 + 9;
+        ELSIF v_search_code >= 1 AND v_search_code <= 9 THEN
+            -- 1-digit code - match all in that range (4 -> 400-499)
+            v_code_min := v_search_code * 100;
+            v_code_max := v_search_code * 100 + 99;
+        ELSE
+            v_search_code := NULL;
+        END IF;
+    EXCEPTION WHEN OTHERS THEN
+        v_search_code := NULL;
+    END;
+    
+    -- If valid code range, search by code
+    IF v_search_code IS NOT NULL THEN
+        RETURN QUERY
+        SELECT 
+            cg.id,
+            cg.code,
+            cg.name::TEXT,
+            cg.path::TEXT
+        FROM cost_groups cg
+        WHERE cg.code >= v_code_min AND cg.code <= v_code_max
+        ORDER BY cg.code ASC
+        LIMIT p_limit;
+    ELSE
+        -- Search by name
+        RETURN QUERY
+        SELECT 
+            cg.id,
+            cg.code,
+            cg.name::TEXT,
+            cg.path::TEXT
+        FROM cost_groups cg
+        WHERE LOWER(cg.name) LIKE '%' || LOWER(p_search_text) || '%'
+        ORDER BY 
+            -- Prioritize matches at start of name
+            CASE WHEN LOWER(cg.name) LIKE LOWER(p_search_text) || '%' THEN 0 ELSE 1 END,
+            cg.code ASC
+        LIMIT p_limit;
+    END IF;
+END;
+$$;
+
+-- =====================================
 -- COMMENTS
 -- =====================================
 
@@ -167,4 +262,6 @@ COMMENT ON FUNCTION search_projects_autocomplete(TEXT, INTEGER) IS
 COMMENT ON FUNCTION search_persons_autocomplete(TEXT, INTEGER) IS 
     'Returns person suggestions for autocomplete, searching across all linked entities';
 
+COMMENT ON FUNCTION search_cost_groups_autocomplete(TEXT, INTEGER) IS 
+    'Returns cost group suggestions with hierarchical code matching (400 matches 4xx, 450 matches 45x)';
 

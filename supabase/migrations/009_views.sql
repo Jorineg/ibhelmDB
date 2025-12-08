@@ -14,7 +14,7 @@ CREATE OR REPLACE VIEW unified_items AS
 SELECT 
     t.id::TEXT AS id, 'task' AS type, t.name, t.description, t.status,
     p.name AS project, c.name AS customer, l.name AS location, l.search_text AS location_path,
-    cg.name AS cost_group, cg.code AS cost_group_code, t.due_date, t.created_at, t.updated_at,
+    cg.name AS cost_group, cg.code::TEXT AS cost_group_code, t.due_date, t.created_at, t.updated_at,
     t.priority, t.progress, tl.name AS tasklist,
     tt.id AS task_type_id, tt.name AS task_type_name, tt.slug AS task_type_slug, tt.color AS task_type_color,
     (SELECT jsonb_agg(jsonb_build_object('id', u.id, 'first_name', u.first_name, 'last_name', u.last_name, 'email', u.email))
@@ -45,7 +45,7 @@ SELECT
     m.id::TEXT AS id, 'email' AS type, m.subject AS name,
     COALESCE(m.preview, LEFT(m.body, 200)) AS description, '' AS status,
     COALESCE(twp.name, '') AS project, '' AS customer, l.name AS location, l.search_text AS location_path,
-    cg.name AS cost_group, cg.code AS cost_group_code, NULL AS due_date, m.created_at, m.updated_at,
+    cg.name AS cost_group, cg.code::TEXT AS cost_group_code, NULL AS due_date, m.created_at, m.updated_at,
     '' AS priority, NULL AS progress, '' AS tasklist,
     NULL::UUID AS task_type_id, NULL::TEXT AS task_type_name, NULL::TEXT AS task_type_slug, NULL::VARCHAR(50) AS task_type_color,
     NULL::JSONB AS assignees,
@@ -167,7 +167,7 @@ SELECT
     
     -- Default cost group
     dcg.name AS default_cost_group_name,
-    dcg.code AS default_cost_group_code,
+    dcg.code::TEXT AS default_cost_group_code,
     
     -- Aggregated counts
     (SELECT COUNT(*) FROM project_files pf WHERE pf.tw_project_id = twp.id) AS file_count,
@@ -244,7 +244,7 @@ SELECT
     (
         SELECT jsonb_agg(jsonb_build_object(
             'id', cg.id,
-            'code', cg.code,
+            'code', cg.code::TEXT,
             'name', cg.name
         ))
         FROM object_cost_groups ocg

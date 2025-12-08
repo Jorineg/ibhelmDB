@@ -180,11 +180,11 @@ BEGIN
         WHERE id = NEW.parent_id;
     END IF;
     
-    -- Build materialized path using code
+    -- Build materialized path using code (cast to text)
     IF parent_path = '' OR parent_path IS NULL THEN
-        NEW.path := NEW.code;
+        NEW.path := NEW.code::TEXT;
     ELSE
-        NEW.path := parent_path || '.' || NEW.code;
+        NEW.path := parent_path || '.' || NEW.code::TEXT;
     END IF;
     
     RETURN NEW;
@@ -381,6 +381,268 @@ CREATE TRIGGER update_task_types_updated_at BEFORE UPDATE ON task_types
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- =====================================
+-- 6. COST GROUP EXTRACTION
+-- =====================================
+
+-- Helper function to get or create a cost group with proper parent hierarchy
+CREATE OR REPLACE FUNCTION get_or_create_cost_group(p_code INTEGER, p_name TEXT)
+RETURNS UUID AS $$
+DECLARE
+    v_cost_group_id UUID;
+    v_parent_code INTEGER;
+    v_parent_id UUID;
+BEGIN
+    -- Check if cost group already exists
+    SELECT id INTO v_cost_group_id FROM cost_groups WHERE code = p_code;
+    IF FOUND THEN
+        RETURN v_cost_group_id;
+    END IF;
+    
+    -- Determine parent code based on DIN 276 structure
+    -- 456 -> 450, 450 -> 400, 400 -> NULL
+    IF p_code % 10 != 0 THEN
+        -- Has single digit, parent is tens (456 -> 450)
+        v_parent_code := (p_code / 10) * 10;
+    ELSIF p_code % 100 != 0 THEN
+        -- Has tens digit but no singles, parent is hundreds (450 -> 400)
+        v_parent_code := (p_code / 100) * 100;
+    ELSE
+        -- Is a hundred (400), no parent
+        v_parent_code := NULL;
+    END IF;
+    
+    -- Recursively create parent if needed
+    IF v_parent_code IS NOT NULL THEN
+        v_parent_id := get_or_create_cost_group(v_parent_code, NULL);
+    END IF;
+    
+    -- Create the cost group
+    INSERT INTO cost_groups (code, name, parent_id)
+    VALUES (p_code, p_name, v_parent_id)
+    RETURNING id INTO v_cost_group_id;
+    
+    RETURN v_cost_group_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Function to parse cost group from tag name
+-- Returns NULL if tag doesn't match pattern, otherwise returns (code, name)
+CREATE OR REPLACE FUNCTION parse_cost_group_tag(p_tag_name TEXT, p_prefixes TEXT[])
+RETURNS TABLE(code INTEGER, name TEXT) AS $$
+DECLARE
+    v_prefix TEXT;
+    v_pattern TEXT;
+    v_match TEXT[];
+BEGIN
+    FOREACH v_prefix IN ARRAY p_prefixes LOOP
+        -- Pattern: PREFIX + spaces + 3-digit code + spaces + name
+        -- Example: "KGR 456 Demo Kostengruppe" or "KGR456Demo"
+        v_pattern := '^' || v_prefix || '\s*(\d{3})\s*(.*)$';
+        v_match := regexp_match(p_tag_name, v_pattern, 'i');
+        IF v_match IS NOT NULL THEN
+            code := v_match[1]::INTEGER;
+            name := NULLIF(TRIM(v_match[2]), '');
+            RETURN NEXT;
+            RETURN;
+        END IF;
+    END LOOP;
+    RETURN;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+-- Extract cost groups for a single task
+CREATE OR REPLACE FUNCTION extract_cost_groups_for_task(p_task_id INTEGER)
+RETURNS void AS $$
+DECLARE
+    v_prefixes TEXT[];
+    v_tag_record RECORD;
+    v_parsed RECORD;
+    v_cost_group_id UUID;
+BEGIN
+    -- Get prefixes from app_settings
+    SELECT COALESCE(
+        (SELECT ARRAY(SELECT jsonb_array_elements_text(body->'cost_group_prefixes')) 
+         FROM app_settings WHERE lock = 'X'),
+        ARRAY['KGR']
+    ) INTO v_prefixes;
+    
+    -- Delete existing auto-linked cost groups for this task
+    DELETE FROM object_cost_groups 
+    WHERE tw_task_id = p_task_id AND source = 'auto_teamwork';
+    
+    -- Process each tag on the task
+    FOR v_tag_record IN 
+        SELECT t.name AS tag_name
+        FROM teamwork.task_tags tt
+        JOIN teamwork.tags t ON tt.tag_id = t.id
+        WHERE tt.task_id = p_task_id
+    LOOP
+        -- Try to parse as cost group tag
+        SELECT * INTO v_parsed FROM parse_cost_group_tag(v_tag_record.tag_name, v_prefixes);
+        
+        IF v_parsed.code IS NOT NULL THEN
+            -- Get or create the cost group
+            v_cost_group_id := get_or_create_cost_group(v_parsed.code, v_parsed.name);
+            
+            -- Link task to cost group (ignore if already exists)
+            INSERT INTO object_cost_groups (cost_group_id, tw_task_id, source, source_tag_name)
+            VALUES (v_cost_group_id, p_task_id, 'auto_teamwork', v_tag_record.tag_name)
+            ON CONFLICT DO NOTHING;
+        END IF;
+    END LOOP;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Extract cost groups for a single conversation (from labels)
+CREATE OR REPLACE FUNCTION extract_cost_groups_for_conversation(p_conversation_id UUID)
+RETURNS void AS $$
+DECLARE
+    v_prefixes TEXT[];
+    v_label_record RECORD;
+    v_parsed RECORD;
+    v_cost_group_id UUID;
+BEGIN
+    -- Get prefixes from app_settings
+    SELECT COALESCE(
+        (SELECT ARRAY(SELECT jsonb_array_elements_text(body->'cost_group_prefixes')) 
+         FROM app_settings WHERE lock = 'X'),
+        ARRAY['KGR']
+    ) INTO v_prefixes;
+    
+    -- Delete existing auto-linked cost groups for this conversation
+    DELETE FROM object_cost_groups 
+    WHERE m_conversation_id = p_conversation_id AND source = 'auto_missive';
+    
+    -- Process each label on the conversation
+    FOR v_label_record IN 
+        SELECT sl.name AS label_name
+        FROM missive.conversation_labels cl
+        JOIN missive.shared_labels sl ON cl.label_id = sl.id
+        WHERE cl.conversation_id = p_conversation_id
+    LOOP
+        -- Try to parse as cost group label
+        SELECT * INTO v_parsed FROM parse_cost_group_tag(v_label_record.label_name, v_prefixes);
+        
+        IF v_parsed.code IS NOT NULL THEN
+            -- Get or create the cost group
+            v_cost_group_id := get_or_create_cost_group(v_parsed.code, v_parsed.name);
+            
+            -- Link conversation to cost group (ignore if already exists)
+            INSERT INTO object_cost_groups (cost_group_id, m_conversation_id, source, source_tag_name)
+            VALUES (v_cost_group_id, p_conversation_id, 'auto_missive', v_label_record.label_name)
+            ON CONFLICT DO NOTHING;
+        END IF;
+    END LOOP;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Bulk re-run cost group extraction for all tasks and conversations
+CREATE OR REPLACE FUNCTION rerun_all_cost_group_linking()
+RETURNS UUID 
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_run_id UUID;
+    v_task_count INTEGER;
+    v_conv_count INTEGER;
+    v_total_count INTEGER;
+    v_processed INTEGER := 0;
+    v_created INTEGER := 0;
+    v_linked INTEGER := 0;
+    v_record RECORD;
+    v_initial_cg_count INTEGER;
+    v_initial_link_count INTEGER;
+    v_final_cg_count INTEGER;
+    v_final_link_count INTEGER;
+BEGIN
+    -- Create run record
+    INSERT INTO operation_runs (run_type, status, started_at)
+    VALUES ('cost_group_linking', 'running', NOW())
+    RETURNING id INTO v_run_id;
+
+    -- Count totals
+    SELECT COUNT(*) INTO v_task_count FROM teamwork.tasks WHERE deleted_at IS NULL;
+    SELECT COUNT(*) INTO v_conv_count FROM missive.conversations;
+    v_total_count := v_task_count + v_conv_count;
+    
+    UPDATE operation_runs SET total_count = v_total_count WHERE id = v_run_id;
+    
+    -- Get initial counts for stats
+    SELECT COUNT(*) INTO v_initial_cg_count FROM cost_groups;
+    SELECT COUNT(*) INTO v_initial_link_count FROM object_cost_groups;
+
+    -- Process all tasks
+    FOR v_record IN SELECT id FROM teamwork.tasks WHERE deleted_at IS NULL LOOP
+        BEGIN
+            PERFORM extract_cost_groups_for_task(v_record.id);
+            v_processed := v_processed + 1;
+            IF v_processed % 100 = 0 THEN
+                UPDATE operation_runs SET processed_count = v_processed WHERE id = v_run_id;
+            END IF;
+        EXCEPTION WHEN OTHERS THEN
+            RAISE NOTICE 'Error processing task %: %', v_record.id, SQLERRM;
+        END;
+    END LOOP;
+
+    -- Process all conversations
+    FOR v_record IN SELECT id FROM missive.conversations LOOP
+        BEGIN
+            PERFORM extract_cost_groups_for_conversation(v_record.id);
+            v_processed := v_processed + 1;
+            IF v_processed % 100 = 0 THEN
+                UPDATE operation_runs SET processed_count = v_processed WHERE id = v_run_id;
+            END IF;
+        EXCEPTION WHEN OTHERS THEN
+            RAISE NOTICE 'Error processing conversation %: %', v_record.id, SQLERRM;
+        END;
+    END LOOP;
+
+    -- Calculate stats
+    SELECT COUNT(*) INTO v_final_cg_count FROM cost_groups;
+    SELECT COUNT(*) INTO v_final_link_count FROM object_cost_groups;
+    v_created := v_final_cg_count - v_initial_cg_count;
+    v_linked := v_final_link_count - v_initial_link_count;
+
+    -- Complete the run
+    UPDATE operation_runs SET 
+        status = 'completed', 
+        processed_count = v_processed,
+        created_count = v_created,
+        linked_count = v_linked,
+        completed_at = NOW()
+    WHERE id = v_run_id;
+    
+    RETURN v_run_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Status functions for cost group linking
+CREATE OR REPLACE FUNCTION get_cost_group_linking_run_status(p_run_id UUID)
+RETURNS TABLE (
+    id UUID, status VARCHAR(50), total_count INTEGER, processed_count INTEGER,
+    created_count INTEGER, linked_count INTEGER, skipped_count INTEGER,
+    progress_percent NUMERIC, started_at TIMESTAMP, completed_at TIMESTAMP, error_message TEXT
+)
+SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+    RETURN QUERY SELECT * FROM get_operation_run_status(p_run_id);
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+CREATE OR REPLACE FUNCTION get_latest_cost_group_linking_run()
+RETURNS TABLE (
+    id UUID, status VARCHAR(50), total_count INTEGER, processed_count INTEGER,
+    created_count INTEGER, linked_count INTEGER, skipped_count INTEGER,
+    progress_percent NUMERIC, started_at TIMESTAMP, completed_at TIMESTAMP, error_message TEXT
+)
+SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+    RETURN QUERY SELECT * FROM get_latest_operation_run('cost_group_linking');
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+-- =====================================
 -- COMMENTS
 -- =====================================
 
@@ -391,3 +653,8 @@ COMMENT ON FUNCTION extract_task_type(INTEGER) IS 'Extracts and assigns task typ
 COMMENT ON FUNCTION rerun_all_task_type_extractions() IS 'Re-runs task type extraction on all tasks, returns run ID for tracking';
 COMMENT ON FUNCTION get_extraction_run_status(UUID) IS 'Gets status of an extraction run by ID';
 COMMENT ON FUNCTION get_latest_extraction_run() IS 'Gets the most recent extraction run status';
+COMMENT ON FUNCTION get_or_create_cost_group(INTEGER, TEXT) IS 'Gets existing or creates new cost group with proper parent hierarchy (DIN 276)';
+COMMENT ON FUNCTION parse_cost_group_tag(TEXT, TEXT[]) IS 'Parses tag name for cost group pattern (PREFIX CODE NAME)';
+COMMENT ON FUNCTION extract_cost_groups_for_task(INTEGER) IS 'Extracts and links cost groups from task tags';
+COMMENT ON FUNCTION extract_cost_groups_for_conversation(UUID) IS 'Extracts and links cost groups from conversation labels';
+COMMENT ON FUNCTION rerun_all_cost_group_linking() IS 'Re-runs cost group extraction on all tasks and conversations';

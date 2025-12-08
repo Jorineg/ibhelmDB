@@ -11,7 +11,8 @@ This file documents the JSON schema for the `app_settings.body` column. **Keep t
   "craft_space_id": "",
   "person_color": "#10b981",
   "project_color": "#f59e0b",
-  "teamwork_base_url": ""
+  "teamwork_base_url": "",
+  "cost_group_prefixes": ["KGR"]
 }
 ```
 
@@ -25,3 +26,4 @@ This file documents the JSON schema for the `app_settings.body` column. **Keep t
 | `person_color` | string (hex color) | `#10b981` | Color for person type badges and link buttons in the People view |
 | `project_color` | string (hex color) | `#f59e0b` | Color for project type badges and link buttons in the Projects view |
 | `teamwork_base_url` | string | `""` | Base URL for Teamwork project links (e.g., `https://yourcompany.teamwork.com`) |
+| `cost_group_prefixes` | string[] | `["KGR"]` | Tag prefixes for cost group extraction. Tags matching `PREFIX CODE NAME` pattern (e.g., "KGR 456 demo kostengruppe") are auto-linked |

@@ -95,6 +95,6 @@ CREATE TABLE app_settings (
     body JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
-INSERT INTO app_settings (body) VALUES ('{"email_color": "#3b82f6", "craft_color": "#8b5cf6"}'::jsonb);
+INSERT INTO app_settings (body) VALUES ('{"email_color": "#3b82f6", "craft_color": "#8b5cf6", "cost_group_prefixes": ["KGR"]}'::jsonb);
 
 COMMENT ON TABLE app_settings IS 'Single-row settings table. Schema in ibhelmDB/docs/app_settings_schema.md';

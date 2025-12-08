@@ -175,13 +175,15 @@ Table locations {
 Table cost_groups {
   id uuid [pk, default: `gen_random_uuid()`]
   parent_id uuid [ref: > cost_groups.id]
-  code varchar [note: "300, 400, 410, 411.2"]
+  code integer [not null, unique, note: "3-digit code (100-999). DIN 276 structure: 456->450->400"]
   name text
   
-  path text [note: "Materialized Path, z.B. '300.410.411.2'"]
+  path text [note: "Materialized Path, z.B. '400.450.456'"]
   
   db_created_at timestamp [default: `now()`]
   db_updated_at timestamp [default: `now()`]
+  
+  Note: "CHECK (code >= 100 AND code <= 999)"
 }
 
 // --- 6. FILES & CONTENT ---
