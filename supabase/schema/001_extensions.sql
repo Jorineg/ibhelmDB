@@ -4,7 +4,8 @@
 -- Enable required PostgreSQL extensions
 
 -- UUID generation
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+-- Note: gen_random_uuid() is built-in since Postgres 13, no extension needed for it.
+-- We only enable pg_trgm and unaccent.
 
 -- Trigram similarity search for fuzzy matching
 -- Used for location search and typo-resistant queries

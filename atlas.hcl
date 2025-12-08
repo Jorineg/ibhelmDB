@@ -32,7 +32,5 @@ env "dev" {
     "_realtime.*",
     "pg_*",
     "cron.*",
-    "public.uuid_generate_*",
-    "public.gen_random_*",
   ]
 }

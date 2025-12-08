@@ -1,9 +1,10 @@
 -- =====================================
--- SUPABASE STUBS (ROLES ONLY)
+-- SUPABASE STUBS (ROLES & PUBLIC)
 -- =====================================
 -- Minimal stubs for Atlas dev database compatibility
--- Only creates roles required by grants in other files
--- DOES NOT create schemas to avoid OID conflicts
+
+-- Ensure public schema exists and is tracked
+CREATE SCHEMA IF NOT EXISTS public;
 
 DO $$ 
 BEGIN 
@@ -20,4 +21,3 @@ BEGIN
     CREATE ROLE service_role NOLOGIN;
   END IF;
 END $$;
-
