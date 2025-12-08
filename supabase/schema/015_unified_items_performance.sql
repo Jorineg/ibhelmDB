@@ -423,27 +423,6 @@ GRANT EXECUTE ON FUNCTION refresh_stale_unified_items_aggregates() TO authentica
 SELECT refresh_unified_items_aggregates(FALSE);
 
 -- =====================================
--- 8. SCHEDULED MV REFRESH (pg_cron)
--- =====================================
--- Automatically refresh stale materialized views every minute
--- Requires pg_cron extension (typically available in self-hosted Supabase)
-
--- Enable pg_cron if not already enabled
-CREATE EXTENSION IF NOT EXISTS pg_cron;
-
--- Remove existing job if present (idempotent)
-SELECT cron.unschedule('refresh_unified_items_mvs') WHERE EXISTS (
-    SELECT 1 FROM cron.job WHERE jobname = 'refresh_unified_items_mvs'
-);
-
--- Schedule refresh every minute
-SELECT cron.schedule(
-    'refresh_unified_items_mvs',
-    '* * * * *',  -- every minute
-    $$SELECT refresh_stale_unified_items_aggregates()$$
-);
-
--- =====================================
 -- COMMENTS
 -- =====================================
 
