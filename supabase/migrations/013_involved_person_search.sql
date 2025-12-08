@@ -271,7 +271,8 @@ CREATE OR REPLACE FUNCTION get_unified_items_by_involved_person(
     p_sort_order TEXT DEFAULT 'desc',
     p_limit INTEGER DEFAULT 50,
     p_offset INTEGER DEFAULT 0,
-    p_selected_task_types UUID[] DEFAULT NULL
+    p_selected_task_types UUID[] DEFAULT NULL,
+    p_tag_search TEXT DEFAULT NULL
 )
 RETURNS TABLE(
     id TEXT, type TEXT, name TEXT, description TEXT, status VARCHAR, project TEXT, customer TEXT,
@@ -286,13 +287,16 @@ RETURNS TABLE(
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
 DECLARE
     v_person_ids UUID[];
-    v_has_filter BOOLEAN;
+    v_has_person_filter BOOLEAN;
+    v_has_tag_filter BOOLEAN;
 BEGIN
     IF p_sort_field NOT IN ('name', 'status', 'project', 'customer', 'due_date', 'created_at', 'updated_at', 'priority', 'sort_date') THEN p_sort_field := 'sort_date'; END IF;
     IF p_sort_order NOT IN ('asc', 'desc') THEN p_sort_order := 'desc'; END IF;
     
-    v_has_filter := p_involved_person_search IS NOT NULL AND TRIM(p_involved_person_search) != '';
-    IF v_has_filter THEN
+    v_has_person_filter := p_involved_person_search IS NOT NULL AND TRIM(p_involved_person_search) != '';
+    v_has_tag_filter := p_tag_search IS NOT NULL AND TRIM(p_tag_search) != '';
+    
+    IF v_has_person_filter THEN
         v_person_ids := find_person_ids_by_search(p_involved_person_search);
         IF array_length(v_person_ids, 1) IS NULL THEN RETURN; END IF;
     END IF;
@@ -308,12 +312,16 @@ BEGIN
     FROM unified_items ui
     WHERE ((p_show_tasks AND ui.type = 'task' AND (p_selected_task_types IS NULL OR ui.task_type_id = ANY(p_selected_task_types)))
             OR (p_show_emails AND ui.type = 'email') OR (p_show_craft AND ui.type = 'craft'))
-        AND (NOT v_has_filter OR EXISTS (SELECT 1 FROM item_involved_persons iip WHERE iip.item_id = ui.id AND iip.item_type = ui.type AND iip.unified_person_id = ANY(v_person_ids)))
+        AND (NOT v_has_person_filter OR EXISTS (SELECT 1 FROM item_involved_persons iip WHERE iip.item_id = ui.id AND iip.item_type = ui.type AND iip.unified_person_id = ANY(v_person_ids)))
         AND (p_text_search IS NULL OR LOWER(ui.name) LIKE '%' || LOWER(p_text_search) || '%'
             OR LOWER(ui.description) LIKE '%' || LOWER(p_text_search) || '%'
             OR LOWER(ui.body) LIKE '%' || LOWER(p_text_search) || '%'
             OR LOWER(ui.preview) LIKE '%' || LOWER(p_text_search) || '%'
             OR LOWER(ui.conversation_comments_text) LIKE '%' || LOWER(p_text_search) || '%')
+        AND (NOT v_has_tag_filter OR EXISTS (
+            SELECT 1 FROM jsonb_array_elements(ui.tags) t 
+            WHERE LOWER(t->>'name') LIKE '%' || LOWER(p_tag_search) || '%'
+        ))
     ORDER BY 
         CASE WHEN p_sort_field = 'sort_date' AND p_sort_order = 'desc' THEN ui.sort_date END DESC NULLS LAST,
         CASE WHEN p_sort_field = 'sort_date' AND p_sort_order = 'asc' THEN ui.sort_date END ASC NULLS LAST,
@@ -343,16 +351,20 @@ CREATE OR REPLACE FUNCTION count_unified_items_by_involved_person(
     p_show_emails BOOLEAN DEFAULT TRUE,
     p_show_craft BOOLEAN DEFAULT TRUE,
     p_text_search TEXT DEFAULT NULL,
-    p_selected_task_types UUID[] DEFAULT NULL
+    p_selected_task_types UUID[] DEFAULT NULL,
+    p_tag_search TEXT DEFAULT NULL
 )
 RETURNS INTEGER LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
 DECLARE
     v_count INTEGER;
     v_person_ids UUID[];
-    v_has_filter BOOLEAN;
+    v_has_person_filter BOOLEAN;
+    v_has_tag_filter BOOLEAN;
 BEGIN
-    v_has_filter := p_involved_person_search IS NOT NULL AND TRIM(p_involved_person_search) != '';
-    IF v_has_filter THEN
+    v_has_person_filter := p_involved_person_search IS NOT NULL AND TRIM(p_involved_person_search) != '';
+    v_has_tag_filter := p_tag_search IS NOT NULL AND TRIM(p_tag_search) != '';
+    
+    IF v_has_person_filter THEN
         v_person_ids := find_person_ids_by_search(p_involved_person_search);
         IF array_length(v_person_ids, 1) IS NULL THEN RETURN 0; END IF;
     END IF;
@@ -360,12 +372,16 @@ BEGIN
     SELECT COUNT(*)::INTEGER INTO v_count FROM unified_items ui
     WHERE ((p_show_tasks AND ui.type = 'task' AND (p_selected_task_types IS NULL OR ui.task_type_id = ANY(p_selected_task_types)))
             OR (p_show_emails AND ui.type = 'email') OR (p_show_craft AND ui.type = 'craft'))
-        AND (NOT v_has_filter OR EXISTS (SELECT 1 FROM item_involved_persons iip WHERE iip.item_id = ui.id AND iip.item_type = ui.type AND iip.unified_person_id = ANY(v_person_ids)))
+        AND (NOT v_has_person_filter OR EXISTS (SELECT 1 FROM item_involved_persons iip WHERE iip.item_id = ui.id AND iip.item_type = ui.type AND iip.unified_person_id = ANY(v_person_ids)))
         AND (p_text_search IS NULL OR LOWER(ui.name) LIKE '%' || LOWER(p_text_search) || '%'
             OR LOWER(ui.description) LIKE '%' || LOWER(p_text_search) || '%'
             OR LOWER(ui.body) LIKE '%' || LOWER(p_text_search) || '%'
             OR LOWER(ui.preview) LIKE '%' || LOWER(p_text_search) || '%'
-            OR LOWER(ui.conversation_comments_text) LIKE '%' || LOWER(p_text_search) || '%');
+            OR LOWER(ui.conversation_comments_text) LIKE '%' || LOWER(p_text_search) || '%')
+        AND (NOT v_has_tag_filter OR EXISTS (
+            SELECT 1 FROM jsonb_array_elements(ui.tags) t 
+            WHERE LOWER(t->>'name') LIKE '%' || LOWER(p_tag_search) || '%'
+        ));
     RETURN v_count;
 END;
 $$;

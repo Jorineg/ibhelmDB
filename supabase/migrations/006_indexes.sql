@@ -49,8 +49,8 @@ CREATE INDEX idx_unified_persons_primary_email_trgm ON unified_persons USING GIS
 -- Trigram index for fuzzy search on cost group names
 CREATE INDEX idx_cost_groups_name_trgm ON cost_groups USING GIST (name gist_trgm_ops);
 
--- Trigram index for fuzzy search on cost group codes
-CREATE INDEX idx_cost_groups_code_trgm ON cost_groups USING GIST (code gist_trgm_ops);
+-- Trigram index for fuzzy search on cost group codes (cast to text for search)
+CREATE INDEX idx_cost_groups_code_trgm ON cost_groups USING GIST ((code::TEXT) gist_trgm_ops);
 
 -- =====================================
 -- TEAMWORK SEARCH INDEXES
