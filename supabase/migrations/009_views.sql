@@ -76,17 +76,17 @@ LEFT JOIN teamwork.projects twp ON pc.tw_project_id = twp.id
 
 UNION ALL
 
--- Craft Documents
+-- Craft Documents (only body contains markdown content, not description/preview/status)
 SELECT 
-    cd.id::TEXT AS id, 'craft' AS type, cd.title AS name, LEFT(cd.markdown_content, 300) AS description,
-    CASE WHEN cd.is_deleted THEN 'deleted' ELSE 'active' END AS status,
+    cd.id::TEXT AS id, 'craft' AS type, cd.title AS name, NULL::TEXT AS description,
+    '' AS status,
     '' AS project, '' AS customer, NULL AS location, NULL AS location_path,
     NULL AS cost_group, NULL AS cost_group_code, NULL AS due_date,
     cd.craft_created_at AS created_at, cd.craft_last_modified_at AS updated_at,
     '' AS priority, NULL AS progress, '' AS tasklist,
     NULL::UUID AS task_type_id, NULL::TEXT AS task_type_name, NULL::TEXT AS task_type_slug, NULL::VARCHAR(50) AS task_type_color,
     NULL::JSONB AS assignees, NULL::JSONB AS tags,
-    cd.markdown_content AS body, LEFT(cd.markdown_content, 200) AS preview,
+    cd.markdown_content AS body, NULL::TEXT AS preview,
     NULL AS from_name, NULL AS from_email, NULL AS conversation_subject,
     NULL::JSONB AS recipients, NULL::JSONB AS attachments, 0 AS attachment_count, NULL AS conversation_comments_text,
     'craftdocs://open?blockId=' || cd.id AS craft_url, NULL::TEXT AS teamwork_url, NULL::TEXT AS missive_url,

@@ -239,13 +239,13 @@ LEFT JOIN mv_conversation_comments_agg cca ON m.conversation_id = cca.conversati
 
 UNION ALL
 
--- Craft Documents
+-- Craft Documents (only body contains markdown content, not description/preview/status)
 SELECT 
     cd.id::TEXT AS id,
     'craft' AS type,
     cd.title AS name,
-    LEFT(cd.markdown_content, 300) AS description,
-    CASE WHEN cd.is_deleted THEN 'deleted' ELSE 'active' END AS status,
+    NULL::TEXT AS description,
+    '' AS status,
     '' AS project,
     '' AS customer,
     NULL AS location,
@@ -265,7 +265,7 @@ SELECT
     NULL::JSONB AS assignees,
     NULL::JSONB AS tags,
     cd.markdown_content AS body,
-    LEFT(cd.markdown_content, 200) AS preview,
+    NULL::TEXT AS preview,
     NULL AS from_name,
     NULL AS from_email,
     NULL AS conversation_subject,
