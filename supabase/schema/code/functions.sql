@@ -1480,7 +1480,7 @@ BEGIN
         AND (NOT v_has_location_filter OR EXISTS (
             SELECT 1 FROM object_locations ol
             WHERE (ui.type = 'task' AND ol.tw_task_id = ui.id::INTEGER) 
-               OR (ui.type = 'email' AND ol.m_conversation_id = (SELECT conversation_id FROM missive.messages WHERE id = ui.id::UUID))
+               OR (ui.type = 'email' AND ol.m_conversation_id = (SELECT mm.conversation_id FROM missive.messages mm WHERE mm.id = ui.id::UUID))
             AND ol.location_id = ANY(v_location_ids)))
         AND (p_name_contains IS NULL OR p_name_contains = '' OR LOWER(ui.name) LIKE '%' || LOWER(p_name_contains) || '%')
         AND (p_description_contains IS NULL OR p_description_contains = '' OR LOWER(ui.description) LIKE '%' || LOWER(p_description_contains) || '%')
@@ -1596,7 +1596,7 @@ BEGIN
         AND (NOT v_has_location_filter OR EXISTS (
             SELECT 1 FROM object_locations ol
             WHERE (ui.type = 'task' AND ol.tw_task_id = ui.id::INTEGER) 
-               OR (ui.type = 'email' AND ol.m_conversation_id = (SELECT conversation_id FROM missive.messages WHERE id = ui.id::UUID))
+               OR (ui.type = 'email' AND ol.m_conversation_id = (SELECT mm.conversation_id FROM missive.messages mm WHERE mm.id = ui.id::UUID))
             AND ol.location_id = ANY(v_location_ids)))
         AND (p_name_contains IS NULL OR p_name_contains = '' OR LOWER(ui.name) LIKE '%' || LOWER(p_name_contains) || '%')
         AND (p_description_contains IS NULL OR p_description_contains = '' OR LOWER(ui.description) LIKE '%' || LOWER(p_description_contains) || '%')
