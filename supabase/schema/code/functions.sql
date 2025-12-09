@@ -1477,11 +1477,14 @@ BEGIN
         AND (NOT v_has_cost_filter OR (ui.cost_group_code IS NOT NULL AND ui.cost_group_code ~ '^\d+$'
             AND ui.cost_group_code::INTEGER >= v_cost_min AND ui.cost_group_code::INTEGER <= v_cost_max))
         AND (p_project_search IS NULL OR p_project_search = '' OR LOWER(ui.project) LIKE '%' || LOWER(p_project_search) || '%')
-        AND (NOT v_has_location_filter OR EXISTS (
-            SELECT 1 FROM object_locations ol
-            WHERE (ui.type = 'task' AND ol.tw_task_id = ui.id::INTEGER) 
-               OR (ui.type = 'email' AND ol.m_conversation_id = (SELECT mm.conversation_id FROM missive.messages mm WHERE mm.id = ui.id::UUID))
-            AND ol.location_id = ANY(v_location_ids)))
+        AND (NOT v_has_location_filter OR (
+            (ui.type = 'task' AND EXISTS (
+                SELECT 1 FROM object_locations ol WHERE ol.tw_task_id = ui.id::INTEGER AND ol.location_id = ANY(v_location_ids)))
+            OR (ui.type = 'email' AND EXISTS (
+                SELECT 1 FROM object_locations ol 
+                JOIN missive.messages mm ON mm.conversation_id = ol.m_conversation_id 
+                WHERE mm.id = ui.id::UUID AND ol.location_id = ANY(v_location_ids)))
+            OR (ui.type = 'craft')))
         AND (p_name_contains IS NULL OR p_name_contains = '' OR LOWER(ui.name) LIKE '%' || LOWER(p_name_contains) || '%')
         AND (p_description_contains IS NULL OR p_description_contains = '' OR LOWER(ui.description) LIKE '%' || LOWER(p_description_contains) || '%')
         AND (p_customer_contains IS NULL OR p_customer_contains = '' OR LOWER(ui.customer) LIKE '%' || LOWER(p_customer_contains) || '%')
@@ -1595,11 +1598,14 @@ BEGIN
         AND (NOT v_has_cost_filter OR (ui.cost_group_code IS NOT NULL AND ui.cost_group_code ~ '^\d+$'
             AND ui.cost_group_code::INTEGER >= v_cost_min AND ui.cost_group_code::INTEGER <= v_cost_max))
         AND (p_project_search IS NULL OR p_project_search = '' OR LOWER(ui.project) LIKE '%' || LOWER(p_project_search) || '%')
-        AND (NOT v_has_location_filter OR EXISTS (
-            SELECT 1 FROM object_locations ol
-            WHERE (ui.type = 'task' AND ol.tw_task_id = ui.id::INTEGER) 
-               OR (ui.type = 'email' AND ol.m_conversation_id = (SELECT mm.conversation_id FROM missive.messages mm WHERE mm.id = ui.id::UUID))
-            AND ol.location_id = ANY(v_location_ids)))
+        AND (NOT v_has_location_filter OR (
+            (ui.type = 'task' AND EXISTS (
+                SELECT 1 FROM object_locations ol WHERE ol.tw_task_id = ui.id::INTEGER AND ol.location_id = ANY(v_location_ids)))
+            OR (ui.type = 'email' AND EXISTS (
+                SELECT 1 FROM object_locations ol 
+                JOIN missive.messages mm ON mm.conversation_id = ol.m_conversation_id 
+                WHERE mm.id = ui.id::UUID AND ol.location_id = ANY(v_location_ids)))
+            OR (ui.type = 'craft')))
         AND (p_name_contains IS NULL OR p_name_contains = '' OR LOWER(ui.name) LIKE '%' || LOWER(p_name_contains) || '%')
         AND (p_description_contains IS NULL OR p_description_contains = '' OR LOWER(ui.description) LIKE '%' || LOWER(p_description_contains) || '%')
         AND (p_customer_contains IS NULL OR p_customer_contains = '' OR LOWER(ui.customer) LIKE '%' || LOWER(p_customer_contains) || '%')
