@@ -152,7 +152,196 @@ END;
 $$ LANGUAGE plpgsql IMMUTABLE;
 
 -- =====================================
--- 4. TASK TYPE EXTRACTION
+-- 4. LOCATION EXTRACTION
+-- =====================================
+
+-- Parse location tag: O-Gebäude-Raum, O-Raum, O-Gebäude-Level-Raum
+CREATE OR REPLACE FUNCTION parse_location_tag(p_tag_name TEXT, p_prefix TEXT)
+RETURNS TABLE(building TEXT, level TEXT, room TEXT) AS $$
+DECLARE
+    v_pattern TEXT;
+    v_match TEXT[];
+    v_parts TEXT[];
+    v_remainder TEXT;
+BEGIN
+    IF p_prefix IS NULL OR p_prefix = '' THEN
+        p_prefix := 'O-';
+    END IF;
+    
+    -- Check if tag starts with prefix
+    IF NOT (LOWER(p_tag_name) LIKE LOWER(p_prefix) || '%') THEN
+        RETURN;
+    END IF;
+    
+    -- Get remainder after prefix
+    v_remainder := SUBSTRING(p_tag_name FROM LENGTH(p_prefix) + 1);
+    IF v_remainder IS NULL OR v_remainder = '' THEN
+        RETURN;
+    END IF;
+    
+    -- Split by hyphen
+    v_parts := string_to_array(v_remainder, '-');
+    
+    IF array_length(v_parts, 1) = 1 THEN
+        -- O-Raum: just room, no building or level
+        room := TRIM(v_parts[1]);
+        building := NULL;
+        level := NULL;
+        RETURN NEXT;
+    ELSIF array_length(v_parts, 1) = 2 THEN
+        -- O-Gebäude-Raum: building + room, use default level
+        building := TRIM(v_parts[1]);
+        level := 'Standard';
+        room := TRIM(v_parts[2]);
+        RETURN NEXT;
+    ELSIF array_length(v_parts, 1) >= 3 THEN
+        -- O-Gebäude-Level-Raum: full hierarchy
+        building := TRIM(v_parts[1]);
+        level := TRIM(v_parts[2]);
+        room := TRIM(v_parts[3]);
+        RETURN NEXT;
+    END IF;
+    RETURN;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+-- Get or create location hierarchy, returns room ID
+CREATE OR REPLACE FUNCTION get_or_create_location(p_building TEXT, p_level TEXT, p_room TEXT)
+RETURNS UUID AS $$
+DECLARE
+    v_building_id UUID;
+    v_level_id UUID;
+    v_room_id UUID;
+BEGIN
+    -- Case 1: Room only (no building/level)
+    IF p_building IS NULL THEN
+        SELECT id INTO v_room_id FROM locations WHERE name = p_room AND type = 'room' AND parent_id IS NULL;
+        IF NOT FOUND THEN
+            INSERT INTO locations (name, type, parent_id)
+            VALUES (p_room, 'room', NULL)
+            RETURNING id INTO v_room_id;
+        END IF;
+        RETURN v_room_id;
+    END IF;
+    
+    -- Case 2: Building + Level + Room
+    -- Get or create building
+    SELECT id INTO v_building_id FROM locations WHERE name = p_building AND type = 'building';
+    IF NOT FOUND THEN
+        INSERT INTO locations (name, type, parent_id)
+        VALUES (p_building, 'building', NULL)
+        RETURNING id INTO v_building_id;
+    END IF;
+    
+    -- Get or create level under building
+    SELECT id INTO v_level_id FROM locations WHERE name = p_level AND type = 'level' AND parent_id = v_building_id;
+    IF NOT FOUND THEN
+        INSERT INTO locations (name, type, parent_id)
+        VALUES (p_level, 'level', v_building_id)
+        RETURNING id INTO v_level_id;
+    END IF;
+    
+    -- Get or create room under level
+    SELECT id INTO v_room_id FROM locations WHERE name = p_room AND type = 'room' AND parent_id = v_level_id;
+    IF NOT FOUND THEN
+        INSERT INTO locations (name, type, parent_id)
+        VALUES (p_room, 'room', v_level_id)
+        RETURNING id INTO v_room_id;
+    END IF;
+    
+    RETURN v_room_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Extract locations from task tags
+CREATE OR REPLACE FUNCTION extract_locations_for_task(p_task_id INTEGER)
+RETURNS void AS $$
+DECLARE
+    v_prefix TEXT;
+    v_tag_record RECORD;
+    v_parsed RECORD;
+    v_location_id UUID;
+BEGIN
+    SELECT COALESCE(body->>'location_prefix', 'O-') INTO v_prefix
+    FROM app_settings WHERE lock = 'X';
+    
+    DELETE FROM object_locations WHERE tw_task_id = p_task_id AND source = 'auto_teamwork';
+    
+    FOR v_tag_record IN 
+        SELECT t.name AS tag_name
+        FROM teamwork.task_tags tt JOIN teamwork.tags t ON tt.tag_id = t.id
+        WHERE tt.task_id = p_task_id
+    LOOP
+        SELECT * INTO v_parsed FROM parse_location_tag(v_tag_record.tag_name, v_prefix);
+        IF v_parsed.room IS NOT NULL THEN
+            v_location_id := get_or_create_location(v_parsed.building, v_parsed.level, v_parsed.room);
+            INSERT INTO object_locations (location_id, tw_task_id, source, source_tag_name)
+            VALUES (v_location_id, p_task_id, 'auto_teamwork', v_tag_record.tag_name)
+            ON CONFLICT DO NOTHING;
+        END IF;
+    END LOOP;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Extract locations from conversation labels
+CREATE OR REPLACE FUNCTION extract_locations_for_conversation(p_conversation_id UUID)
+RETURNS void AS $$
+DECLARE
+    v_prefix TEXT;
+    v_label_record RECORD;
+    v_parsed RECORD;
+    v_location_id UUID;
+BEGIN
+    SELECT COALESCE(body->>'location_prefix', 'O-') INTO v_prefix
+    FROM app_settings WHERE lock = 'X';
+    
+    DELETE FROM object_locations WHERE m_conversation_id = p_conversation_id AND source = 'auto_missive';
+    
+    FOR v_label_record IN 
+        SELECT sl.name AS label_name
+        FROM missive.conversation_labels cl JOIN missive.shared_labels sl ON cl.label_id = sl.id
+        WHERE cl.conversation_id = p_conversation_id
+    LOOP
+        SELECT * INTO v_parsed FROM parse_location_tag(v_label_record.label_name, v_prefix);
+        IF v_parsed.room IS NOT NULL THEN
+            v_location_id := get_or_create_location(v_parsed.building, v_parsed.level, v_parsed.room);
+            INSERT INTO object_locations (location_id, m_conversation_id, source, source_tag_name)
+            VALUES (v_location_id, p_conversation_id, 'auto_missive', v_label_record.label_name)
+            ON CONFLICT DO NOTHING;
+        END IF;
+    END LOOP;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Trigger functions for auto-extraction
+CREATE OR REPLACE FUNCTION trigger_extract_locations_for_task()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        DELETE FROM object_locations WHERE tw_task_id = OLD.task_id AND source = 'auto_teamwork';
+        RETURN OLD;
+    ELSE
+        PERFORM extract_locations_for_task(NEW.task_id);
+        RETURN NEW;
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION trigger_extract_locations_for_conversation()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        DELETE FROM object_locations WHERE m_conversation_id = OLD.conversation_id AND source = 'auto_missive';
+        RETURN OLD;
+    ELSE
+        PERFORM extract_locations_for_conversation(NEW.conversation_id);
+        RETURN NEW;
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+-- =====================================
+-- 5. TASK TYPE EXTRACTION
 -- =====================================
 
 CREATE OR REPLACE FUNCTION extract_task_type(p_task_id INTEGER)
@@ -835,6 +1024,84 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+CREATE OR REPLACE FUNCTION rerun_all_location_linking()
+RETURNS UUID AS $$
+DECLARE
+    v_run_id UUID;
+    v_task_count INTEGER;
+    v_conv_count INTEGER;
+    v_total_count INTEGER;
+    v_processed INTEGER := 0;
+    v_created INTEGER := 0;
+    v_linked INTEGER := 0;
+    v_record RECORD;
+    v_initial_loc_count INTEGER;
+    v_initial_link_count INTEGER;
+    v_final_loc_count INTEGER;
+    v_final_link_count INTEGER;
+BEGIN
+    INSERT INTO operation_runs (run_type, status, started_at)
+    VALUES ('location_linking', 'running', NOW())
+    RETURNING id INTO v_run_id;
+
+    SELECT COUNT(*) INTO v_task_count FROM teamwork.tasks WHERE deleted_at IS NULL;
+    SELECT COUNT(*) INTO v_conv_count FROM missive.conversations;
+    v_total_count := v_task_count + v_conv_count;
+    UPDATE operation_runs SET total_count = v_total_count WHERE id = v_run_id;
+    
+    SELECT COUNT(*) INTO v_initial_loc_count FROM locations;
+    SELECT COUNT(*) INTO v_initial_link_count FROM object_locations;
+
+    FOR v_record IN SELECT id FROM teamwork.tasks WHERE deleted_at IS NULL LOOP
+        BEGIN
+            PERFORM extract_locations_for_task(v_record.id);
+            v_processed := v_processed + 1;
+            IF v_processed % 100 = 0 THEN
+                UPDATE operation_runs SET processed_count = v_processed WHERE id = v_run_id;
+            END IF;
+        EXCEPTION WHEN OTHERS THEN NULL;
+        END;
+    END LOOP;
+
+    FOR v_record IN SELECT id FROM missive.conversations LOOP
+        BEGIN
+            PERFORM extract_locations_for_conversation(v_record.id);
+            v_processed := v_processed + 1;
+            IF v_processed % 100 = 0 THEN
+                UPDATE operation_runs SET processed_count = v_processed WHERE id = v_run_id;
+            END IF;
+        EXCEPTION WHEN OTHERS THEN NULL;
+        END;
+    END LOOP;
+
+    SELECT COUNT(*) INTO v_final_loc_count FROM locations;
+    SELECT COUNT(*) INTO v_final_link_count FROM object_locations;
+    v_created := v_final_loc_count - v_initial_loc_count;
+    v_linked := v_final_link_count - v_initial_link_count;
+
+    UPDATE operation_runs SET status = 'completed', processed_count = v_processed,
+        created_count = v_created, linked_count = v_linked, completed_at = NOW()
+    WHERE id = v_run_id;
+    RETURN v_run_id;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION get_location_linking_run_status(p_run_id UUID)
+RETURNS TABLE (id UUID, status VARCHAR(50), total_count INTEGER, processed_count INTEGER,
+    created_count INTEGER, linked_count INTEGER, skipped_count INTEGER,
+    progress_percent NUMERIC, started_at TIMESTAMP, completed_at TIMESTAMP, error_message TEXT)
+AS $$
+BEGIN RETURN QUERY SELECT * FROM get_operation_run_status(p_run_id); END;
+$$ LANGUAGE plpgsql STABLE;
+
+CREATE OR REPLACE FUNCTION get_latest_location_linking_run()
+RETURNS TABLE (id UUID, status VARCHAR(50), total_count INTEGER, processed_count INTEGER,
+    created_count INTEGER, linked_count INTEGER, skipped_count INTEGER,
+    progress_percent NUMERIC, started_at TIMESTAMP, completed_at TIMESTAMP, error_message TEXT)
+AS $$
+BEGIN RETURN QUERY SELECT * FROM get_latest_operation_run('location_linking'); END;
+$$ LANGUAGE plpgsql STABLE;
+
 -- Wrapper functions for backwards compatibility
 CREATE OR REPLACE FUNCTION get_extraction_run_status(p_run_id UUID)
 RETURNS TABLE (id UUID, status VARCHAR(50), total_count INTEGER, processed_count INTEGER,
@@ -1009,6 +1276,34 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION search_locations_autocomplete(p_search_text TEXT, p_limit INTEGER DEFAULT 10)
+RETURNS TABLE(id UUID, name TEXT, type location_type, path TEXT, depth INTEGER)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
+DECLARE v_search_pattern TEXT;
+BEGIN
+    IF p_search_text IS NULL OR TRIM(p_search_text) = '' THEN
+        -- Return all top-level locations and their immediate children
+        RETURN QUERY SELECT l.id, l.name::TEXT, l.type, l.search_text::TEXT AS path, l.depth
+        FROM locations l
+        ORDER BY l.type, l.name ASC LIMIT p_limit;
+        RETURN;
+    END IF;
+    
+    v_search_pattern := '%' || LOWER(p_search_text) || '%';
+    
+    -- Search locations by name or search_text (full path)
+    RETURN QUERY SELECT l.id, l.name::TEXT, l.type, l.search_text::TEXT AS path, l.depth
+    FROM locations l
+    WHERE LOWER(l.name) LIKE v_search_pattern OR LOWER(l.search_text) LIKE v_search_pattern
+    ORDER BY 
+        CASE WHEN LOWER(l.name) = LOWER(p_search_text) THEN 0
+             WHEN LOWER(l.name) LIKE LOWER(p_search_text) || '%' THEN 1
+             ELSE 2 END,
+        l.type, l.name ASC
+    LIMIT p_limit;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION search_tags_autocomplete(p_search_text TEXT, p_limit INTEGER DEFAULT 10)
 RETURNS TABLE(id TEXT, name TEXT, color TEXT, source TEXT)
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
@@ -1066,12 +1361,41 @@ BEGIN
 END;
 $$;
 
+-- Find all descendant location IDs for hierarchical filtering
+CREATE OR REPLACE FUNCTION find_location_ids_by_search(p_search_text TEXT)
+RETURNS UUID[] LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_pattern TEXT;
+    v_result UUID[];
+    v_matched_ids UUID[];
+BEGIN
+    IF p_search_text IS NULL OR TRIM(p_search_text) = '' THEN RETURN ARRAY[]::UUID[]; END IF;
+    v_pattern := '%' || LOWER(p_search_text) || '%';
+    
+    -- Find locations matching the search
+    SELECT ARRAY_AGG(l.id) INTO v_matched_ids
+    FROM locations l
+    WHERE LOWER(l.name) LIKE v_pattern OR LOWER(l.search_text) LIKE v_pattern;
+    
+    IF v_matched_ids IS NULL OR array_length(v_matched_ids, 1) IS NULL THEN
+        RETURN ARRAY[]::UUID[];
+    END IF;
+    
+    -- Include matched locations and ALL their descendants (hierarchical search)
+    SELECT ARRAY_AGG(DISTINCT l.id) INTO v_result
+    FROM locations l
+    WHERE l.id = ANY(v_matched_ids) 
+       OR l.path_ids && v_matched_ids;  -- GIN index on path_ids
+    
+    RETURN COALESCE(v_result, ARRAY[]::UUID[]);
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION query_unified_items(
     p_types TEXT[] DEFAULT NULL, p_task_types UUID[] DEFAULT NULL,
     p_text_search TEXT DEFAULT NULL, p_involved_person TEXT DEFAULT NULL,
     p_tag_search TEXT DEFAULT NULL, p_cost_group_code TEXT DEFAULT NULL,
-    p_project_search TEXT DEFAULT NULL, p_location_building TEXT DEFAULT NULL,
-    p_location_floor TEXT DEFAULT NULL, p_location_room TEXT DEFAULT NULL,
+    p_project_search TEXT DEFAULT NULL, p_location_search TEXT DEFAULT NULL,
     p_name_contains TEXT DEFAULT NULL, p_description_contains TEXT DEFAULT NULL,
     p_customer_contains TEXT DEFAULT NULL, p_tasklist_contains TEXT DEFAULT NULL,
     p_from_name_contains TEXT DEFAULT NULL, p_from_email_contains TEXT DEFAULT NULL,
@@ -1102,6 +1426,8 @@ DECLARE
     v_cost_min INTEGER;
     v_cost_max INTEGER;
     v_has_cost_filter BOOLEAN;
+    v_location_ids UUID[];
+    v_has_location_filter BOOLEAN;
 BEGIN
     IF p_sort_field NOT IN ('name', 'status', 'project', 'customer', 'due_date', 'created_at', 'updated_at', 'priority', 'sort_date', 'progress', 'attachment_count') THEN
         p_sort_field := 'sort_date';
@@ -1118,6 +1444,12 @@ BEGIN
     IF v_has_cost_filter THEN
         SELECT cgr.min_code, cgr.max_code INTO v_cost_min, v_cost_max FROM compute_cost_group_range(p_cost_group_code) cgr;
         IF v_cost_min IS NULL THEN v_has_cost_filter := FALSE; END IF;
+    END IF;
+    
+    v_has_location_filter := p_location_search IS NOT NULL AND TRIM(p_location_search) != '';
+    IF v_has_location_filter THEN
+        v_location_ids := find_location_ids_by_search(p_location_search);
+        IF array_length(v_location_ids, 1) IS NULL THEN RETURN; END IF;
     END IF;
     
     RETURN QUERY
@@ -1145,9 +1477,11 @@ BEGIN
         AND (NOT v_has_cost_filter OR (ui.cost_group_code IS NOT NULL AND ui.cost_group_code ~ '^\d+$'
             AND ui.cost_group_code::INTEGER >= v_cost_min AND ui.cost_group_code::INTEGER <= v_cost_max))
         AND (p_project_search IS NULL OR p_project_search = '' OR LOWER(ui.project) LIKE '%' || LOWER(p_project_search) || '%')
-        AND (p_location_building IS NULL OR p_location_building = '' OR LOWER(ui.location_path) LIKE '%' || LOWER(p_location_building) || '%')
-        AND (p_location_floor IS NULL OR p_location_floor = '' OR LOWER(ui.location_path) LIKE '%' || LOWER(p_location_floor) || '%')
-        AND (p_location_room IS NULL OR p_location_room = '' OR LOWER(ui.location_path) LIKE '%' || LOWER(p_location_room) || '%')
+        AND (NOT v_has_location_filter OR EXISTS (
+            SELECT 1 FROM object_locations ol
+            WHERE (ui.type = 'task' AND ol.tw_task_id = ui.id::INTEGER) 
+               OR (ui.type = 'email' AND ol.m_conversation_id = (SELECT conversation_id FROM missive.messages WHERE id = ui.id::UUID))
+            AND ol.location_id = ANY(v_location_ids)))
         AND (p_name_contains IS NULL OR p_name_contains = '' OR LOWER(ui.name) LIKE '%' || LOWER(p_name_contains) || '%')
         AND (p_description_contains IS NULL OR p_description_contains = '' OR LOWER(ui.description) LIKE '%' || LOWER(p_description_contains) || '%')
         AND (p_customer_contains IS NULL OR p_customer_contains = '' OR LOWER(ui.customer) LIKE '%' || LOWER(p_customer_contains) || '%')
@@ -1200,8 +1534,7 @@ CREATE OR REPLACE FUNCTION count_unified_items(
     p_types TEXT[] DEFAULT NULL, p_task_types UUID[] DEFAULT NULL,
     p_text_search TEXT DEFAULT NULL, p_involved_person TEXT DEFAULT NULL,
     p_tag_search TEXT DEFAULT NULL, p_cost_group_code TEXT DEFAULT NULL,
-    p_project_search TEXT DEFAULT NULL, p_location_building TEXT DEFAULT NULL,
-    p_location_floor TEXT DEFAULT NULL, p_location_room TEXT DEFAULT NULL,
+    p_project_search TEXT DEFAULT NULL, p_location_search TEXT DEFAULT NULL,
     p_name_contains TEXT DEFAULT NULL, p_description_contains TEXT DEFAULT NULL,
     p_customer_contains TEXT DEFAULT NULL, p_tasklist_contains TEXT DEFAULT NULL,
     p_from_name_contains TEXT DEFAULT NULL, p_from_email_contains TEXT DEFAULT NULL,
@@ -1223,6 +1556,8 @@ DECLARE
     v_cost_min INTEGER;
     v_cost_max INTEGER;
     v_has_cost_filter BOOLEAN;
+    v_location_ids UUID[];
+    v_has_location_filter BOOLEAN;
 BEGIN
     v_has_person_filter := p_involved_person IS NOT NULL AND TRIM(p_involved_person) != '';
     IF v_has_person_filter THEN
@@ -1234,6 +1569,12 @@ BEGIN
     IF v_has_cost_filter THEN
         SELECT cgr.min_code, cgr.max_code INTO v_cost_min, v_cost_max FROM compute_cost_group_range(p_cost_group_code) cgr;
         IF v_cost_min IS NULL THEN v_has_cost_filter := FALSE; END IF;
+    END IF;
+    
+    v_has_location_filter := p_location_search IS NOT NULL AND TRIM(p_location_search) != '';
+    IF v_has_location_filter THEN
+        v_location_ids := find_location_ids_by_search(p_location_search);
+        IF array_length(v_location_ids, 1) IS NULL THEN RETURN 0; END IF;
     END IF;
     
     SELECT COUNT(*)::INTEGER INTO v_count FROM unified_items ui
@@ -1252,9 +1593,11 @@ BEGIN
         AND (NOT v_has_cost_filter OR (ui.cost_group_code IS NOT NULL AND ui.cost_group_code ~ '^\d+$'
             AND ui.cost_group_code::INTEGER >= v_cost_min AND ui.cost_group_code::INTEGER <= v_cost_max))
         AND (p_project_search IS NULL OR p_project_search = '' OR LOWER(ui.project) LIKE '%' || LOWER(p_project_search) || '%')
-        AND (p_location_building IS NULL OR p_location_building = '' OR LOWER(ui.location_path) LIKE '%' || LOWER(p_location_building) || '%')
-        AND (p_location_floor IS NULL OR p_location_floor = '' OR LOWER(ui.location_path) LIKE '%' || LOWER(p_location_floor) || '%')
-        AND (p_location_room IS NULL OR p_location_room = '' OR LOWER(ui.location_path) LIKE '%' || LOWER(p_location_room) || '%')
+        AND (NOT v_has_location_filter OR EXISTS (
+            SELECT 1 FROM object_locations ol
+            WHERE (ui.type = 'task' AND ol.tw_task_id = ui.id::INTEGER) 
+               OR (ui.type = 'email' AND ol.m_conversation_id = (SELECT conversation_id FROM missive.messages WHERE id = ui.id::UUID))
+            AND ol.location_id = ANY(v_location_ids)))
         AND (p_name_contains IS NULL OR p_name_contains = '' OR LOWER(ui.name) LIKE '%' || LOWER(p_name_contains) || '%')
         AND (p_description_contains IS NULL OR p_description_contains = '' OR LOWER(ui.description) LIKE '%' || LOWER(p_description_contains) || '%')
         AND (p_customer_contains IS NULL OR p_customer_contains = '' OR LOWER(ui.customer) LIKE '%' || LOWER(p_customer_contains) || '%')

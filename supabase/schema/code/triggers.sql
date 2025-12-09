@@ -133,7 +133,19 @@ CREATE TRIGGER auto_link_person_on_teamwork_user AFTER INSERT ON teamwork.users
     FOR EACH ROW EXECUTE FUNCTION trigger_link_person_from_teamwork_user();
 
 -- =====================================
--- 5. PROJECT-CONVERSATION AUTO-LINKING TRIGGERS
+-- 5. LOCATION AUTO-EXTRACTION TRIGGERS
+-- =====================================
+
+DROP TRIGGER IF EXISTS extract_locations_on_task_tags_change ON teamwork.task_tags;
+CREATE TRIGGER extract_locations_on_task_tags_change AFTER INSERT OR UPDATE OR DELETE ON teamwork.task_tags
+    FOR EACH ROW EXECUTE FUNCTION trigger_extract_locations_for_task();
+
+DROP TRIGGER IF EXISTS extract_locations_on_conv_labels_change ON missive.conversation_labels;
+CREATE TRIGGER extract_locations_on_conv_labels_change AFTER INSERT OR UPDATE OR DELETE ON missive.conversation_labels
+    FOR EACH ROW EXECUTE FUNCTION trigger_extract_locations_for_conversation();
+
+-- =====================================
+-- 6. PROJECT-CONVERSATION AUTO-LINKING TRIGGERS
 -- =====================================
 
 DROP TRIGGER IF EXISTS auto_link_projects_on_conversation_insert ON missive.conversations;

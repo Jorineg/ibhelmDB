@@ -205,6 +205,10 @@ CREATE UNIQUE INDEX idx_object_cost_groups_unique_task ON object_cost_groups(cos
 CREATE UNIQUE INDEX idx_object_cost_groups_unique_conversation ON object_cost_groups(cost_group_id, m_conversation_id) WHERE m_conversation_id IS NOT NULL;
 CREATE UNIQUE INDEX idx_object_cost_groups_unique_file ON object_cost_groups(cost_group_id, file_id) WHERE file_id IS NOT NULL;
 
+CREATE UNIQUE INDEX idx_object_locations_unique_task ON object_locations(location_id, tw_task_id) WHERE tw_task_id IS NOT NULL;
+CREATE UNIQUE INDEX idx_object_locations_unique_conversation ON object_locations(location_id, m_conversation_id) WHERE m_conversation_id IS NOT NULL;
+CREATE UNIQUE INDEX idx_object_locations_unique_file ON object_locations(location_id, file_id) WHERE file_id IS NOT NULL;
+
 -- =====================================
 -- 7. INVOLVED PERSONS JUNCTION TABLE
 -- =====================================

@@ -68,7 +68,7 @@ CREATE TABLE app_settings (
     body JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
-INSERT INTO app_settings (body) VALUES ('{"email_color": "#3b82f6", "craft_color": "#8b5cf6", "cost_group_prefixes": ["KGR"]}'::jsonb);
+INSERT INTO app_settings (body) VALUES ('{"email_color": "#3b82f6", "craft_color": "#8b5cf6", "cost_group_prefixes": ["KGR"], "location_prefix": "O-"}'::jsonb);
 
 -- =====================================
 -- INDEXES
