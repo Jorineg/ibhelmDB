@@ -1429,7 +1429,7 @@ DECLARE
     v_location_ids UUID[];
     v_has_location_filter BOOLEAN;
 BEGIN
-    IF p_sort_field NOT IN ('name', 'status', 'project', 'customer', 'due_date', 'created_at', 'updated_at', 'priority', 'sort_date', 'progress', 'attachment_count') THEN
+    IF p_sort_field NOT IN ('name', 'status', 'project', 'customer', 'due_date', 'created_at', 'updated_at', 'priority', 'sort_date', 'progress', 'attachment_count', 'cost_group_code') THEN
         p_sort_field := 'sort_date';
     END IF;
     IF p_sort_order NOT IN ('asc', 'desc') THEN p_sort_order := 'desc'; END IF;
@@ -1525,7 +1525,9 @@ BEGIN
         CASE WHEN p_sort_field = 'progress' AND p_sort_order = 'desc' THEN ui.progress END DESC NULLS LAST,
         CASE WHEN p_sort_field = 'progress' AND p_sort_order = 'asc' THEN ui.progress END ASC NULLS LAST,
         CASE WHEN p_sort_field = 'attachment_count' AND p_sort_order = 'desc' THEN ui.attachment_count END DESC NULLS LAST,
-        CASE WHEN p_sort_field = 'attachment_count' AND p_sort_order = 'asc' THEN ui.attachment_count END ASC NULLS LAST
+        CASE WHEN p_sort_field = 'attachment_count' AND p_sort_order = 'asc' THEN ui.attachment_count END ASC NULLS LAST,
+        CASE WHEN p_sort_field = 'cost_group_code' AND p_sort_order = 'desc' THEN NULLIF(ui.cost_group_code, '')::INTEGER END DESC NULLS LAST,
+        CASE WHEN p_sort_field = 'cost_group_code' AND p_sort_order = 'asc' THEN NULLIF(ui.cost_group_code, '')::INTEGER END ASC NULLS LAST
     LIMIT p_limit OFFSET p_offset;
 END;
 $$;
