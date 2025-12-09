@@ -63,23 +63,33 @@ docker exec -i "$CONTAINER" psql -U supabase_admin -d postgres -c "CREATE DATABA
 docker exec -i "$CONTAINER" psql -U supabase_admin -d postgres -c "ALTER DATABASE atlas_dev OWNER TO postgres" -q
 echo -e "${GREEN}✓ Atlas dev database reset${NC}"
 
-# Step 1: Show Atlas plan and ask for approval
+# Step 1: Generate migration SQL and ask for approval
 echo ""
 echo -e "${YELLOW}Step 1: Computing table changes via Atlas...${NC}"
 cd "$SCRIPT_DIR"
 
-# Show what would change (dry-run)
-PLAN_OUTPUT=$(atlas schema apply --env dev --dry-run 2>&1) || true
+MIGRATION_FILE="/tmp/atlas_migration.sql"
 
-if echo "$PLAN_OUTPUT" | grep -q "Schema is synced"; then
+# Generate migration SQL (diff from current DB to desired schema)
+atlas schema diff \
+    --from "$DATABASE_URL" \
+    --to "file://supabase/schema/tables" \
+    --dev-url "$ATLAS_DEV_URL" \
+    --format '{{ sql . "  " }}' \
+    > "$MIGRATION_FILE" 2>&1 || true
+
+# Check if there are actual changes
+if [ ! -s "$MIGRATION_FILE" ] || ! grep -q "[a-zA-Z]" "$MIGRATION_FILE"; then
     echo -e "${GREEN}✓ No table changes needed${NC}"
 else
-    echo -e "${YELLOW}Planned table changes:${NC}"
-    echo "$PLAN_OUTPUT"
+    echo -e "${YELLOW}Migration SQL:${NC}"
+    echo "----------------------------------------"
+    cat "$MIGRATION_FILE"
+    echo "----------------------------------------"
     echo ""
     
     if [ "$AUTO_APPROVE" = false ]; then
-        read -p "Apply these changes? [y/N] " -n 1 -r
+        read -p "Apply this migration? [y/N] " -n 1 -r
         echo
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
             echo -e "${RED}Aborted by user${NC}"
@@ -87,8 +97,8 @@ else
         fi
     fi
     
-    echo -e "${YELLOW}Applying table changes...${NC}"
-    atlas schema apply --env dev --auto-approve
+    echo -e "${YELLOW}Applying migration via psql...${NC}"
+    run_psql -f - < "$MIGRATION_FILE"
     echo -e "${GREEN}✓ Table changes applied${NC}"
 fi
 
