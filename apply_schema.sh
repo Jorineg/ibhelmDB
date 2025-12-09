@@ -34,44 +34,18 @@ SCHEMA_DIR="$SCRIPT_DIR/supabase/schema"
 echo -e "${GREEN}=== IBHelm Schema Apply ===${NC}"
 echo ""
 
-# Step 1: Apply table changes via Atlas
+# Step 1: Apply table changes via Atlas (uses atlas.hcl config)
 echo -e "${YELLOW}Step 1: Applying table changes via Atlas...${NC}"
 cd "$SCRIPT_DIR"
 
-if atlas schema diff \
-    --from "$DB_URL" \
-    --to "file://supabase/schema/tables" \
-    --dev-url "docker://postgres/15" \
-    --exclude "auth.*" \
-    --exclude "storage.*" \
-    --exclude "realtime.*" \
-    --exclude "supabase_*" \
-    --exclude "_realtime.*" \
-    --exclude "extensions.*" \
-    --exclude "graphql.*" \
-    --exclude "graphql_public.*" \
-    --exclude "pgsodium.*" \
-    --exclude "vault.*" \
-    --exclude "_analytics.*" \
-    --exclude "net.*" \
-    --exclude "pg_catalog.*" \
-    --exclude "information_schema.*" \
-    --exclude "cron.*" \
-    > /tmp/atlas_diff.sql 2>&1; then
-    
-    if [ -s /tmp/atlas_diff.sql ]; then
-        echo -e "${YELLOW}Table changes detected:${NC}"
-        cat /tmp/atlas_diff.sql
-        echo ""
-        echo -e "${YELLOW}Applying table changes...${NC}"
-        psql "$DB_URL" -f /tmp/atlas_diff.sql
-        echo -e "${GREEN}✓ Table changes applied${NC}"
-    else
-        echo -e "${GREEN}✓ No table changes needed${NC}"
-    fi
-else
-    echo -e "${YELLOW}Atlas diff returned non-zero (may be expected)${NC}"
-fi
+# Use atlas.hcl env config which defines:
+# - schemas: only public, teamwork, missive, teamworkmissiveconnector
+# - exclude: auth.*, storage.*, realtime.*, etc.
+# - src: supabase/schema/tables
+atlas schema apply --env dev --auto-approve 2>&1 || {
+    echo -e "${YELLOW}Atlas returned non-zero (may be expected for no changes)${NC}"
+}
+echo -e "${GREEN}✓ Table changes applied${NC}"
 
 # Step 2: Apply all code files (sorted order)
 echo ""
