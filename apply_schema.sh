@@ -71,10 +71,15 @@ cd "$SCRIPT_DIR"
 MIGRATION_FILE="/tmp/atlas_migration.sql"
 
 # Generate migration SQL (diff from current DB to desired schema)
+# Only diff the schemas we manage (not supabase internals)
 atlas schema diff \
     --from "$DATABASE_URL" \
     --to "file://supabase/schema/tables" \
     --dev-url "$ATLAS_DEV_URL" \
+    --schema public \
+    --schema teamwork \
+    --schema missive \
+    --schema teamworkmissiveconnector \
     --format '{{ sql . "  " }}' \
     > "$MIGRATION_FILE" 2>&1 || true
 
