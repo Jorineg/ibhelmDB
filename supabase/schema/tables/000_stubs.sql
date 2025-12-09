@@ -21,3 +21,4 @@ BEGIN
     CREATE ROLE service_role NOLOGIN;
   END IF;
 END $$;
+

@@ -1,149 +1,78 @@
-# Database Migrations
+# Database Schema
 
-Diese Migrations implementieren das vollständige Schema für das ibhelm Datenmanagement-System.
+Organized schema for the ibhelm database system.
 
-## Struktur
+## Structure
 
-### 3 Separate Schemas:
-- **`teamwork`** - Externe Daten aus Teamwork Projektmanagement
-- **`missive`** - Externe Daten aus Missive Email-System
-- **`public`** - Hauptlogik für ibhelm (Parties, Projects, Locations, Files, etc.)
-
-## Migration Files
-
-### 001_extensions.sql
-- PostgreSQL Extensions aktivieren
-  - `uuid-ossp` - UUID Generierung
-  - `pg_trgm` - Trigram-Suche für Fuzzy Matching
-  - `unaccent` - Akzent-Entfernung für Volltext-Suche
-
-### 002_types_and_enums.sql
-- Custom Types und ENUMs:
-  - `location_type` - 'building', 'level', 'room'
-- Configuration Tables:
-  - `task_types` - Configurable task categories
-  - `task_type_rules` - Maps Teamwork tags to task types
-  - `app_settings` - Single-row JSONB settings (schema: docs/app_settings_schema.md)
-  - `operation_runs` - Generic tracking for bulk operations (task_type_extraction, person_linking, project_linking)
-
-### 003_teamwork_schema.sql
-- Schema `teamwork` mit allen Tabellen:
-  - companies, users, teams, tags
-  - projects, tasklists, tasks
-  - Junction Tables: task_tags, task_assignees, user_teams
-
-### 004_missive_schema.sql
-- Schema `missive` mit allen Tabellen:
-  - contacts, users, teams, shared_labels
-  - conversations, messages, attachments
-  - message_recipients, conversation_authors
-  - Junction Tables: conversation_users, conversation_assignees, conversation_labels
-
-### 005_ibhelm_schema.sql
-- Schema `public` (Hauptlogik):
-  - **Master Data:** parties, projects, project_contractors
-  - **Hierarchien:** locations, cost_groups
-  - **Files:** document_types, files
-  - **The Glue:** project_files, object_locations, object_cost_groups, task_extensions
-- Generated Columns:
-  - `parties.display_name` - Auto-generierter Anzeigename
-  - `locations.search_text` - Rekursiv generierte Hierarchie für Suche
-- Materialized Paths:
-  - `locations.path` und `path_ids` - Effiziente Hierarchie-Queries
-  - `cost_groups.path` - Code-basierte Hierarchie
-
-### 006_indexes.sql
-- **GiST Indexes** (Trigram für Fuzzy Search):
-  - Location names, paths
-  - File names, folder paths
-  - Party names
-  - Project names, cost groups
-  - Task names, company names
-  - Contact names, emails
-- **GIN Indexes** (Full-Text Search):
-  - File extracted text
-  - Task descriptions
-  - Message body/subject
-  - Location search text
-  - Project descriptions
-- **Performance Indexes:**
-  - Composite indexes für häufige Queries
-
-### 007_functions_and_triggers.sql
-- **Auto-Update Timestamps:**
-  - `update_updated_at_column()` - Trigger für alle `db_updated_at` Felder
-- **Location Hierarchy:**
-  - `update_location_hierarchy()` - Automatische Pflege von path, path_ids, search_text
-  - `update_location_children()` - Rekursives Update bei Parent-Änderungen
-- **Cost Group Hierarchy:**
-  - `update_cost_group_path()` - Automatische Pflege von path
-- **Task Type Extraction:**
-  - `extract_task_type()` - Extracts task type based on tag matching rules
-  - `rerun_all_task_type_extractions()` - Bulk re-extraction
-- **Operation Run Tracking:**
-  - `get_operation_run_status()` / `get_latest_operation_run()` - Generic status functions
-
-### 008_teamworkmissiveconnector_schema.sql
-- Schema `teamworkmissiveconnector` (Application State):
-  - **checkpoints** - Sync checkpoints für inkrementelle Synchronisation
-  - **queue_items** - Event Queue für async Webhook/Backfill Processing
-  - **webhook_config** - Webhook IDs und Konfiguration
-  - **processing_stats** - Hourly Processing Statistics
-- **Queue Management Functions:**
-  - `dequeue_items()` - Atomisches Dequeue mit Row-Level Locking
-  - `mark_completed()` - Item als completed markieren
-  - `mark_failed()` - Item als failed markieren mit Exponential Backoff
-  - `cleanup_old_items()` - Alte completed Items löschen
-  - `reset_stuck_items()` - Stuck Items zurücksetzen
-- **Monitoring Views:**
-  - `queue_health` - Real-time Queue Health Metrics
-  - `recent_errors` - Recent Failed Items für Debugging
-- Ersetzt file-based state management mit ACID-compliant DB Queue
-
-### 009_views.sql
-- **unified_items** - Tasks + Emails in einer View
-- **party_details** - Enriched Party View mit External System Data
-- **project_overview** - Projects mit aggregierten Counts
-- **file_details** - Files mit allen Metadaten und Relationships
-- **location_hierarchy** - Locations mit Parent/Child Info
-
-## Features
-
-### 🔍 Fuzzy Search (Tippfehler-Resistent)
-- Trigram-basierte Ähnlichkeitssuche via GiST indexes
-- Funktioniert für Locations, Files, Persons, etc.
-- Autocomplete functions: `search_projects_autocomplete()`, `search_persons_autocomplete()`
-
-### 🌳 Hierarchische Strukturen
-- Locations: Building > Level > Room
-- Cost Groups: Materialized Path via Code
-- Automatische Pflege durch Triggers
-
-### 🔗 Polymorphe Relationships
-- `object_locations` und `object_cost_groups` verbinden Files/Tasks/Messages
-- Constraint-gesichert (genau ein Objekt-Typ pro Row)
-
-### 🎯 Generated Columns
-- `parties.display_name` - Automatisch generiert je nach Type
-- `locations.search_text` - Rekursiv alle Parent-Namen
-
-### 📊 Cross-Schema Relationships
-- `public.parties` → `teamwork.companies`, `teamwork.users`, `missive.contacts`
-- `public.projects` → `teamwork.projects`
-- `public.object_locations` → `teamwork.tasks`, `missive.messages`
-
-## Deployment
-
-```bash
-# Migrations ausführen (in Reihenfolge)
-supabase db reset
-# oder
-supabase migration up
+```
+supabase/schema/
+├── tables/          # DDL only - Atlas diffs these
+│   ├── 000_stubs.sql       # Supabase role stubs
+│   ├── 001_types.sql       # Extensions, types, enums, config tables
+│   ├── 002_teamwork.sql    # teamwork schema
+│   ├── 003_missive.sql     # missive schema
+│   ├── 004_public.sql      # public schema (ibhelm core)
+│   └── 005_connector.sql   # teamworkmissiveconnector schema
+│
+├── code/            # Functions, triggers, views - always re-run (idempotent)
+│   ├── functions.sql       # All CREATE OR REPLACE FUNCTION
+│   ├── triggers.sql        # DROP TRIGGER IF EXISTS + CREATE TRIGGER
+│   └── views.sql           # Views and materialized views
+│
+└── manual/          # Special cases (run after everything)
+    └── indexes.sql         # GiST/GIN indexes (CREATE INDEX IF NOT EXISTS)
 ```
 
-## Hinweise
+## Idempotency Rules
 
-- **tasks.id ist INTEGER** (Primary Key)
-- **storage.objects FK** ist korrekt gesetzt in `files.storage_object_id`
-- Alle Timestamps sind `TIMESTAMP`, außer file_created_at/file_modified_at (mit `WITH TIME ZONE`)
-- Deutsche Volltext-Suche konfiguriert (`to_tsvector('german', ...)`)
+### Functions
+Already idempotent with `CREATE OR REPLACE FUNCTION`.
+
+### Views  
+Already idempotent with `CREATE OR REPLACE VIEW`.
+
+### Materialized Views
+Use `DROP MATERIALIZED VIEW IF EXISTS ... CASCADE` before `CREATE MATERIALIZED VIEW`.
+
+### Triggers (CRITICAL)
+Triggers are **NOT** idempotent by default. Always use:
+```sql
+DROP TRIGGER IF EXISTS trigger_name ON table_name;
+CREATE TRIGGER trigger_name ...
+```
+
+### Indexes
+Use `CREATE INDEX IF NOT EXISTS` for idempotency.
+
+## How to Apply
+
+```bash
+./apply_schema.sh           # Normal apply
+./apply_schema.sh --cron    # Also setup pg_cron jobs (first deploy only)
+```
+
+The script automatically discovers and runs all `.sql` files from `code/` and `manual/` (sorted alphabetically). Just add new files - no script changes needed.
+
+## Editing Rules
+
+### Tables (tables/)
+- Edit CREATE TABLE directly (no ALTER TABLE)
+- Atlas handles the diff
+- Add new files only if existing ones get too long
+
+### Code (code/)
+- Functions: Just edit, `CREATE OR REPLACE` handles it
+- Views: Just edit, `CREATE OR REPLACE` handles it  
+- Triggers: **ALWAYS** use `DROP TRIGGER IF EXISTS` before `CREATE TRIGGER`
+- Materialized Views: **ALWAYS** use `DROP ... CASCADE` before `CREATE`
+
+### Manual (manual/)
+- Use `CREATE INDEX IF NOT EXISTS`
+- For indexes Atlas has trouble with (GiST, complex expressions)
+
+## 3 Schemas
+
+- **`teamwork`** - External data from Teamwork project management
+- **`missive`** - External data from Missive email system
+- **`public`** - Main ibhelm business logic
+- **`teamworkmissiveconnector`** - Connector application state

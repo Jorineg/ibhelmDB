@@ -9,8 +9,8 @@ env "dev" {
   // Schemas we manage (excludes supabase internals)
   schemas = ["public", "teamwork", "missive", "teamworkmissiveconnector"]
   
-  // Schema definition files
-  src = "file://supabase/schema"
+  // Schema definition files (tables only - code is applied via psql)
+  src = "file://supabase/schema/tables"
   
   // Temporary database for computing diffs
   // Default: Use Docker (requires docker daemon)
