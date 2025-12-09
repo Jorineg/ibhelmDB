@@ -4,6 +4,9 @@
 -- GiST/GIN indexes that Atlas may have issues with
 -- Run manually after schema apply if needed
 
+-- Suppress "word is too long" notices (email bodies often contain base64/URLs)
+SET client_min_messages = WARNING;
+
 -- =====================================
 -- FULL-TEXT SEARCH INDEXES
 -- =====================================

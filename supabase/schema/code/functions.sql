@@ -1054,7 +1054,11 @@ BEGIN
     BEGIN v_num := TRIM(p_code)::INTEGER;
     EXCEPTION WHEN OTHERS THEN RETURN; END;
     
-    IF v_num >= 100 AND v_num <= 999 THEN min_code := v_num; max_code := v_num;
+    IF v_num >= 100 AND v_num <= 999 THEN
+        -- 3-digit code - hierarchical based on trailing zeros
+        IF v_num % 100 = 0 THEN min_code := v_num; max_code := v_num + 99;      -- 400 -> 400-499
+        ELSIF v_num % 10 = 0 THEN min_code := v_num; max_code := v_num + 9;     -- 430 -> 430-439
+        ELSE min_code := v_num; max_code := v_num; END IF;                       -- 434 -> exact
     ELSIF v_num >= 10 AND v_num <= 99 THEN min_code := v_num * 10; max_code := v_num * 10 + 9;
     ELSIF v_num >= 1 AND v_num <= 9 THEN min_code := v_num * 100; max_code := v_num * 100 + 99;
     ELSE RETURN; END IF;
