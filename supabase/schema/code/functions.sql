@@ -101,7 +101,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION get_or_create_cost_group(p_code INTEGER, p_name TEXT)
-RETURNS UUID AS $$
+RETURNS UUID SECURITY DEFINER SET search_path = public AS $$
 DECLARE
     v_cost_group_id UUID;
     v_parent_code INTEGER;
@@ -207,7 +207,7 @@ $$ LANGUAGE plpgsql IMMUTABLE;
 
 -- Get or create location hierarchy, returns room ID
 CREATE OR REPLACE FUNCTION get_or_create_location(p_building TEXT, p_level TEXT, p_room TEXT)
-RETURNS UUID AS $$
+RETURNS UUID SECURITY DEFINER SET search_path = public AS $$
 DECLARE
     v_building_id UUID;
     v_level_id UUID;
@@ -255,7 +255,7 @@ $$ LANGUAGE plpgsql;
 
 -- Extract locations from task tags
 CREATE OR REPLACE FUNCTION extract_locations_for_task(p_task_id INTEGER)
-RETURNS void AS $$
+RETURNS void SECURITY DEFINER SET search_path = public AS $$
 DECLARE
     v_prefix TEXT;
     v_tag_record RECORD;
@@ -285,7 +285,7 @@ $$ LANGUAGE plpgsql;
 
 -- Extract locations from conversation labels
 CREATE OR REPLACE FUNCTION extract_locations_for_conversation(p_conversation_id UUID)
-RETURNS void AS $$
+RETURNS void SECURITY DEFINER SET search_path = public AS $$
 DECLARE
     v_prefix TEXT;
     v_label_record RECORD;
@@ -400,7 +400,7 @@ $$ LANGUAGE plpgsql;
 -- =====================================
 
 CREATE OR REPLACE FUNCTION extract_cost_groups_for_task(p_task_id INTEGER)
-RETURNS void AS $$
+RETURNS void SECURITY DEFINER SET search_path = public AS $$
 DECLARE
     v_prefixes TEXT[];
     v_tag_record RECORD;
@@ -432,7 +432,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION extract_cost_groups_for_conversation(p_conversation_id UUID)
-RETURNS void AS $$
+RETURNS void SECURITY DEFINER SET search_path = public AS $$
 DECLARE
     v_prefixes TEXT[];
     v_label_record RECORD;
@@ -963,7 +963,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION rerun_all_cost_group_linking()
-RETURNS UUID AS $$
+RETURNS UUID SECURITY DEFINER SET search_path = public AS $$
 DECLARE
     v_run_id UUID;
     v_task_count INTEGER;
@@ -1025,7 +1025,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION rerun_all_location_linking()
-RETURNS UUID AS $$
+RETURNS UUID SECURITY DEFINER SET search_path = public AS $$
 DECLARE
     v_run_id UUID;
     v_task_count INTEGER;
