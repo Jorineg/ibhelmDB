@@ -1483,8 +1483,7 @@ BEGIN
             OR (ui.type = 'email' AND EXISTS (
                 SELECT 1 FROM object_locations ol 
                 JOIN missive.messages mm ON mm.conversation_id = ol.m_conversation_id 
-                WHERE mm.id = ui.id::UUID AND ol.location_id = ANY(v_location_ids)))
-            OR (ui.type = 'craft')))
+                WHERE mm.id = ui.id::UUID AND ol.location_id = ANY(v_location_ids)))))
         AND (p_name_contains IS NULL OR p_name_contains = '' OR LOWER(ui.name) LIKE '%' || LOWER(p_name_contains) || '%')
         AND (p_description_contains IS NULL OR p_description_contains = '' OR LOWER(ui.description) LIKE '%' || LOWER(p_description_contains) || '%')
         AND (p_customer_contains IS NULL OR p_customer_contains = '' OR LOWER(ui.customer) LIKE '%' || LOWER(p_customer_contains) || '%')
@@ -1604,8 +1603,7 @@ BEGIN
             OR (ui.type = 'email' AND EXISTS (
                 SELECT 1 FROM object_locations ol 
                 JOIN missive.messages mm ON mm.conversation_id = ol.m_conversation_id 
-                WHERE mm.id = ui.id::UUID AND ol.location_id = ANY(v_location_ids)))
-            OR (ui.type = 'craft')))
+                WHERE mm.id = ui.id::UUID AND ol.location_id = ANY(v_location_ids)))))
         AND (p_name_contains IS NULL OR p_name_contains = '' OR LOWER(ui.name) LIKE '%' || LOWER(p_name_contains) || '%')
         AND (p_description_contains IS NULL OR p_description_contains = '' OR LOWER(ui.description) LIKE '%' || LOWER(p_description_contains) || '%')
         AND (p_customer_contains IS NULL OR p_customer_contains = '' OR LOWER(ui.customer) LIKE '%' || LOWER(p_customer_contains) || '%')
