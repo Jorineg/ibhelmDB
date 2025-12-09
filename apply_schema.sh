@@ -55,19 +55,19 @@ docker exec -i "$CONTAINER" psql -U supabase_admin -d postgres -c "CREATE DATABA
 docker exec -i "$CONTAINER" psql -U supabase_admin -d postgres -c "ALTER DATABASE atlas_dev OWNER TO postgres" -q
 echo -e "${GREEN}✓ Atlas dev database reset${NC}"
 
-# Step 1: Show Atlas diff and ask for approval
+# Step 1: Show Atlas plan and ask for approval
 echo ""
 echo -e "${YELLOW}Step 1: Computing table changes via Atlas...${NC}"
 cd "$SCRIPT_DIR"
 
-# Show what would change
-DIFF_OUTPUT=$(atlas schema diff --env dev 2>&1) || true
+# Show what would change (dry-run)
+PLAN_OUTPUT=$(atlas schema apply --env dev --dry-run 2>&1) || true
 
-if [ -z "$DIFF_OUTPUT" ] || echo "$DIFF_OUTPUT" | grep -q "Schemas are synced"; then
+if echo "$PLAN_OUTPUT" | grep -q "Schema is synced"; then
     echo -e "${GREEN}✓ No table changes needed${NC}"
 else
     echo -e "${YELLOW}Planned table changes:${NC}"
-    echo "$DIFF_OUTPUT"
+    echo "$PLAN_OUTPUT"
     echo ""
     
     if [ "$AUTO_APPROVE" = false ]; then
