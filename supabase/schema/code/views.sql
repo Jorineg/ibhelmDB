@@ -142,7 +142,31 @@ SELECT
     'craftdocs://open?blockId=' || cd.id AS craft_url, NULL::TEXT AS teamwork_url, NULL::TEXT AS missive_url,
     COALESCE(cd.craft_last_modified_at, cd.db_updated_at, cd.db_created_at) AS sort_date
 FROM craft_documents cd
-WHERE cd.is_deleted = FALSE;
+WHERE cd.is_deleted = FALSE
+
+UNION ALL
+
+-- Files
+SELECT 
+    f.id::TEXT AS id, 'file' AS type, f.filename AS name, f.extracted_text AS description, '' AS status,
+    COALESCE(twp.name, '') AS project, '' AS customer, l.name AS location, l.search_text AS location_path,
+    cg.name AS cost_group, cg.code::TEXT AS cost_group_code, NULL AS due_date,
+    f.file_created_at AS created_at, f.file_modified_at AS updated_at,
+    '' AS priority, NULL AS progress, '' AS tasklist,
+    NULL::UUID AS task_type_id, NULL::TEXT AS task_type_name, NULL::TEXT AS task_type_slug, NULL::VARCHAR(50) AS task_type_color,
+    NULL::JSONB AS assignees, NULL::JSONB AS tags,
+    NULL::TEXT AS body, NULL::TEXT AS preview,
+    f.file_created_by AS from_name, NULL AS from_email, NULL AS conversation_subject,
+    NULL::JSONB AS recipients, NULL::JSONB AS attachments, 0 AS attachment_count, NULL AS conversation_comments_text,
+    NULL::TEXT AS craft_url, NULL::TEXT AS teamwork_url, NULL::TEXT AS missive_url,
+    COALESCE(f.file_modified_at, f.db_updated_at, f.db_created_at) AS sort_date
+FROM files f
+LEFT JOIN object_locations ol ON f.id = ol.file_id
+LEFT JOIN locations l ON ol.location_id = l.id
+LEFT JOIN object_cost_groups ocg ON f.id = ocg.file_id
+LEFT JOIN cost_groups cg ON ocg.cost_group_id = cg.id
+LEFT JOIN project_files pf ON f.id = pf.file_id
+LEFT JOIN teamwork.projects twp ON pf.tw_project_id = twp.id;
 
 -- =====================================
 -- 3. UNIFIED PERSON DETAILS VIEW
