@@ -129,10 +129,10 @@ CREATE TABLE document_types (
 
 CREATE TABLE files (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    storage_object_id UUID,
-    filename TEXT,
+    storage_path TEXT UNIQUE NOT NULL,
+    filename TEXT NOT NULL,
     folder_path TEXT,
-    content_hash VARCHAR(64),
+    content_hash VARCHAR(64) NOT NULL,
     extracted_text TEXT,
     thumbnail_path TEXT,
     thumbnail_generated_at TIMESTAMP,
@@ -276,7 +276,7 @@ CREATE INDEX idx_files_filename ON files(filename);
 CREATE INDEX idx_files_content_hash ON files(content_hash);
 CREATE INDEX idx_files_document_type_id ON files(document_type_id);
 CREATE INDEX idx_files_source_missive_attachment_id ON files(source_missive_attachment_id);
-CREATE INDEX idx_files_storage_object_id ON files(storage_object_id);
+CREATE INDEX idx_files_storage_path ON files(storage_path);
 CREATE INDEX idx_project_conversations_m_conversation_id ON project_conversations(m_conversation_id);
 CREATE INDEX idx_project_conversations_tw_project_id ON project_conversations(tw_project_id);
 CREATE INDEX idx_project_conversations_source ON project_conversations(source);
@@ -313,7 +313,7 @@ COMMENT ON TABLE project_extensions IS '1:1 extension to tw_projects - only ibhe
 COMMENT ON COLUMN project_extensions.nas_folder_path IS 'e.g. /projects/2024-001-Neubau-XY/ for auto-assignment';
 COMMENT ON TABLE task_extensions IS 'Decorator pattern: extends Teamwork tasks with ibhelm semantics';
 COMMENT ON TABLE craft_documents IS 'Stores Craft documents with their full markdown content';
-COMMENT ON TABLE files IS 'File references with metadata and links to Supabase Storage';
+COMMENT ON TABLE files IS 'File metadata. storage_path is UUID-based path in Supabase Storage (e.g. a1b2c3d4.pdf)';
 COMMENT ON TABLE project_conversations IS 'n:m - A conversation can belong to multiple projects';
 COMMENT ON TABLE object_locations IS 'Polymorphic table connecting objects to locations';
 COMMENT ON TABLE object_cost_groups IS 'Polymorphic table connecting objects to cost groups';

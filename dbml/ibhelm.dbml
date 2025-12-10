@@ -200,17 +200,11 @@ Table document_types {
 Table files {
   id uuid [pk, default: `gen_random_uuid()`]
   
-  storage_object_id uuid [
-    note: '''
-    FOREIGN KEY to storage.objects(id) - Supabase Storage Schema
-    NOT in DBML to avoid visualization errors (external schema)
-    In SQL: REFERENCES storage.objects(id) ON DELETE SET NULL
-    '''
-  ]
+  storage_path text [unique, not null, note: "UUID-based path in Supabase Storage (e.g. a1b2c3d4.pdf)"]
   
-  filename text
-  folder_path text
-  content_hash varchar [note: "SHA256 für Deduplizierung"]
+  filename text [not null, note: "Original filename"]
+  folder_path text [note: "Original folder path"]
+  content_hash varchar [not null, note: "SHA256 for change detection"]
   
   extracted_text text [note: "Für PDF-Volltextsuche"]
   
