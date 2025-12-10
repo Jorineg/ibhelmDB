@@ -1457,7 +1457,7 @@ RETURNS TABLE(
     task_type_id UUID, task_type_name TEXT, task_type_slug TEXT, task_type_color VARCHAR(50),
     assignees JSONB, tags JSONB, body TEXT, preview TEXT, from_name TEXT, from_email TEXT,
     conversation_subject TEXT, recipients JSONB, attachments JSONB, attachment_count INTEGER,
-    conversation_comments_text TEXT, craft_url TEXT, teamwork_url TEXT, missive_url TEXT, storage_path TEXT, sort_date TIMESTAMPTZ
+    conversation_comments_text TEXT, craft_url TEXT, teamwork_url TEXT, missive_url TEXT, storage_path TEXT, thumbnail_path TEXT, sort_date TIMESTAMPTZ
 )
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
 DECLARE
@@ -1499,7 +1499,7 @@ BEGIN
         ui.task_type_id, ui.task_type_name, ui.task_type_slug, ui.task_type_color,
         ui.assignees, ui.tags, ui.body, ui.preview, ui.from_name, ui.from_email,
         ui.conversation_subject, ui.recipients, ui.attachments, ui.attachment_count,
-        ui.conversation_comments_text, ui.craft_url, ui.teamwork_url, ui.missive_url, ui.storage_path, ui.sort_date
+        ui.conversation_comments_text, ui.craft_url, ui.teamwork_url, ui.missive_url, ui.storage_path, ui.thumbnail_path, ui.sort_date
     FROM unified_items ui
     WHERE (p_types IS NULL OR ui.type = ANY(p_types))
         AND (ui.type != 'task' OR p_task_types IS NULL OR ui.task_type_id = ANY(p_task_types))
