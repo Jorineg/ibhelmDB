@@ -145,6 +145,18 @@ CREATE TRIGGER extract_locations_on_conv_labels_change AFTER INSERT OR UPDATE OR
     FOR EACH ROW EXECUTE FUNCTION trigger_extract_locations_for_conversation();
 
 -- =====================================
+-- 5b. COST GROUP AUTO-EXTRACTION TRIGGERS
+-- =====================================
+
+DROP TRIGGER IF EXISTS extract_cost_groups_on_task_tags_change ON teamwork.task_tags;
+CREATE TRIGGER extract_cost_groups_on_task_tags_change AFTER INSERT OR UPDATE OR DELETE ON teamwork.task_tags
+    FOR EACH ROW EXECUTE FUNCTION trigger_extract_cost_groups_for_task();
+
+DROP TRIGGER IF EXISTS extract_cost_groups_on_conv_labels_change ON missive.conversation_labels;
+CREATE TRIGGER extract_cost_groups_on_conv_labels_change AFTER INSERT OR UPDATE OR DELETE ON missive.conversation_labels
+    FOR EACH ROW EXECUTE FUNCTION trigger_extract_cost_groups_for_conversation();
+
+-- =====================================
 -- 6. PROJECT-CONVERSATION AUTO-LINKING TRIGGERS
 -- =====================================
 
@@ -153,8 +165,9 @@ CREATE TRIGGER auto_link_projects_on_conversation_insert AFTER INSERT ON missive
     FOR EACH ROW EXECUTE FUNCTION trigger_link_projects_on_conversation_insert();
 
 DROP TRIGGER IF EXISTS auto_link_projects_on_label_add ON missive.conversation_labels;
-CREATE TRIGGER auto_link_projects_on_label_add AFTER INSERT ON missive.conversation_labels
-    FOR EACH ROW EXECUTE FUNCTION trigger_link_projects_on_label_add();
+DROP TRIGGER IF EXISTS auto_link_projects_on_label_change ON missive.conversation_labels;
+CREATE TRIGGER auto_link_projects_on_label_change AFTER INSERT OR UPDATE OR DELETE ON missive.conversation_labels
+    FOR EACH ROW EXECUTE FUNCTION trigger_link_projects_on_label_change();
 
 -- =====================================
 -- 6. INVOLVED PERSONS TRIGGERS

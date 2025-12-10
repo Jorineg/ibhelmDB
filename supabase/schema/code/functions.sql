@@ -463,6 +463,33 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- Trigger functions for cost group auto-extraction
+CREATE OR REPLACE FUNCTION trigger_extract_cost_groups_for_task()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        DELETE FROM object_cost_groups WHERE tw_task_id = OLD.task_id AND source = 'auto_teamwork';
+        RETURN OLD;
+    ELSE
+        PERFORM extract_cost_groups_for_task(NEW.task_id);
+        RETURN NEW;
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION trigger_extract_cost_groups_for_conversation()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        DELETE FROM object_cost_groups WHERE m_conversation_id = OLD.conversation_id AND source = 'auto_missive';
+        RETURN OLD;
+    ELSE
+        PERFORM extract_cost_groups_for_conversation(NEW.conversation_id);
+        RETURN NEW;
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
 -- =====================================
 -- 6. UNIFIED PERSON LINKING
 -- =====================================
@@ -601,11 +628,24 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION trigger_link_projects_on_label_add()
+CREATE OR REPLACE FUNCTION trigger_link_projects_on_label_change()
 RETURNS TRIGGER AS $$
+DECLARE
+    v_label_name TEXT;
 BEGIN
-    PERFORM link_projects_for_conversation(NEW.conversation_id);
-    RETURN NEW;
+    IF TG_OP = 'DELETE' THEN
+        -- Get the label name that was removed
+        SELECT name INTO v_label_name FROM missive.shared_labels WHERE id = OLD.label_id;
+        -- Remove auto-links created from this label
+        DELETE FROM project_conversations 
+        WHERE m_conversation_id = OLD.conversation_id 
+          AND source = 'auto_label' 
+          AND source_label_name = v_label_name;
+        RETURN OLD;
+    ELSE
+        PERFORM link_projects_for_conversation(NEW.conversation_id);
+        RETURN NEW;
+    END IF;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -1417,7 +1457,7 @@ RETURNS TABLE(
     task_type_id UUID, task_type_name TEXT, task_type_slug TEXT, task_type_color VARCHAR(50),
     assignees JSONB, tags JSONB, body TEXT, preview TEXT, from_name TEXT, from_email TEXT,
     conversation_subject TEXT, recipients JSONB, attachments JSONB, attachment_count INTEGER,
-    conversation_comments_text TEXT, craft_url TEXT, teamwork_url TEXT, missive_url TEXT, sort_date TIMESTAMPTZ
+    conversation_comments_text TEXT, craft_url TEXT, teamwork_url TEXT, missive_url TEXT, storage_path TEXT, sort_date TIMESTAMPTZ
 )
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
 DECLARE
@@ -1459,7 +1499,7 @@ BEGIN
         ui.task_type_id, ui.task_type_name, ui.task_type_slug, ui.task_type_color,
         ui.assignees, ui.tags, ui.body, ui.preview, ui.from_name, ui.from_email,
         ui.conversation_subject, ui.recipients, ui.attachments, ui.attachment_count,
-        ui.conversation_comments_text, ui.craft_url, ui.teamwork_url, ui.missive_url, ui.sort_date
+        ui.conversation_comments_text, ui.craft_url, ui.teamwork_url, ui.missive_url, ui.storage_path, ui.sort_date
     FROM unified_items ui
     WHERE (p_types IS NULL OR ui.type = ANY(p_types))
         AND (ui.type != 'task' OR p_task_types IS NULL OR ui.task_type_id = ANY(p_task_types))

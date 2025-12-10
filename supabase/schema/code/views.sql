@@ -80,6 +80,7 @@ SELECT
     NULL::TEXT AS conversation_subject, NULL::JSONB AS recipients, NULL::JSONB AS attachments,
     0 AS attachment_count, NULL::TEXT AS conversation_comments_text,
     NULL::TEXT AS craft_url, t.source_links->>'teamwork_url' AS teamwork_url, NULL::TEXT AS missive_url,
+    NULL::TEXT AS storage_path,
     COALESCE(t.updated_at, t.created_at) AS sort_date
 FROM teamwork.tasks t
 LEFT JOIN teamwork.projects p ON t.project_id = p.id
@@ -110,6 +111,7 @@ SELECT
     conv.subject AS conversation_subject, mra.recipients, maa.attachments,
     COALESCE(maa.attachment_count, 0) AS attachment_count, cca.comments_text AS conversation_comments_text,
     NULL::TEXT AS craft_url, NULL::TEXT AS teamwork_url, conv.app_url AS missive_url,
+    NULL::TEXT AS storage_path,
     COALESCE(m.delivered_at, m.updated_at, m.created_at) AS sort_date
 FROM missive.messages m
 LEFT JOIN missive.conversations conv ON m.conversation_id = conv.id
@@ -140,6 +142,7 @@ SELECT
     NULL AS from_name, NULL AS from_email, NULL AS conversation_subject,
     NULL::JSONB AS recipients, NULL::JSONB AS attachments, 0 AS attachment_count, NULL AS conversation_comments_text,
     'craftdocs://open?blockId=' || cd.id AS craft_url, NULL::TEXT AS teamwork_url, NULL::TEXT AS missive_url,
+    NULL::TEXT AS storage_path,
     COALESCE(cd.craft_last_modified_at, cd.db_updated_at, cd.db_created_at) AS sort_date
 FROM craft_documents cd
 WHERE cd.is_deleted = FALSE
@@ -159,6 +162,7 @@ SELECT
     f.file_created_by AS from_name, NULL AS from_email, NULL AS conversation_subject,
     NULL::JSONB AS recipients, NULL::JSONB AS attachments, 0 AS attachment_count, NULL AS conversation_comments_text,
     NULL::TEXT AS craft_url, NULL::TEXT AS teamwork_url, NULL::TEXT AS missive_url,
+    f.storage_path,
     COALESCE(f.file_modified_at, f.db_updated_at, f.db_created_at) AS sort_date
 FROM files f
 LEFT JOIN object_locations ol ON f.id = ol.file_id
