@@ -242,6 +242,22 @@ INSERT INTO mv_refresh_status (view_name, needs_refresh, refresh_interval_minute
 ON CONFLICT (view_name) DO NOTHING;
 
 -- =====================================
+-- 9. THUMBNAIL PROCESSING QUEUE
+-- =====================================
+
+CREATE TABLE thumbnail_processing_queue (
+    id SERIAL PRIMARY KEY,
+    file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    status VARCHAR(20) DEFAULT 'pending',
+    attempts INTEGER DEFAULT 0,
+    last_error TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    processed_at TIMESTAMPTZ,
+    UNIQUE(file_id)
+);
+
+-- =====================================
 -- INDEXES
 -- =====================================
 
@@ -295,6 +311,8 @@ CREATE INDEX idx_object_cost_groups_file_id ON object_cost_groups(file_id);
 CREATE INDEX idx_object_cost_groups_source ON object_cost_groups(source);
 CREATE INDEX idx_iip_unified_person_id ON item_involved_persons(unified_person_id);
 CREATE INDEX idx_iip_item ON item_involved_persons(item_id, item_type);
+CREATE INDEX idx_thumb_queue_status ON thumbnail_processing_queue(status, created_at);
+CREATE INDEX idx_thumb_queue_file_id ON thumbnail_processing_queue(file_id);
 
 -- =====================================
 -- COMMENTS
@@ -318,4 +336,5 @@ COMMENT ON TABLE project_conversations IS 'n:m - A conversation can belong to mu
 COMMENT ON TABLE object_locations IS 'Polymorphic table connecting objects to locations';
 COMMENT ON TABLE object_cost_groups IS 'Polymorphic table connecting objects to cost groups';
 COMMENT ON TABLE item_involved_persons IS 'Junction table for filtering items by involved person';
+COMMENT ON TABLE thumbnail_processing_queue IS 'Queue for thumbnail generation and text extraction processing';
 

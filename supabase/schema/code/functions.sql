@@ -1836,6 +1836,50 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- =====================================
+-- 15. THUMBNAIL PROCESSING QUEUE
+-- =====================================
+
+CREATE OR REPLACE FUNCTION queue_file_for_processing()
+RETURNS TRIGGER AS $$
+BEGIN
+    INSERT INTO thumbnail_processing_queue (file_id)
+    VALUES (NEW.id)
+    ON CONFLICT (file_id) DO UPDATE SET 
+        status = 'pending', 
+        attempts = 0,
+        last_error = NULL,
+        updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trigger_queue_file_processing ON files;
+CREATE TRIGGER trigger_queue_file_processing
+    AFTER INSERT OR UPDATE OF content_hash ON files
+    FOR EACH ROW
+    EXECUTE FUNCTION queue_file_for_processing();
+
+CREATE OR REPLACE FUNCTION get_thumbnail_queue_status()
+RETURNS TABLE (
+    pending_count BIGINT,
+    processing_count BIGINT,
+    completed_count BIGINT,
+    failed_count BIGINT,
+    last_processed_at TIMESTAMPTZ
+) AS $$
+BEGIN
+    RETURN QUERY 
+    SELECT 
+        COUNT(*) FILTER (WHERE status = 'pending'),
+        COUNT(*) FILTER (WHERE status = 'processing'),
+        COUNT(*) FILTER (WHERE status = 'completed'),
+        COUNT(*) FILTER (WHERE status = 'failed'),
+        MAX(processed_at) FILTER (WHERE status = 'completed')
+    FROM thumbnail_processing_queue;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+-- =====================================
 -- GRANTS
 -- =====================================
 
@@ -1845,4 +1889,5 @@ GRANT EXECUTE ON FUNCTION refresh_unified_items_aggregates(BOOLEAN) TO authentic
 GRANT EXECUTE ON FUNCTION refresh_stale_unified_items_aggregates() TO authenticated;
 GRANT EXECUTE ON FUNCTION compute_cost_group_range(TEXT) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_sync_status() TO authenticated;
+GRANT EXECUTE ON FUNCTION get_thumbnail_queue_status() TO authenticated;
 
