@@ -343,6 +343,6 @@ INSERT INTO mv_refresh_status (view_name, needs_refresh, refresh_interval_minute
     ('mv_message_attachments_agg', FALSE, 5),
     ('mv_conversation_labels_agg', FALSE, 5),
     ('mv_conversation_comments_agg', FALSE, 1),
-    ('mv_unified_items', FALSE, 2)
+    ('mv_unified_items', FALSE, 1)
 ON CONFLICT (view_name) DO NOTHING;
 

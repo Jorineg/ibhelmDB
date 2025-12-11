@@ -1672,7 +1672,129 @@ END;
 $$;
 
 -- =====================================
--- 12. SYNC STATUS FUNCTIONS
+-- 12. UNIFIED PERSONS QUERY
+-- =====================================
+
+CREATE OR REPLACE FUNCTION query_unified_persons(
+    p_text_search TEXT DEFAULT NULL,
+    p_project_search TEXT DEFAULT NULL,
+    p_is_internal BOOLEAN DEFAULT NULL,
+    p_is_company BOOLEAN DEFAULT NULL,
+    p_sort_field TEXT DEFAULT 'display_name',
+    p_sort_order TEXT DEFAULT 'asc',
+    p_limit INTEGER DEFAULT 50,
+    p_offset INTEGER DEFAULT 0
+)
+RETURNS TABLE(
+    id UUID, display_name TEXT, primary_email TEXT, preferred_contact_method VARCHAR, is_internal BOOLEAN, is_company BOOLEAN, notes TEXT,
+    tw_company_id INTEGER, tw_company_name TEXT, tw_company_website TEXT,
+    tw_user_id INTEGER, tw_user_first_name VARCHAR, tw_user_last_name VARCHAR, tw_user_email VARCHAR,
+    m_contact_id INTEGER, m_contact_email TEXT, m_contact_name TEXT,
+    db_created_at TIMESTAMP, db_updated_at TIMESTAMP
+)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_has_project_filter BOOLEAN;
+    v_matching_person_ids UUID[];
+BEGIN
+    IF p_sort_field NOT IN ('display_name', 'primary_email', 'is_internal', 'is_company', 'db_created_at', 'db_updated_at') THEN
+        p_sort_field := 'display_name';
+    END IF;
+    IF p_sort_order NOT IN ('asc', 'desc') THEN p_sort_order := 'asc'; END IF;
+    
+    v_has_project_filter := p_project_search IS NOT NULL AND TRIM(p_project_search) != '';
+    
+    IF v_has_project_filter THEN
+        -- Find persons involved in items that belong to matching projects
+        SELECT ARRAY_AGG(DISTINCT iip.unified_person_id) INTO v_matching_person_ids
+        FROM item_involved_persons iip
+        JOIN mv_unified_items ui ON ui.id = iip.item_id AND ui.type = iip.item_type
+        WHERE ui.project ILIKE '%' || p_project_search || '%';
+        
+        IF v_matching_person_ids IS NULL OR array_length(v_matching_person_ids, 1) IS NULL THEN
+            RETURN;
+        END IF;
+    END IF;
+    
+    RETURN QUERY
+    SELECT upd.id, upd.display_name, upd.primary_email, upd.preferred_contact_method, upd.is_internal, upd.is_company, upd.notes,
+        upd.tw_company_id, upd.tw_company_name, upd.tw_company_website,
+        upd.tw_user_id, upd.tw_user_first_name, upd.tw_user_last_name, upd.tw_user_email,
+        upd.m_contact_id, upd.m_contact_email, upd.m_contact_name,
+        upd.db_created_at, upd.db_updated_at
+    FROM unified_person_details upd
+    WHERE (NOT v_has_project_filter OR upd.id = ANY(v_matching_person_ids))
+        AND (p_text_search IS NULL OR p_text_search = '' OR
+            upd.display_name ILIKE '%' || p_text_search || '%' OR
+            upd.primary_email ILIKE '%' || p_text_search || '%' OR
+            upd.tw_company_name ILIKE '%' || p_text_search || '%' OR
+            upd.tw_user_email ILIKE '%' || p_text_search || '%' OR
+            upd.m_contact_name ILIKE '%' || p_text_search || '%' OR
+            upd.m_contact_email ILIKE '%' || p_text_search || '%')
+        AND (p_is_internal IS NULL OR upd.is_internal = p_is_internal)
+        AND (p_is_company IS NULL OR upd.is_company = p_is_company)
+    ORDER BY
+        CASE WHEN p_sort_field = 'display_name' AND p_sort_order = 'asc' THEN upd.display_name END ASC NULLS LAST,
+        CASE WHEN p_sort_field = 'display_name' AND p_sort_order = 'desc' THEN upd.display_name END DESC NULLS LAST,
+        CASE WHEN p_sort_field = 'primary_email' AND p_sort_order = 'asc' THEN upd.primary_email END ASC NULLS LAST,
+        CASE WHEN p_sort_field = 'primary_email' AND p_sort_order = 'desc' THEN upd.primary_email END DESC NULLS LAST,
+        CASE WHEN p_sort_field = 'is_internal' AND p_sort_order = 'asc' THEN upd.is_internal END ASC NULLS LAST,
+        CASE WHEN p_sort_field = 'is_internal' AND p_sort_order = 'desc' THEN upd.is_internal END DESC NULLS LAST,
+        CASE WHEN p_sort_field = 'is_company' AND p_sort_order = 'asc' THEN upd.is_company END ASC NULLS LAST,
+        CASE WHEN p_sort_field = 'is_company' AND p_sort_order = 'desc' THEN upd.is_company END DESC NULLS LAST,
+        CASE WHEN p_sort_field = 'db_created_at' AND p_sort_order = 'asc' THEN upd.db_created_at END ASC NULLS LAST,
+        CASE WHEN p_sort_field = 'db_created_at' AND p_sort_order = 'desc' THEN upd.db_created_at END DESC NULLS LAST,
+        CASE WHEN p_sort_field = 'db_updated_at' AND p_sort_order = 'asc' THEN upd.db_updated_at END ASC NULLS LAST,
+        CASE WHEN p_sort_field = 'db_updated_at' AND p_sort_order = 'desc' THEN upd.db_updated_at END DESC NULLS LAST
+    LIMIT p_limit OFFSET p_offset;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION count_unified_persons(
+    p_text_search TEXT DEFAULT NULL,
+    p_project_search TEXT DEFAULT NULL,
+    p_is_internal BOOLEAN DEFAULT NULL,
+    p_is_company BOOLEAN DEFAULT NULL
+)
+RETURNS INTEGER
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_count INTEGER;
+    v_has_project_filter BOOLEAN;
+    v_matching_person_ids UUID[];
+BEGIN
+    v_has_project_filter := p_project_search IS NOT NULL AND TRIM(p_project_search) != '';
+    
+    IF v_has_project_filter THEN
+        SELECT ARRAY_AGG(DISTINCT iip.unified_person_id) INTO v_matching_person_ids
+        FROM item_involved_persons iip
+        JOIN mv_unified_items ui ON ui.id = iip.item_id AND ui.type = iip.item_type
+        WHERE ui.project ILIKE '%' || p_project_search || '%';
+        
+        IF v_matching_person_ids IS NULL OR array_length(v_matching_person_ids, 1) IS NULL THEN
+            RETURN 0;
+        END IF;
+    END IF;
+    
+    SELECT COUNT(*)::INTEGER INTO v_count
+    FROM unified_person_details upd
+    WHERE (NOT v_has_project_filter OR upd.id = ANY(v_matching_person_ids))
+        AND (p_text_search IS NULL OR p_text_search = '' OR
+            upd.display_name ILIKE '%' || p_text_search || '%' OR
+            upd.primary_email ILIKE '%' || p_text_search || '%' OR
+            upd.tw_company_name ILIKE '%' || p_text_search || '%' OR
+            upd.tw_user_email ILIKE '%' || p_text_search || '%' OR
+            upd.m_contact_name ILIKE '%' || p_text_search || '%' OR
+            upd.m_contact_email ILIKE '%' || p_text_search || '%')
+        AND (p_is_internal IS NULL OR upd.is_internal = p_is_internal)
+        AND (p_is_company IS NULL OR upd.is_company = p_is_company);
+    
+    RETURN v_count;
+END;
+$$;
+
+-- =====================================
+-- 13. SYNC STATUS FUNCTIONS
 -- =====================================
 
 CREATE OR REPLACE FUNCTION get_sync_status()
@@ -1721,7 +1843,7 @@ END;
 $$ LANGUAGE plpgsql SECURITY DEFINER STABLE;
 
 -- =====================================
--- 13. CONNECTOR QUEUE FUNCTIONS
+-- 14. CONNECTOR QUEUE FUNCTIONS
 -- =====================================
 
 CREATE OR REPLACE FUNCTION teamworkmissiveconnector.dequeue_items(
@@ -1799,7 +1921,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- =====================================
--- 14. MATERIALIZED VIEW REFRESH FUNCTIONS
+-- 15. MATERIALIZED VIEW REFRESH FUNCTIONS
 -- =====================================
 
 CREATE OR REPLACE FUNCTION mark_mv_needs_refresh(p_view_name TEXT)
@@ -1861,7 +1983,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- =====================================
--- 15. THUMBNAIL PROCESSING QUEUE
+-- 16. THUMBNAIL PROCESSING QUEUE
 -- =====================================
 
 CREATE OR REPLACE FUNCTION queue_file_for_processing()
@@ -1905,7 +2027,7 @@ END;
 $$ LANGUAGE plpgsql STABLE;
 
 -- =====================================
--- 18. FILES CHECKPOINT UPSERT
+-- 17. FILES CHECKPOINT UPSERT
 -- =====================================
 
 CREATE OR REPLACE FUNCTION upsert_files_checkpoint(p_last_event_time TIMESTAMPTZ DEFAULT NULL)
@@ -1938,5 +2060,7 @@ GRANT EXECUTE ON FUNCTION refresh_stale_unified_items_aggregates() TO authentica
 GRANT EXECUTE ON FUNCTION compute_cost_group_range(TEXT) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_sync_status() TO authenticated;
 GRANT EXECUTE ON FUNCTION get_thumbnail_queue_status() TO authenticated;
+GRANT EXECUTE ON FUNCTION query_unified_persons(TEXT, TEXT, BOOLEAN, BOOLEAN, TEXT, TEXT, INTEGER, INTEGER) TO authenticated;
+GRANT EXECUTE ON FUNCTION count_unified_persons(TEXT, TEXT, BOOLEAN, BOOLEAN) TO authenticated;
 GRANT EXECUTE ON FUNCTION upsert_files_checkpoint(TIMESTAMPTZ) TO service_role;
 
