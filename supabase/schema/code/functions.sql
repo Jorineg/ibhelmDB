@@ -1609,7 +1609,7 @@ BEGIN
         full_ui.location, full_ui.location_path, full_ui.cost_group, full_ui.cost_group_code,
         full_ui.due_date, full_ui.created_at, full_ui.updated_at, full_ui.priority, full_ui.progress, full_ui.tasklist,
         full_ui.task_type_id, full_ui.task_type_name, full_ui.task_type_slug, full_ui.task_type_color,
-        full_ui.assigned_to, full_ui.tags, full_ui.body, full_ui.preview, full_ui.creator,
+        full_ui.assigned_to, full_ui.tags, LEFT(full_ui.body, 200) AS body, full_ui.preview, full_ui.creator,
         full_ui.conversation_subject, full_ui.recipients, full_ui.attachments, full_ui.attachment_count,
         full_ui.conversation_comments_text, full_ui.craft_url, full_ui.teamwork_url, full_ui.missive_url, full_ui.storage_path, full_ui.thumbnail_path, full_ui.sort_date
     FROM skinny_ids s
@@ -1620,7 +1620,8 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION count_unified_items_with_metadata(
+-- Simple count function - just returns COUNT(*)
+CREATE OR REPLACE FUNCTION count_unified_items(
     p_types TEXT[] DEFAULT NULL, p_task_types UUID[] DEFAULT NULL,
     p_text_search TEXT DEFAULT NULL, p_involved_person TEXT DEFAULT NULL,
     p_tag_search TEXT DEFAULT NULL, p_cost_group_code TEXT DEFAULT NULL,
@@ -1637,7 +1638,7 @@ CREATE OR REPLACE FUNCTION count_unified_items_with_metadata(
     p_progress_min INTEGER DEFAULT NULL, p_progress_max INTEGER DEFAULT NULL,
     p_attachment_count_min INTEGER DEFAULT NULL, p_attachment_count_max INTEGER DEFAULT NULL
 )
-RETURNS TABLE(total_count INTEGER, nonempty_columns TEXT[], type_counts JSONB, task_type_counts JSONB)
+RETURNS INTEGER
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
 DECLARE
     v_sql TEXT;
@@ -1647,26 +1648,12 @@ DECLARE
     v_cost_min INTEGER;
     v_cost_max INTEGER;
     v_location_ids UUID[];
-    -- Column presence flags
-    v_has_name BOOLEAN; v_has_description BOOLEAN; v_has_body BOOLEAN;
-    v_has_status BOOLEAN; v_has_project BOOLEAN; v_has_customer BOOLEAN;
-    v_has_location BOOLEAN; v_has_location_path BOOLEAN;
-    v_has_cost_group BOOLEAN; v_has_cost_group_code BOOLEAN;
-    v_has_due_date BOOLEAN; v_has_priority BOOLEAN; v_has_progress BOOLEAN;
-    v_has_tasklist BOOLEAN; v_has_assigned_to BOOLEAN; v_has_tags BOOLEAN;
-    v_has_creator BOOLEAN;
-    v_has_recipients BOOLEAN; v_has_conversation_subject BOOLEAN;
-    v_has_attachment_count BOOLEAN;
-    v_has_created_at BOOLEAN; v_has_updated_at BOOLEAN;
+    v_count INTEGER;
 BEGIN
     -- Pre-compute lookup filters
     IF p_involved_person IS NOT NULL AND TRIM(p_involved_person) != '' THEN
         v_person_ids := find_person_ids_by_search(p_involved_person);
-        IF array_length(v_person_ids, 1) IS NULL THEN
-            total_count := 0; nonempty_columns := ARRAY[]::TEXT[];
-            type_counts := '{}'::JSONB; task_type_counts := '{}'::JSONB;
-            RETURN NEXT; RETURN;
-        END IF;
+        IF array_length(v_person_ids, 1) IS NULL THEN RETURN 0; END IF;
     END IF;
     
     IF p_cost_group_code IS NOT NULL AND TRIM(p_cost_group_code) != '' THEN
@@ -1675,11 +1662,7 @@ BEGIN
     
     IF p_location_search IS NOT NULL AND TRIM(p_location_search) != '' THEN
         v_location_ids := find_location_ids_by_search(p_location_search);
-        IF array_length(v_location_ids, 1) IS NULL THEN
-            total_count := 0; nonempty_columns := ARRAY[]::TEXT[];
-            type_counts := '{}'::JSONB; task_type_counts := '{}'::JSONB;
-            RETURN NEXT; RETURN;
-        END IF;
+        IF array_length(v_location_ids, 1) IS NULL THEN RETURN 0; END IF;
     END IF;
     
     -- Build WHERE conditions dynamically
@@ -1774,96 +1757,17 @@ BEGIN
         v_where := array_append(v_where, format('ui.attachment_count <= %s', p_attachment_count_max));
     END IF;
     
-    -- Build WHERE clause strings (one for main query with ui, one for subquery with ui2)
+    -- Build WHERE clause
     IF array_length(v_where, 1) > 0 THEN
         v_where_clause := ' WHERE ' || array_to_string(v_where, ' AND ');
     ELSE
         v_where_clause := '';
     END IF;
     
-    -- Build and execute dynamic SQL
-    v_sql := 'SELECT 
-        COUNT(*)::INTEGER,
-        BOOL_OR(ui.name IS NOT NULL AND ui.name != ''''),
-        BOOL_OR(ui.description IS NOT NULL AND ui.description != ''''),
-        BOOL_OR(ui.body IS NOT NULL AND ui.body != ''''),
-        BOOL_OR(ui.status IS NOT NULL AND ui.status != ''''),
-        BOOL_OR(ui.project IS NOT NULL AND ui.project != ''''),
-        BOOL_OR(ui.customer IS NOT NULL AND ui.customer != ''''),
-        BOOL_OR(ui.location IS NOT NULL AND ui.location != ''''),
-        BOOL_OR(ui.location_path IS NOT NULL AND ui.location_path != ''''),
-        BOOL_OR(ui.cost_group IS NOT NULL AND ui.cost_group != ''''),
-        BOOL_OR(ui.cost_group_code IS NOT NULL AND ui.cost_group_code != ''''),
-        BOOL_OR(ui.due_date IS NOT NULL),
-        BOOL_OR(ui.priority IS NOT NULL AND ui.priority != ''''),
-        BOOL_OR(ui.progress IS NOT NULL),
-        BOOL_OR(ui.tasklist IS NOT NULL AND ui.tasklist != ''''),
-        BOOL_OR(ui.assigned_to IS NOT NULL AND jsonb_array_length(ui.assigned_to) > 0),
-        BOOL_OR(ui.tags IS NOT NULL AND jsonb_array_length(ui.tags) > 0),
-        BOOL_OR(ui.creator IS NOT NULL AND ui.creator != ''''),
-        BOOL_OR(ui.recipients IS NOT NULL AND jsonb_array_length(ui.recipients) > 0),
-        BOOL_OR(ui.conversation_subject IS NOT NULL AND ui.conversation_subject != ''''),
-        BOOL_OR(ui.attachment_count IS NOT NULL AND ui.attachment_count > 0),
-        BOOL_OR(ui.created_at IS NOT NULL),
-        BOOL_OR(ui.updated_at IS NOT NULL),
-        jsonb_build_object(
-            ''task'', COUNT(*) FILTER (WHERE ui.type = ''task''),
-            ''email'', COUNT(*) FILTER (WHERE ui.type = ''email''),
-            ''craft'', COUNT(*) FILTER (WHERE ui.type = ''craft''),
-            ''file'', COUNT(*) FILTER (WHERE ui.type = ''file'')
-        ),
-        COALESCE(
-            (SELECT jsonb_object_agg(tt.task_type_id, tt.cnt)
-             FROM (SELECT ui2.task_type_id, COUNT(*)::INTEGER as cnt
-                   FROM mv_unified_items ui2
-                   WHERE ui2.type = ''task'' AND ui2.task_type_id IS NOT NULL' ||
-                   CASE WHEN array_length(v_where, 1) > 0 
-                        THEN ' AND ' || replace(array_to_string(v_where, ' AND '), 'ui.', 'ui2.') 
-                        ELSE '' END ||
-                   ' GROUP BY ui2.task_type_id) tt),
-            ''{}''::JSONB
-        )
-    FROM mv_unified_items ui' || v_where_clause;
-    
-    EXECUTE v_sql INTO total_count,
-        v_has_name, v_has_description, v_has_body,
-        v_has_status, v_has_project, v_has_customer,
-        v_has_location, v_has_location_path,
-        v_has_cost_group, v_has_cost_group_code,
-        v_has_due_date, v_has_priority, v_has_progress,
-        v_has_tasklist, v_has_assigned_to, v_has_tags,
-        v_has_creator,
-        v_has_recipients, v_has_conversation_subject,
-        v_has_attachment_count, v_has_created_at, v_has_updated_at,
-        type_counts, task_type_counts;
-    
-    -- Build nonempty_columns array from flags
-    nonempty_columns := ARRAY_REMOVE(ARRAY[
-        CASE WHEN v_has_name THEN 'name' END,
-        CASE WHEN v_has_description THEN 'description' END,
-        CASE WHEN v_has_body THEN 'body' END,
-        CASE WHEN v_has_status THEN 'status' END,
-        CASE WHEN v_has_project THEN 'project' END,
-        CASE WHEN v_has_customer THEN 'customer' END,
-        CASE WHEN v_has_location THEN 'location' END,
-        CASE WHEN v_has_location_path THEN 'location_path' END,
-        CASE WHEN v_has_cost_group THEN 'cost_group' END,
-        CASE WHEN v_has_cost_group_code THEN 'cost_group_code' END,
-        CASE WHEN v_has_due_date THEN 'due_date' END,
-        CASE WHEN v_has_priority THEN 'priority' END,
-        CASE WHEN v_has_progress THEN 'progress' END,
-        CASE WHEN v_has_tasklist THEN 'tasklist' END,
-        CASE WHEN v_has_assigned_to THEN 'assigned_to' END,
-        CASE WHEN v_has_tags THEN 'tags' END,
-        CASE WHEN v_has_creator THEN 'creator' END,
-        CASE WHEN v_has_recipients THEN 'recipients' END,
-        CASE WHEN v_has_conversation_subject THEN 'conversation_subject' END,
-        CASE WHEN v_has_attachment_count THEN 'attachment_count' END,
-        CASE WHEN v_has_created_at THEN 'created_at' END,
-        CASE WHEN v_has_updated_at THEN 'updated_at' END
-    ], NULL);
-    
-    RETURN NEXT;
+    -- Simple COUNT(*)
+    v_sql := 'SELECT COUNT(*)::INTEGER FROM mv_unified_items ui' || v_where_clause;
+    EXECUTE v_sql INTO v_count;
+    RETURN v_count;
 END;
 $$;
 
