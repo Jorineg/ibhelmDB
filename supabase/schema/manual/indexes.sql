@@ -30,4 +30,9 @@ CREATE INDEX IF NOT EXISTS idx_mv_ui_attachment_count ON mv_unified_items(attach
 -- Composite index for default dashboard view (type + sort)
 CREATE INDEX IF NOT EXISTS idx_mv_ui_type_sort_date ON mv_unified_items(type, sort_date DESC);
 
+-- Covering index for deferred join: allows sorting without heap access
+-- Used by skinny_ids CTE to get IDs in sort order without fetching full rows
+CREATE INDEX IF NOT EXISTS idx_mv_ui_sort_lookup ON mv_unified_items(sort_date DESC, type, id);
+CREATE INDEX IF NOT EXISTS idx_mv_ui_created_at_lookup ON mv_unified_items(created_at DESC, type, id);
+
 -- Note: Trigram indexes for mv_unified_items are in views.sql (recreated with MV)

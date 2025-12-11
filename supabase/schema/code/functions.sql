@@ -1462,6 +1462,7 @@ DECLARE
     v_sql TEXT;
     v_where TEXT[] := ARRAY[]::TEXT[];
     v_order_expr TEXT;
+    v_order_expr_outer TEXT;
     v_person_ids UUID[];
     v_cost_min INTEGER;
     v_cost_max INTEGER;
@@ -1529,9 +1530,9 @@ BEGIN
     IF p_creator_contains IS NOT NULL AND p_creator_contains != '' THEN
         v_where := array_append(v_where, format('ui.creator ILIKE %L', '%' || p_creator_contains || '%'));
     END IF;
-    -- Assignee search uses pre-extracted assignee_names array
+    -- Assignee search uses flattened text column with trigram index
     IF p_assigned_to_contains IS NOT NULL AND p_assigned_to_contains != '' THEN
-        v_where := array_append(v_where, format('EXISTS (SELECT 1 FROM unnest(ui.assignee_names) n WHERE n ILIKE %L)', '%' || p_assigned_to_contains || '%'));
+        v_where := array_append(v_where, format('ui.assignee_search_text ILIKE %L', '%' || p_assigned_to_contains || '%'));
     END IF;
     IF p_status_in IS NOT NULL THEN
         v_where := array_append(v_where, format('ui.status = ANY(%L::TEXT[])', p_status_in));
@@ -1581,22 +1582,21 @@ BEGIN
         v_where := array_append(v_where, format('ui.attachment_count <= %s', p_attachment_count_max));
     END IF;
     
-    -- Build ORDER BY expression
+    -- Build ORDER BY expressions (for inner skinny query and outer full query)
     IF p_sort_field = 'cost_group_code' THEN
         v_order_expr := format('NULLIF(ui.cost_group_code, '''')::INTEGER %s NULLS LAST', p_sort_order);
+        v_order_expr_outer := format('NULLIF(full_ui.cost_group_code, '''')::INTEGER %s NULLS LAST', p_sort_order);
     ELSE
         v_order_expr := format('ui.%I %s NULLS LAST', p_sort_field, p_sort_order);
+        v_order_expr_outer := format('full_ui.%I %s NULLS LAST', p_sort_field, p_sort_order);
     END IF;
     
-    -- Build and execute dynamic SQL
-    v_sql := 'SELECT ui.id, ui.type, ui.name, ui.description, ui.status, ui.project, ui.customer,
-        ui.location, ui.location_path, ui.cost_group, ui.cost_group_code,
-        ui.due_date, ui.created_at, ui.updated_at, ui.priority, ui.progress, ui.tasklist,
-        ui.task_type_id, ui.task_type_name, ui.task_type_slug, ui.task_type_color,
-        ui.assigned_to, ui.tags, ui.body, ui.preview, ui.creator,
-        ui.conversation_subject, ui.recipients, ui.attachments, ui.attachment_count,
-        ui.conversation_comments_text, ui.craft_url, ui.teamwork_url, ui.missive_url, ui.storage_path, ui.thumbnail_path, ui.sort_date
-    FROM mv_unified_items ui';
+    -- Build dynamic SQL using DEFERRED JOIN pattern:
+    -- 1. Inner CTE fetches only IDs (skinny) with sort/limit
+    -- 2. Outer query joins to get full row data for only the needed rows
+    v_sql := 'WITH skinny_ids AS MATERIALIZED (
+        SELECT ui.id, ui.type
+        FROM mv_unified_items ui';
     
     IF array_length(v_where, 1) > 0 THEN
         v_sql := v_sql || ' WHERE ' || array_to_string(v_where, ' AND ');
@@ -1604,6 +1604,17 @@ BEGIN
     
     v_sql := v_sql || ' ORDER BY ' || v_order_expr;
     v_sql := v_sql || format(' LIMIT %s OFFSET %s', p_limit, p_offset);
+    v_sql := v_sql || ')
+    SELECT full_ui.id, full_ui.type, full_ui.name, full_ui.description, full_ui.status, full_ui.project, full_ui.customer,
+        full_ui.location, full_ui.location_path, full_ui.cost_group, full_ui.cost_group_code,
+        full_ui.due_date, full_ui.created_at, full_ui.updated_at, full_ui.priority, full_ui.progress, full_ui.tasklist,
+        full_ui.task_type_id, full_ui.task_type_name, full_ui.task_type_slug, full_ui.task_type_color,
+        full_ui.assigned_to, full_ui.tags, full_ui.body, full_ui.preview, full_ui.creator,
+        full_ui.conversation_subject, full_ui.recipients, full_ui.attachments, full_ui.attachment_count,
+        full_ui.conversation_comments_text, full_ui.craft_url, full_ui.teamwork_url, full_ui.missive_url, full_ui.storage_path, full_ui.thumbnail_path, full_ui.sort_date
+    FROM skinny_ids s
+    JOIN mv_unified_items full_ui ON s.id = full_ui.id AND s.type = full_ui.type
+    ORDER BY ' || v_order_expr_outer;
     
     RETURN QUERY EXECUTE v_sql;
 END;
@@ -1711,8 +1722,9 @@ BEGIN
     IF p_creator_contains IS NOT NULL AND p_creator_contains != '' THEN
         v_where := array_append(v_where, format('ui.creator ILIKE %L', '%' || p_creator_contains || '%'));
     END IF;
+    -- Assignee search uses flattened text column with trigram index
     IF p_assigned_to_contains IS NOT NULL AND p_assigned_to_contains != '' THEN
-        v_where := array_append(v_where, format('EXISTS (SELECT 1 FROM unnest(ui.assignee_names) n WHERE n ILIKE %L)', '%' || p_assigned_to_contains || '%'));
+        v_where := array_append(v_where, format('ui.assignee_search_text ILIKE %L', '%' || p_assigned_to_contains || '%'));
     END IF;
     IF p_status_in IS NOT NULL THEN
         v_where := array_append(v_where, format('ui.status = ANY(%L::TEXT[])', p_status_in));
