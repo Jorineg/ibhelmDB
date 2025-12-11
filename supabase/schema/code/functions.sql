@@ -1436,7 +1436,7 @@ CREATE OR REPLACE FUNCTION query_unified_items(
     p_project_search TEXT DEFAULT NULL, p_location_search TEXT DEFAULT NULL,
     p_name_contains TEXT DEFAULT NULL, p_description_contains TEXT DEFAULT NULL,
     p_customer_contains TEXT DEFAULT NULL, p_tasklist_contains TEXT DEFAULT NULL,
-    p_from_name_contains TEXT DEFAULT NULL, p_from_email_contains TEXT DEFAULT NULL,
+    p_creator_contains TEXT DEFAULT NULL,
     p_status_in TEXT[] DEFAULT NULL, p_status_not_in TEXT[] DEFAULT NULL,
     p_priority_in TEXT[] DEFAULT NULL, p_priority_not_in TEXT[] DEFAULT NULL,
     p_due_date_min TIMESTAMP DEFAULT NULL, p_due_date_max TIMESTAMP DEFAULT NULL,
@@ -1453,7 +1453,7 @@ RETURNS TABLE(
     location TEXT, location_path TEXT, cost_group TEXT, cost_group_code TEXT,
     due_date TIMESTAMP, created_at TIMESTAMPTZ, updated_at TIMESTAMPTZ, priority VARCHAR, progress INTEGER, tasklist TEXT,
     task_type_id UUID, task_type_name TEXT, task_type_slug TEXT, task_type_color VARCHAR(50),
-    assignees JSONB, tags JSONB, body TEXT, preview TEXT, from_name TEXT, from_email TEXT,
+    assigned_to JSONB, tags JSONB, body TEXT, preview TEXT, creator TEXT,
     conversation_subject TEXT, recipients JSONB, attachments JSONB, attachment_count INTEGER,
     conversation_comments_text TEXT, craft_url TEXT, teamwork_url TEXT, missive_url TEXT, storage_path TEXT, thumbnail_path TEXT, sort_date TIMESTAMPTZ
 )
@@ -1467,7 +1467,7 @@ DECLARE
     v_location_ids UUID[];
     v_has_location_filter BOOLEAN;
 BEGIN
-    IF p_sort_field NOT IN ('name', 'status', 'project', 'customer', 'due_date', 'created_at', 'updated_at', 'priority', 'sort_date', 'progress', 'attachment_count', 'cost_group_code') THEN
+    IF p_sort_field NOT IN ('name', 'status', 'project', 'customer', 'due_date', 'created_at', 'updated_at', 'priority', 'sort_date', 'progress', 'attachment_count', 'cost_group_code', 'creator') THEN
         p_sort_field := 'sort_date';
     END IF;
     IF p_sort_order NOT IN ('asc', 'desc') THEN p_sort_order := 'desc'; END IF;
@@ -1495,7 +1495,7 @@ BEGIN
         ui.location, ui.location_path, ui.cost_group, ui.cost_group_code,
         ui.due_date, ui.created_at, ui.updated_at, ui.priority, ui.progress, ui.tasklist,
         ui.task_type_id, ui.task_type_name, ui.task_type_slug, ui.task_type_color,
-        ui.assignees, ui.tags, ui.body, ui.preview, ui.from_name, ui.from_email,
+        ui.assigned_to, ui.tags, ui.body, ui.preview, ui.creator,
         ui.conversation_subject, ui.recipients, ui.attachments, ui.attachment_count,
         ui.conversation_comments_text, ui.craft_url, ui.teamwork_url, ui.missive_url, ui.storage_path, ui.thumbnail_path, ui.sort_date
     FROM mv_unified_items ui
@@ -1528,8 +1528,7 @@ BEGIN
         AND (p_description_contains IS NULL OR p_description_contains = '' OR ui.description ILIKE '%' || p_description_contains || '%')
         AND (p_customer_contains IS NULL OR p_customer_contains = '' OR ui.customer ILIKE '%' || p_customer_contains || '%')
         AND (p_tasklist_contains IS NULL OR p_tasklist_contains = '' OR ui.tasklist ILIKE '%' || p_tasklist_contains || '%')
-        AND (p_from_name_contains IS NULL OR p_from_name_contains = '' OR ui.from_name ILIKE '%' || p_from_name_contains || '%')
-        AND (p_from_email_contains IS NULL OR p_from_email_contains = '' OR ui.from_email ILIKE '%' || p_from_email_contains || '%')
+        AND (p_creator_contains IS NULL OR p_creator_contains = '' OR ui.creator ILIKE '%' || p_creator_contains || '%')
         AND (p_status_in IS NULL OR ui.status = ANY(p_status_in))
         AND (p_status_not_in IS NULL OR ui.status IS NULL OR NOT (ui.status = ANY(p_status_not_in)))
         AND (p_priority_in IS NULL OR ui.priority = ANY(p_priority_in))
@@ -1569,7 +1568,9 @@ BEGIN
         CASE WHEN p_sort_field = 'attachment_count' AND p_sort_order = 'desc' THEN ui.attachment_count END DESC NULLS LAST,
         CASE WHEN p_sort_field = 'attachment_count' AND p_sort_order = 'asc' THEN ui.attachment_count END ASC NULLS LAST,
         CASE WHEN p_sort_field = 'cost_group_code' AND p_sort_order = 'desc' THEN NULLIF(ui.cost_group_code, '')::INTEGER END DESC NULLS LAST,
-        CASE WHEN p_sort_field = 'cost_group_code' AND p_sort_order = 'asc' THEN NULLIF(ui.cost_group_code, '')::INTEGER END ASC NULLS LAST
+        CASE WHEN p_sort_field = 'cost_group_code' AND p_sort_order = 'asc' THEN NULLIF(ui.cost_group_code, '')::INTEGER END ASC NULLS LAST,
+        CASE WHEN p_sort_field = 'creator' AND p_sort_order = 'desc' THEN ui.creator END DESC NULLS LAST,
+        CASE WHEN p_sort_field = 'creator' AND p_sort_order = 'asc' THEN ui.creator END ASC NULLS LAST
     LIMIT p_limit OFFSET p_offset;
 END;
 $$;
@@ -1581,7 +1582,7 @@ CREATE OR REPLACE FUNCTION count_unified_items_with_metadata(
     p_project_search TEXT DEFAULT NULL, p_location_search TEXT DEFAULT NULL,
     p_name_contains TEXT DEFAULT NULL, p_description_contains TEXT DEFAULT NULL,
     p_customer_contains TEXT DEFAULT NULL, p_tasklist_contains TEXT DEFAULT NULL,
-    p_from_name_contains TEXT DEFAULT NULL, p_from_email_contains TEXT DEFAULT NULL,
+    p_creator_contains TEXT DEFAULT NULL,
     p_status_in TEXT[] DEFAULT NULL, p_status_not_in TEXT[] DEFAULT NULL,
     p_priority_in TEXT[] DEFAULT NULL, p_priority_not_in TEXT[] DEFAULT NULL,
     p_due_date_min TIMESTAMP DEFAULT NULL, p_due_date_max TIMESTAMP DEFAULT NULL,
@@ -1607,8 +1608,8 @@ DECLARE
     v_has_location BOOLEAN; v_has_location_path BOOLEAN;
     v_has_cost_group BOOLEAN; v_has_cost_group_code BOOLEAN;
     v_has_due_date BOOLEAN; v_has_priority BOOLEAN; v_has_progress BOOLEAN;
-    v_has_tasklist BOOLEAN; v_has_assignees BOOLEAN; v_has_tags BOOLEAN;
-    v_has_from_name BOOLEAN; v_has_from_email BOOLEAN;
+    v_has_tasklist BOOLEAN; v_has_assigned_to BOOLEAN; v_has_tags BOOLEAN;
+    v_has_creator BOOLEAN;
     v_has_recipients BOOLEAN; v_has_conversation_subject BOOLEAN;
     v_has_attachment_count BOOLEAN;
     v_has_created_at BOOLEAN; v_has_updated_at BOOLEAN;
@@ -1657,10 +1658,9 @@ BEGIN
         BOOL_OR(ui.priority IS NOT NULL AND ui.priority != ''),
         BOOL_OR(ui.progress IS NOT NULL),
         BOOL_OR(ui.tasklist IS NOT NULL AND ui.tasklist != ''),
-        BOOL_OR(ui.assignees IS NOT NULL AND jsonb_array_length(ui.assignees) > 0),
+        BOOL_OR(ui.assigned_to IS NOT NULL AND jsonb_array_length(ui.assigned_to) > 0),
         BOOL_OR(ui.tags IS NOT NULL AND jsonb_array_length(ui.tags) > 0),
-        BOOL_OR(ui.from_name IS NOT NULL AND ui.from_name != ''),
-        BOOL_OR(ui.from_email IS NOT NULL AND ui.from_email != ''),
+        BOOL_OR(ui.creator IS NOT NULL AND ui.creator != ''),
         BOOL_OR(ui.recipients IS NOT NULL AND jsonb_array_length(ui.recipients) > 0),
         BOOL_OR(ui.conversation_subject IS NOT NULL AND ui.conversation_subject != ''),
         BOOL_OR(ui.attachment_count IS NOT NULL AND ui.attachment_count > 0),
@@ -1726,8 +1726,8 @@ BEGIN
         v_has_location, v_has_location_path,
         v_has_cost_group, v_has_cost_group_code,
         v_has_due_date, v_has_priority, v_has_progress,
-        v_has_tasklist, v_has_assignees, v_has_tags,
-        v_has_from_name, v_has_from_email,
+        v_has_tasklist, v_has_assigned_to, v_has_tags,
+        v_has_creator,
         v_has_recipients, v_has_conversation_subject,
         v_has_attachment_count, v_has_created_at, v_has_updated_at,
         type_counts, task_type_counts
@@ -1760,8 +1760,7 @@ BEGIN
         AND (p_description_contains IS NULL OR p_description_contains = '' OR ui.description ILIKE '%' || p_description_contains || '%')
         AND (p_customer_contains IS NULL OR p_customer_contains = '' OR ui.customer ILIKE '%' || p_customer_contains || '%')
         AND (p_tasklist_contains IS NULL OR p_tasklist_contains = '' OR ui.tasklist ILIKE '%' || p_tasklist_contains || '%')
-        AND (p_from_name_contains IS NULL OR p_from_name_contains = '' OR ui.from_name ILIKE '%' || p_from_name_contains || '%')
-        AND (p_from_email_contains IS NULL OR p_from_email_contains = '' OR ui.from_email ILIKE '%' || p_from_email_contains || '%')
+        AND (p_creator_contains IS NULL OR p_creator_contains = '' OR ui.creator ILIKE '%' || p_creator_contains || '%')
         AND (p_status_in IS NULL OR ui.status = ANY(p_status_in))
         AND (p_status_not_in IS NULL OR ui.status IS NULL OR NOT (ui.status = ANY(p_status_not_in)))
         AND (p_priority_in IS NULL OR ui.priority = ANY(p_priority_in))
@@ -1794,10 +1793,9 @@ BEGIN
         CASE WHEN v_has_priority THEN 'priority' END,
         CASE WHEN v_has_progress THEN 'progress' END,
         CASE WHEN v_has_tasklist THEN 'tasklist' END,
-        CASE WHEN v_has_assignees THEN 'assignees' END,
+        CASE WHEN v_has_assigned_to THEN 'assigned_to' END,
         CASE WHEN v_has_tags THEN 'tags' END,
-        CASE WHEN v_has_from_name THEN 'from_name' END,
-        CASE WHEN v_has_from_email THEN 'from_email' END,
+        CASE WHEN v_has_creator THEN 'creator' END,
         CASE WHEN v_has_recipients THEN 'recipients' END,
         CASE WHEN v_has_conversation_subject THEN 'conversation_subject' END,
         CASE WHEN v_has_attachment_count THEN 'attachment_count' END,
@@ -2087,6 +2085,7 @@ BEGIN
         REFRESH MATERIALIZED VIEW CONCURRENTLY mv_message_attachments_agg;
         REFRESH MATERIALIZED VIEW CONCURRENTLY mv_conversation_labels_agg;
         REFRESH MATERIALIZED VIEW CONCURRENTLY mv_conversation_comments_agg;
+        REFRESH MATERIALIZED VIEW CONCURRENTLY mv_conversation_assignees_agg;
         REFRESH MATERIALIZED VIEW CONCURRENTLY mv_unified_items;
     ELSE
         REFRESH MATERIALIZED VIEW mv_task_assignees_agg;
@@ -2095,6 +2094,7 @@ BEGIN
         REFRESH MATERIALIZED VIEW mv_message_attachments_agg;
         REFRESH MATERIALIZED VIEW mv_conversation_labels_agg;
         REFRESH MATERIALIZED VIEW mv_conversation_comments_agg;
+        REFRESH MATERIALIZED VIEW mv_conversation_assignees_agg;
         REFRESH MATERIALIZED VIEW mv_unified_items;
     END IF;
 END;

@@ -62,6 +62,15 @@ WHERE cc.body IS NOT NULL AND cc.body != ''
 GROUP BY cc.conversation_id;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_conversation_comments_conv_id ON mv_conversation_comments_agg(conversation_id);
 
+DROP MATERIALIZED VIEW IF EXISTS mv_conversation_assignees_agg CASCADE;
+CREATE MATERIALIZED VIEW mv_conversation_assignees_agg AS
+SELECT ca.conversation_id,
+    jsonb_agg(jsonb_build_object('id', u.id::TEXT, 'name', u.name, 'email', u.email)) AS assignees
+FROM missive.conversation_assignees ca
+JOIN missive.users u ON ca.user_id = u.id
+GROUP BY ca.conversation_id;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_conversation_assignees_conv_id ON mv_conversation_assignees_agg(conversation_id);
+
 -- =====================================
 -- 2. UNIFIED ITEMS MATERIALIZED VIEW
 -- =====================================
@@ -77,8 +86,9 @@ SELECT * FROM (
         cg.name AS cost_group, cg.code::TEXT AS cost_group_code, t.due_date, t.created_at, t.updated_at,
         t.priority, t.progress, tl.name AS tasklist,
         tt.id AS task_type_id, tt.name AS task_type_name, tt.slug AS task_type_slug, tt.color AS task_type_color,
-        taa.assignees, tta.tags,
-        NULL::TEXT AS body, NULL::TEXT AS preview, NULL::TEXT AS from_name, NULL::TEXT AS from_email,
+        taa.assignees AS assigned_to, tta.tags,
+        NULL::TEXT AS body, NULL::TEXT AS preview,
+        NULLIF(TRIM(CONCAT(creator_user.first_name, ' ', creator_user.last_name)), '') AS creator,
         NULL::TEXT AS conversation_subject, NULL::JSONB AS recipients, NULL::JSONB AS attachments,
         0 AS attachment_count, NULL::TEXT AS conversation_comments_text,
         NULL::TEXT AS craft_url, t.source_links->>'teamwork_url' AS teamwork_url, NULL::TEXT AS missive_url,
@@ -88,6 +98,7 @@ SELECT * FROM (
     LEFT JOIN teamwork.projects p ON t.project_id = p.id
     LEFT JOIN teamwork.companies c ON p.company_id = c.id
     LEFT JOIN teamwork.tasklists tl ON t.tasklist_id = tl.id
+    LEFT JOIN teamwork.users creator_user ON t.created_by_id = creator_user.id
     LEFT JOIN object_locations ol ON t.id = ol.tw_task_id
     LEFT JOIN locations l ON ol.location_id = l.id
     LEFT JOIN object_cost_groups ocg ON t.id = ocg.tw_task_id
@@ -111,8 +122,9 @@ SELECT * FROM (
         cg.name AS cost_group, cg.code::TEXT AS cost_group_code, NULL::TIMESTAMP AS due_date, m.created_at, m.updated_at,
         ''::VARCHAR AS priority, NULL::INTEGER AS progress, ''::TEXT AS tasklist,
         NULL::UUID AS task_type_id, NULL::TEXT AS task_type_name, NULL::TEXT AS task_type_slug, NULL::VARCHAR(50) AS task_type_color,
-        NULL::JSONB AS assignees, cla.tags,
-        m.body_plain_text AS body, m.preview, from_contact.name AS from_name, from_contact.email AS from_email,
+        caa.assignees AS assigned_to, cla.tags,
+        m.body_plain_text AS body, m.preview,
+        from_contact.name AS creator,
         conv.subject AS conversation_subject, mra.recipients, maa.attachments,
         COALESCE(maa.attachment_count, 0) AS attachment_count, cca.comments_text AS conversation_comments_text,
         NULL::TEXT AS craft_url, NULL::TEXT AS teamwork_url, conv.app_url AS missive_url,
@@ -131,6 +143,7 @@ SELECT * FROM (
     LEFT JOIN mv_message_attachments_agg maa ON m.id = maa.message_id
     LEFT JOIN mv_conversation_labels_agg cla ON m.conversation_id = cla.conversation_id
     LEFT JOIN mv_conversation_comments_agg cca ON m.conversation_id = cca.conversation_id
+    LEFT JOIN mv_conversation_assignees_agg caa ON m.conversation_id = caa.conversation_id
     ORDER BY m.id
 ) emails
 
@@ -144,9 +157,9 @@ SELECT
     cd.craft_created_at AS created_at, cd.craft_last_modified_at AS updated_at,
     ''::VARCHAR AS priority, NULL::INTEGER AS progress, ''::TEXT AS tasklist,
     NULL::UUID AS task_type_id, NULL::TEXT AS task_type_name, NULL::TEXT AS task_type_slug, NULL::VARCHAR(50) AS task_type_color,
-    NULL::JSONB AS assignees, NULL::JSONB AS tags,
+    NULL::JSONB AS assigned_to, NULL::JSONB AS tags,
     cd.markdown_content AS body, NULL::TEXT AS preview,
-    NULL::TEXT AS from_name, NULL::TEXT AS from_email, NULL::TEXT AS conversation_subject,
+    NULL::TEXT AS creator, NULL::TEXT AS conversation_subject,
     NULL::JSONB AS recipients, NULL::JSONB AS attachments, 0 AS attachment_count, NULL::TEXT AS conversation_comments_text,
     'craftdocs://open?blockId=' || cd.id AS craft_url, NULL::TEXT AS teamwork_url, NULL::TEXT AS missive_url,
     NULL::TEXT AS storage_path, NULL::TEXT AS thumbnail_path,
@@ -165,9 +178,9 @@ SELECT * FROM (
         f.file_created_at AS created_at, f.file_modified_at AS updated_at,
         ''::VARCHAR AS priority, NULL::INTEGER AS progress, ''::TEXT AS tasklist,
         NULL::UUID AS task_type_id, NULL::TEXT AS task_type_name, NULL::TEXT AS task_type_slug, NULL::VARCHAR(50) AS task_type_color,
-        NULL::JSONB AS assignees, NULL::JSONB AS tags,
+        NULL::JSONB AS assigned_to, NULL::JSONB AS tags,
         f.extracted_text AS body, NULL::TEXT AS preview,
-        f.file_created_by AS from_name, NULL::TEXT AS from_email, NULL::TEXT AS conversation_subject,
+        f.file_created_by AS creator, NULL::TEXT AS conversation_subject,
         NULL::JSONB AS recipients, NULL::JSONB AS attachments, 0 AS attachment_count, NULL::TEXT AS conversation_comments_text,
         NULL::TEXT AS craft_url, NULL::TEXT AS teamwork_url, NULL::TEXT AS missive_url,
         f.storage_path, f.thumbnail_path,
@@ -193,8 +206,7 @@ CREATE INDEX IF NOT EXISTS idx_mv_ui_comments_trgm ON mv_unified_items USING gin
 CREATE INDEX IF NOT EXISTS idx_mv_ui_project_trgm ON mv_unified_items USING gin (project gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_mv_ui_customer_trgm ON mv_unified_items USING gin (customer gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_mv_ui_tasklist_trgm ON mv_unified_items USING gin (tasklist gin_trgm_ops);
-CREATE INDEX IF NOT EXISTS idx_mv_ui_from_name_trgm ON mv_unified_items USING gin (from_name gin_trgm_ops);
-CREATE INDEX IF NOT EXISTS idx_mv_ui_from_email_trgm ON mv_unified_items USING gin (from_email gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_mv_ui_creator_trgm ON mv_unified_items USING gin (creator gin_trgm_ops);
 
 -- =====================================
 -- 3. UNIFIED PERSON DETAILS VIEW
@@ -312,6 +324,7 @@ GRANT SELECT ON mv_message_recipients_agg TO authenticated;
 GRANT SELECT ON mv_message_attachments_agg TO authenticated;
 GRANT SELECT ON mv_conversation_labels_agg TO authenticated;
 GRANT SELECT ON mv_conversation_comments_agg TO authenticated;
+GRANT SELECT ON mv_conversation_assignees_agg TO authenticated;
 GRANT SELECT ON mv_unified_items TO authenticated;
 
 -- =====================================
@@ -331,6 +344,7 @@ COMMENT ON MATERIALIZED VIEW mv_message_recipients_agg IS 'Pre-aggregated messag
 COMMENT ON MATERIALIZED VIEW mv_message_attachments_agg IS 'Pre-aggregated message attachments for unified_items performance';
 COMMENT ON MATERIALIZED VIEW mv_conversation_labels_agg IS 'Pre-aggregated conversation labels for unified_items performance';
 COMMENT ON MATERIALIZED VIEW mv_conversation_comments_agg IS 'Pre-aggregated conversation comments for unified_items search';
+COMMENT ON MATERIALIZED VIEW mv_conversation_assignees_agg IS 'Pre-aggregated conversation assignees for unified_items performance';
 
 -- =====================================
 -- REGISTER MVS FOR CRON REFRESH
@@ -343,6 +357,7 @@ INSERT INTO mv_refresh_status (view_name, needs_refresh, refresh_interval_minute
     ('mv_message_attachments_agg', FALSE, 5),
     ('mv_conversation_labels_agg', FALSE, 5),
     ('mv_conversation_comments_agg', FALSE, 1),
+    ('mv_conversation_assignees_agg', FALSE, 5),
     ('mv_unified_items', FALSE, 1)
 ON CONFLICT (view_name) DO NOTHING;
 
