@@ -1689,7 +1689,7 @@ RETURNS TABLE(
     id UUID, display_name TEXT, primary_email TEXT, preferred_contact_method VARCHAR, is_internal BOOLEAN, is_company BOOLEAN, notes TEXT,
     tw_company_id INTEGER, tw_company_name TEXT, tw_company_website TEXT,
     tw_user_id INTEGER, tw_user_first_name TEXT, tw_user_last_name TEXT, tw_user_email VARCHAR,
-    m_contact_id INTEGER, m_contact_email TEXT, m_contact_name TEXT,
+    m_contact_id INTEGER, m_contact_email VARCHAR, m_contact_name TEXT,
     db_created_at TIMESTAMP, db_updated_at TIMESTAMP
 )
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
