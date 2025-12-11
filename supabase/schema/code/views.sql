@@ -63,10 +63,11 @@ GROUP BY cc.conversation_id;
 CREATE UNIQUE INDEX idx_mv_conversation_comments_conv_id ON mv_conversation_comments_agg(conversation_id);
 
 -- =====================================
--- 2. UNIFIED ITEMS VIEW
+-- 2. UNIFIED ITEMS MATERIALIZED VIEW
 -- =====================================
 
-CREATE OR REPLACE VIEW unified_items AS
+DROP MATERIALIZED VIEW IF EXISTS mv_unified_items CASCADE;
+CREATE MATERIALIZED VIEW mv_unified_items AS
 
 -- Tasks from Teamwork
 SELECT 
@@ -171,6 +172,8 @@ LEFT JOIN object_cost_groups ocg ON f.id = ocg.file_id
 LEFT JOIN cost_groups cg ON ocg.cost_group_id = cg.id
 LEFT JOIN project_files pf ON f.id = pf.file_id
 LEFT JOIN teamwork.projects twp ON pf.tw_project_id = twp.id;
+
+CREATE UNIQUE INDEX idx_mv_unified_items_id_type ON mv_unified_items(id, type);
 
 -- =====================================
 -- 3. UNIFIED PERSON DETAILS VIEW
@@ -288,12 +291,13 @@ GRANT SELECT ON mv_message_recipients_agg TO authenticated;
 GRANT SELECT ON mv_message_attachments_agg TO authenticated;
 GRANT SELECT ON mv_conversation_labels_agg TO authenticated;
 GRANT SELECT ON mv_conversation_comments_agg TO authenticated;
+GRANT SELECT ON mv_unified_items TO authenticated;
 
 -- =====================================
 -- COMMENTS
 -- =====================================
 
-COMMENT ON VIEW unified_items IS 'Unified view combining tasks, emails, and Craft documents for dashboard display';
+COMMENT ON MATERIALIZED VIEW mv_unified_items IS 'Unified materialized view combining tasks, emails, and Craft documents for dashboard display';
 COMMENT ON VIEW unified_person_details IS 'Enriched unified person view with linked external system data';
 COMMENT ON VIEW project_overview IS 'Teamwork project overview with ibhelm extensions and aggregated counts';
 COMMENT ON VIEW file_details IS 'File details with all metadata and relationships';

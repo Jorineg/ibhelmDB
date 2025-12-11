@@ -1500,7 +1500,7 @@ BEGIN
         ui.assignees, ui.tags, ui.body, ui.preview, ui.from_name, ui.from_email,
         ui.conversation_subject, ui.recipients, ui.attachments, ui.attachment_count,
         ui.conversation_comments_text, ui.craft_url, ui.teamwork_url, ui.missive_url, ui.storage_path, ui.thumbnail_path, ui.sort_date
-    FROM unified_items ui
+    FROM mv_unified_items ui
     WHERE (p_types IS NULL OR ui.type = ANY(p_types))
         AND (ui.type != 'task' OR p_task_types IS NULL OR ui.task_type_id = ANY(p_task_types))
         AND (p_text_search IS NULL OR p_text_search = '' OR
@@ -1623,7 +1623,7 @@ BEGIN
         IF array_length(v_location_ids, 1) IS NULL THEN RETURN 0; END IF;
     END IF;
     
-    SELECT COUNT(*)::INTEGER INTO v_count FROM unified_items ui
+    SELECT COUNT(*)::INTEGER INTO v_count FROM mv_unified_items ui
     WHERE (p_types IS NULL OR ui.type = ANY(p_types))
         AND (ui.type != 'task' OR p_task_types IS NULL OR ui.task_type_id = ANY(p_task_types))
         AND (p_text_search IS NULL OR p_text_search = '' OR
@@ -1804,6 +1804,7 @@ BEGIN
         REFRESH MATERIALIZED VIEW CONCURRENTLY mv_message_attachments_agg;
         REFRESH MATERIALIZED VIEW CONCURRENTLY mv_conversation_labels_agg;
         REFRESH MATERIALIZED VIEW CONCURRENTLY mv_conversation_comments_agg;
+        REFRESH MATERIALIZED VIEW CONCURRENTLY mv_unified_items;
     ELSE
         REFRESH MATERIALIZED VIEW mv_task_assignees_agg;
         REFRESH MATERIALIZED VIEW mv_task_tags_agg;
@@ -1811,6 +1812,7 @@ BEGIN
         REFRESH MATERIALIZED VIEW mv_message_attachments_agg;
         REFRESH MATERIALIZED VIEW mv_conversation_labels_agg;
         REFRESH MATERIALIZED VIEW mv_conversation_comments_agg;
+        REFRESH MATERIALIZED VIEW mv_unified_items;
     END IF;
 END;
 $$ LANGUAGE plpgsql;
