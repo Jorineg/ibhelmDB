@@ -1683,6 +1683,7 @@ RETURNS TABLE (
     pending_count BIGINT, processing_count BIGINT, failed_count BIGINT, last_processed_at TIMESTAMPTZ
 ) AS $$
 BEGIN
+    -- Return connector sources (teamwork, missive, craft)
     RETURN QUERY SELECT COALESCE(c.source, q.source) AS source, c.last_event_time, c.updated_at AS checkpoint_updated_at,
         COALESCE(q.pending_count, 0) AS pending_count, COALESCE(q.processing_count, 0) AS processing_count,
         COALESCE(q.failed_count, 0) AS failed_count, q.last_processed_at
@@ -1693,7 +1694,31 @@ BEGIN
             COUNT(*) FILTER (WHERE qi.status = 'failed') AS failed_count,
             MAX(qi.processed_at) FILTER (WHERE qi.status = 'completed') AS last_processed_at
         FROM teamworkmissiveconnector.queue_items qi GROUP BY qi.source
-    ) q FULL OUTER JOIN teamworkmissiveconnector.checkpoints c ON c.source = q.source;
+    ) q FULL OUTER JOIN teamworkmissiveconnector.checkpoints c ON c.source = q.source
+    WHERE COALESCE(c.source, q.source) IN ('teamwork', 'missive', 'craft');
+    
+    -- Return files checkpoint (no queue)
+    RETURN QUERY SELECT 
+        'files'::VARCHAR(50) AS source,
+        fc.last_event_time,
+        fc.updated_at AS checkpoint_updated_at,
+        0::BIGINT AS pending_count,
+        0::BIGINT AS processing_count,
+        0::BIGINT AS failed_count,
+        NULL::TIMESTAMPTZ AS last_processed_at
+    FROM teamworkmissiveconnector.checkpoints fc
+    WHERE fc.source = 'files';
+    
+    -- Return thumbnails queue status
+    RETURN QUERY SELECT 
+        'thumbnails'::VARCHAR(50) AS source,
+        NULL::TIMESTAMPTZ AS last_event_time,
+        NULL::TIMESTAMPTZ AS checkpoint_updated_at,
+        COUNT(*) FILTER (WHERE tq.status = 'pending') AS pending_count,
+        COUNT(*) FILTER (WHERE tq.status = 'processing') AS processing_count,
+        COUNT(*) FILTER (WHERE tq.status = 'failed') AS failed_count,
+        MAX(tq.processed_at) FILTER (WHERE tq.status = 'completed') AS last_processed_at
+    FROM thumbnail_processing_queue tq;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER STABLE;
 
