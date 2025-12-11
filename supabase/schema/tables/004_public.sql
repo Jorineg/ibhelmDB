@@ -232,16 +232,6 @@ CREATE TABLE mv_refresh_status (
     refresh_interval_minutes INTEGER DEFAULT 5
 );
 
-INSERT INTO mv_refresh_status (view_name, needs_refresh, refresh_interval_minutes) VALUES
-    ('mv_task_assignees_agg', FALSE, 5),
-    ('mv_task_tags_agg', FALSE, 5),
-    ('mv_message_recipients_agg', FALSE, 5),
-    ('mv_message_attachments_agg', FALSE, 5),
-    ('mv_conversation_labels_agg', FALSE, 5),
-    ('mv_conversation_comments_agg', FALSE, 1),
-    ('mv_unified_items', FALSE, 2)
-ON CONFLICT (view_name) DO NOTHING;
-
 -- =====================================
 -- 9. THUMBNAIL PROCESSING QUEUE
 -- =====================================

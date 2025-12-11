@@ -15,7 +15,7 @@ SELECT ta.task_id,
 FROM teamwork.task_assignees ta
 JOIN teamwork.users u ON ta.user_id = u.id
 GROUP BY ta.task_id;
-CREATE UNIQUE INDEX idx_mv_task_assignees_task_id ON mv_task_assignees_agg(task_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_task_assignees_task_id ON mv_task_assignees_agg(task_id);
 
 DROP MATERIALIZED VIEW IF EXISTS mv_task_tags_agg CASCADE;
 CREATE MATERIALIZED VIEW mv_task_tags_agg AS
@@ -24,7 +24,7 @@ SELECT tt.task_id,
 FROM teamwork.task_tags tt
 JOIN teamwork.tags tag ON tt.tag_id = tag.id
 GROUP BY tt.task_id;
-CREATE UNIQUE INDEX idx_mv_task_tags_task_id ON mv_task_tags_agg(task_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_task_tags_task_id ON mv_task_tags_agg(task_id);
 
 DROP MATERIALIZED VIEW IF EXISTS mv_message_recipients_agg CASCADE;
 CREATE MATERIALIZED VIEW mv_message_recipients_agg AS
@@ -34,7 +34,7 @@ SELECT mr.message_id,
 FROM missive.message_recipients mr
 LEFT JOIN missive.contacts rc ON mr.contact_id = rc.id
 GROUP BY mr.message_id;
-CREATE UNIQUE INDEX idx_mv_message_recipients_msg_id ON mv_message_recipients_agg(message_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_message_recipients_msg_id ON mv_message_recipients_agg(message_id);
 
 DROP MATERIALIZED VIEW IF EXISTS mv_message_attachments_agg CASCADE;
 CREATE MATERIALIZED VIEW mv_message_attachments_agg AS
@@ -43,7 +43,7 @@ SELECT a.message_id,
     COUNT(*)::INTEGER AS attachment_count
 FROM missive.attachments a
 GROUP BY a.message_id;
-CREATE UNIQUE INDEX idx_mv_message_attachments_msg_id ON mv_message_attachments_agg(message_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_message_attachments_msg_id ON mv_message_attachments_agg(message_id);
 
 DROP MATERIALIZED VIEW IF EXISTS mv_conversation_labels_agg CASCADE;
 CREATE MATERIALIZED VIEW mv_conversation_labels_agg AS
@@ -52,7 +52,7 @@ SELECT cl.conversation_id,
 FROM missive.conversation_labels cl
 JOIN missive.shared_labels sl ON cl.label_id = sl.id
 GROUP BY cl.conversation_id;
-CREATE UNIQUE INDEX idx_mv_conversation_labels_conv_id ON mv_conversation_labels_agg(conversation_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_conversation_labels_conv_id ON mv_conversation_labels_agg(conversation_id);
 
 DROP MATERIALIZED VIEW IF EXISTS mv_conversation_comments_agg CASCADE;
 CREATE MATERIALIZED VIEW mv_conversation_comments_agg AS
@@ -60,7 +60,7 @@ SELECT cc.conversation_id, string_agg(cc.body, ' ') AS comments_text
 FROM missive.conversation_comments cc
 WHERE cc.body IS NOT NULL AND cc.body != ''
 GROUP BY cc.conversation_id;
-CREATE UNIQUE INDEX idx_mv_conversation_comments_conv_id ON mv_conversation_comments_agg(conversation_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_conversation_comments_conv_id ON mv_conversation_comments_agg(conversation_id);
 
 -- =====================================
 -- 2. UNIFIED ITEMS MATERIALIZED VIEW
@@ -69,79 +69,85 @@ CREATE UNIQUE INDEX idx_mv_conversation_comments_conv_id ON mv_conversation_comm
 DROP MATERIALIZED VIEW IF EXISTS mv_unified_items CASCADE;
 CREATE MATERIALIZED VIEW mv_unified_items AS
 
--- Tasks from Teamwork
-SELECT 
-    t.id::TEXT AS id, 'task' AS type, t.name, t.description, t.status,
-    p.name AS project, c.name AS customer, l.name AS location, l.search_text AS location_path,
-    cg.name AS cost_group, cg.code::TEXT AS cost_group_code, t.due_date, t.created_at, t.updated_at,
-    t.priority, t.progress, tl.name AS tasklist,
-    tt.id AS task_type_id, tt.name AS task_type_name, tt.slug AS task_type_slug, tt.color AS task_type_color,
-    taa.assignees, tta.tags,
-    NULL::TEXT AS body, NULL::TEXT AS preview, NULL::TEXT AS from_name, NULL::TEXT AS from_email,
-    NULL::TEXT AS conversation_subject, NULL::JSONB AS recipients, NULL::JSONB AS attachments,
-    0 AS attachment_count, NULL::TEXT AS conversation_comments_text,
-    NULL::TEXT AS craft_url, t.source_links->>'teamwork_url' AS teamwork_url, NULL::TEXT AS missive_url,
-    NULL::TEXT AS storage_path, NULL::TEXT AS thumbnail_path,
-    COALESCE(t.updated_at, t.created_at) AS sort_date
-FROM teamwork.tasks t
-LEFT JOIN teamwork.projects p ON t.project_id = p.id
-LEFT JOIN teamwork.companies c ON p.company_id = c.id
-LEFT JOIN teamwork.tasklists tl ON t.tasklist_id = tl.id
-LEFT JOIN object_locations ol ON t.id = ol.tw_task_id
-LEFT JOIN locations l ON ol.location_id = l.id
-LEFT JOIN object_cost_groups ocg ON t.id = ocg.tw_task_id
-LEFT JOIN cost_groups cg ON ocg.cost_group_id = cg.id
-LEFT JOIN task_extensions te ON t.id = te.tw_task_id
-LEFT JOIN task_types tt ON te.task_type_id = tt.id
-LEFT JOIN mv_task_assignees_agg taa ON t.id = taa.task_id
-LEFT JOIN mv_task_tags_agg tta ON t.id = tta.task_id
-WHERE t.deleted_at IS NULL
+-- Tasks from Teamwork (wrapped for DISTINCT ON)
+SELECT * FROM (
+    SELECT DISTINCT ON (t.id)
+        t.id::TEXT AS id, 'task'::TEXT AS type, t.name, t.description, t.status,
+        p.name AS project, c.name AS customer, l.name AS location, l.search_text AS location_path,
+        cg.name AS cost_group, cg.code::TEXT AS cost_group_code, t.due_date, t.created_at, t.updated_at,
+        t.priority, t.progress, tl.name AS tasklist,
+        tt.id AS task_type_id, tt.name AS task_type_name, tt.slug AS task_type_slug, tt.color AS task_type_color,
+        taa.assignees, tta.tags,
+        NULL::TEXT AS body, NULL::TEXT AS preview, NULL::TEXT AS from_name, NULL::TEXT AS from_email,
+        NULL::TEXT AS conversation_subject, NULL::JSONB AS recipients, NULL::JSONB AS attachments,
+        0 AS attachment_count, NULL::TEXT AS conversation_comments_text,
+        NULL::TEXT AS craft_url, t.source_links->>'teamwork_url' AS teamwork_url, NULL::TEXT AS missive_url,
+        NULL::TEXT AS storage_path, NULL::TEXT AS thumbnail_path,
+        COALESCE(t.updated_at, t.created_at) AS sort_date
+    FROM teamwork.tasks t
+    LEFT JOIN teamwork.projects p ON t.project_id = p.id
+    LEFT JOIN teamwork.companies c ON p.company_id = c.id
+    LEFT JOIN teamwork.tasklists tl ON t.tasklist_id = tl.id
+    LEFT JOIN object_locations ol ON t.id = ol.tw_task_id
+    LEFT JOIN locations l ON ol.location_id = l.id
+    LEFT JOIN object_cost_groups ocg ON t.id = ocg.tw_task_id
+    LEFT JOIN cost_groups cg ON ocg.cost_group_id = cg.id
+    LEFT JOIN task_extensions te ON t.id = te.tw_task_id
+    LEFT JOIN task_types tt ON te.task_type_id = tt.id
+    LEFT JOIN mv_task_assignees_agg taa ON t.id = taa.task_id
+    LEFT JOIN mv_task_tags_agg tta ON t.id = tta.task_id
+    WHERE t.deleted_at IS NULL
+    ORDER BY t.id
+) tasks
 
 UNION ALL
 
--- Emails from Missive
-SELECT 
-    m.id::TEXT AS id, 'email' AS type, m.subject AS name,
-    COALESCE(m.preview, LEFT(m.body, 200)) AS description, '' AS status,
-    COALESCE(twp.name, '') AS project, '' AS customer, l.name AS location, l.search_text AS location_path,
-    cg.name AS cost_group, cg.code::TEXT AS cost_group_code, NULL AS due_date, m.created_at, m.updated_at,
-    '' AS priority, NULL AS progress, '' AS tasklist,
-    NULL::UUID AS task_type_id, NULL::TEXT AS task_type_name, NULL::TEXT AS task_type_slug, NULL::VARCHAR(50) AS task_type_color,
-    NULL::JSONB AS assignees, cla.tags,
-    m.body_plain_text AS body, m.preview, from_contact.name AS from_name, from_contact.email AS from_email,
-    conv.subject AS conversation_subject, mra.recipients, maa.attachments,
-    COALESCE(maa.attachment_count, 0) AS attachment_count, cca.comments_text AS conversation_comments_text,
-    NULL::TEXT AS craft_url, NULL::TEXT AS teamwork_url, conv.app_url AS missive_url,
-    NULL::TEXT AS storage_path, NULL::TEXT AS thumbnail_path,
-    COALESCE(m.delivered_at, m.updated_at, m.created_at) AS sort_date
-FROM missive.messages m
-LEFT JOIN missive.conversations conv ON m.conversation_id = conv.id
-LEFT JOIN missive.contacts from_contact ON m.from_contact_id = from_contact.id
-LEFT JOIN object_locations ol ON conv.id = ol.m_conversation_id
-LEFT JOIN locations l ON ol.location_id = l.id
-LEFT JOIN object_cost_groups ocg ON conv.id = ocg.m_conversation_id
-LEFT JOIN cost_groups cg ON ocg.cost_group_id = cg.id
-LEFT JOIN project_conversations pc ON conv.id = pc.m_conversation_id
-LEFT JOIN teamwork.projects twp ON pc.tw_project_id = twp.id
-LEFT JOIN mv_message_recipients_agg mra ON m.id = mra.message_id
-LEFT JOIN mv_message_attachments_agg maa ON m.id = maa.message_id
-LEFT JOIN mv_conversation_labels_agg cla ON m.conversation_id = cla.conversation_id
-LEFT JOIN mv_conversation_comments_agg cca ON m.conversation_id = cca.conversation_id
+-- Emails from Missive (wrapped for DISTINCT ON)
+SELECT * FROM (
+    SELECT DISTINCT ON (m.id)
+        m.id::TEXT AS id, 'email'::TEXT AS type, m.subject AS name,
+        COALESCE(m.preview, LEFT(m.body, 200)) AS description, ''::VARCHAR AS status,
+        COALESCE(twp.name, '') AS project, ''::TEXT AS customer, l.name AS location, l.search_text AS location_path,
+        cg.name AS cost_group, cg.code::TEXT AS cost_group_code, NULL::TIMESTAMP AS due_date, m.created_at, m.updated_at,
+        ''::VARCHAR AS priority, NULL::INTEGER AS progress, ''::TEXT AS tasklist,
+        NULL::UUID AS task_type_id, NULL::TEXT AS task_type_name, NULL::TEXT AS task_type_slug, NULL::VARCHAR(50) AS task_type_color,
+        NULL::JSONB AS assignees, cla.tags,
+        m.body_plain_text AS body, m.preview, from_contact.name AS from_name, from_contact.email AS from_email,
+        conv.subject AS conversation_subject, mra.recipients, maa.attachments,
+        COALESCE(maa.attachment_count, 0) AS attachment_count, cca.comments_text AS conversation_comments_text,
+        NULL::TEXT AS craft_url, NULL::TEXT AS teamwork_url, conv.app_url AS missive_url,
+        NULL::TEXT AS storage_path, NULL::TEXT AS thumbnail_path,
+        COALESCE(m.delivered_at, m.updated_at, m.created_at) AS sort_date
+    FROM missive.messages m
+    LEFT JOIN missive.conversations conv ON m.conversation_id = conv.id
+    LEFT JOIN missive.contacts from_contact ON m.from_contact_id = from_contact.id
+    LEFT JOIN object_locations ol ON conv.id = ol.m_conversation_id
+    LEFT JOIN locations l ON ol.location_id = l.id
+    LEFT JOIN object_cost_groups ocg ON conv.id = ocg.m_conversation_id
+    LEFT JOIN cost_groups cg ON ocg.cost_group_id = cg.id
+    LEFT JOIN project_conversations pc ON conv.id = pc.m_conversation_id
+    LEFT JOIN teamwork.projects twp ON pc.tw_project_id = twp.id
+    LEFT JOIN mv_message_recipients_agg mra ON m.id = mra.message_id
+    LEFT JOIN mv_message_attachments_agg maa ON m.id = maa.message_id
+    LEFT JOIN mv_conversation_labels_agg cla ON m.conversation_id = cla.conversation_id
+    LEFT JOIN mv_conversation_comments_agg cca ON m.conversation_id = cca.conversation_id
+    ORDER BY m.id
+) emails
 
 UNION ALL
 
--- Craft Documents
+-- Craft Documents (no duplicates possible)
 SELECT 
-    cd.id::TEXT AS id, 'craft' AS type, cd.title AS name, NULL::TEXT AS description, '' AS status,
-    '' AS project, '' AS customer, NULL AS location, NULL AS location_path,
-    NULL AS cost_group, NULL AS cost_group_code, NULL AS due_date,
+    cd.id::TEXT AS id, 'craft'::TEXT AS type, cd.title AS name, NULL::TEXT AS description, ''::VARCHAR AS status,
+    ''::TEXT AS project, ''::TEXT AS customer, NULL::TEXT AS location, NULL::TEXT AS location_path,
+    NULL::TEXT AS cost_group, NULL::TEXT AS cost_group_code, NULL::TIMESTAMP AS due_date,
     cd.craft_created_at AS created_at, cd.craft_last_modified_at AS updated_at,
-    '' AS priority, NULL AS progress, '' AS tasklist,
+    ''::VARCHAR AS priority, NULL::INTEGER AS progress, ''::TEXT AS tasklist,
     NULL::UUID AS task_type_id, NULL::TEXT AS task_type_name, NULL::TEXT AS task_type_slug, NULL::VARCHAR(50) AS task_type_color,
     NULL::JSONB AS assignees, NULL::JSONB AS tags,
     cd.markdown_content AS body, NULL::TEXT AS preview,
-    NULL AS from_name, NULL AS from_email, NULL AS conversation_subject,
-    NULL::JSONB AS recipients, NULL::JSONB AS attachments, 0 AS attachment_count, NULL AS conversation_comments_text,
+    NULL::TEXT AS from_name, NULL::TEXT AS from_email, NULL::TEXT AS conversation_subject,
+    NULL::JSONB AS recipients, NULL::JSONB AS attachments, 0 AS attachment_count, NULL::TEXT AS conversation_comments_text,
     'craftdocs://open?blockId=' || cd.id AS craft_url, NULL::TEXT AS teamwork_url, NULL::TEXT AS missive_url,
     NULL::TEXT AS storage_path, NULL::TEXT AS thumbnail_path,
     COALESCE(cd.craft_last_modified_at, cd.db_updated_at, cd.db_created_at) AS sort_date
@@ -150,30 +156,45 @@ WHERE cd.is_deleted = FALSE
 
 UNION ALL
 
--- Files
-SELECT 
-    f.id::TEXT AS id, 'file' AS type, f.filename AS name, f.extracted_text AS description, '' AS status,
-    COALESCE(twp.name, '') AS project, '' AS customer, l.name AS location, l.search_text AS location_path,
-    cg.name AS cost_group, cg.code::TEXT AS cost_group_code, NULL AS due_date,
-    f.file_created_at AS created_at, f.file_modified_at AS updated_at,
-    '' AS priority, NULL AS progress, '' AS tasklist,
-    NULL::UUID AS task_type_id, NULL::TEXT AS task_type_name, NULL::TEXT AS task_type_slug, NULL::VARCHAR(50) AS task_type_color,
-    NULL::JSONB AS assignees, NULL::JSONB AS tags,
-    NULL::TEXT AS body, NULL::TEXT AS preview,
-    f.file_created_by AS from_name, NULL AS from_email, NULL AS conversation_subject,
-    NULL::JSONB AS recipients, NULL::JSONB AS attachments, 0 AS attachment_count, NULL AS conversation_comments_text,
-    NULL::TEXT AS craft_url, NULL::TEXT AS teamwork_url, NULL::TEXT AS missive_url,
-    f.storage_path, f.thumbnail_path,
-    COALESCE(f.file_modified_at, f.db_updated_at, f.db_created_at) AS sort_date
-FROM files f
-LEFT JOIN object_locations ol ON f.id = ol.file_id
-LEFT JOIN locations l ON ol.location_id = l.id
-LEFT JOIN object_cost_groups ocg ON f.id = ocg.file_id
-LEFT JOIN cost_groups cg ON ocg.cost_group_id = cg.id
-LEFT JOIN project_files pf ON f.id = pf.file_id
-LEFT JOIN teamwork.projects twp ON pf.tw_project_id = twp.id;
+-- Files (wrapped for DISTINCT ON)
+SELECT * FROM (
+    SELECT DISTINCT ON (f.id)
+        f.id::TEXT AS id, 'file'::TEXT AS type, f.filename AS name, f.extracted_text AS description, ''::VARCHAR AS status,
+        COALESCE(twp.name, '') AS project, ''::TEXT AS customer, l.name AS location, l.search_text AS location_path,
+        cg.name AS cost_group, cg.code::TEXT AS cost_group_code, NULL::TIMESTAMP AS due_date,
+        f.file_created_at AS created_at, f.file_modified_at AS updated_at,
+        ''::VARCHAR AS priority, NULL::INTEGER AS progress, ''::TEXT AS tasklist,
+        NULL::UUID AS task_type_id, NULL::TEXT AS task_type_name, NULL::TEXT AS task_type_slug, NULL::VARCHAR(50) AS task_type_color,
+        NULL::JSONB AS assignees, NULL::JSONB AS tags,
+        NULL::TEXT AS body, NULL::TEXT AS preview,
+        f.file_created_by AS from_name, NULL::TEXT AS from_email, NULL::TEXT AS conversation_subject,
+        NULL::JSONB AS recipients, NULL::JSONB AS attachments, 0 AS attachment_count, NULL::TEXT AS conversation_comments_text,
+        NULL::TEXT AS craft_url, NULL::TEXT AS teamwork_url, NULL::TEXT AS missive_url,
+        f.storage_path, f.thumbnail_path,
+        COALESCE(f.file_modified_at, f.db_updated_at, f.db_created_at) AS sort_date
+    FROM files f
+    LEFT JOIN object_locations ol ON f.id = ol.file_id
+    LEFT JOIN locations l ON ol.location_id = l.id
+    LEFT JOIN object_cost_groups ocg ON f.id = ocg.file_id
+    LEFT JOIN cost_groups cg ON ocg.cost_group_id = cg.id
+    LEFT JOIN project_files pf ON f.id = pf.file_id
+    LEFT JOIN teamwork.projects twp ON pf.tw_project_id = twp.id
+    ORDER BY f.id
+) files;
 
-CREATE UNIQUE INDEX idx_mv_unified_items_id_type ON mv_unified_items(id, type);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_unified_items_id_type ON mv_unified_items(id, type);
+
+-- Trigram indexes for ILIKE substring search
+CREATE INDEX IF NOT EXISTS idx_mv_ui_name_trgm ON mv_unified_items USING gin (name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_mv_ui_description_trgm ON mv_unified_items USING gin (description gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_mv_ui_body_trgm ON mv_unified_items USING gin (body gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_mv_ui_preview_trgm ON mv_unified_items USING gin (preview gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_mv_ui_comments_trgm ON mv_unified_items USING gin (conversation_comments_text gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_mv_ui_project_trgm ON mv_unified_items USING gin (project gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_mv_ui_customer_trgm ON mv_unified_items USING gin (customer gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_mv_ui_tasklist_trgm ON mv_unified_items USING gin (tasklist gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_mv_ui_from_name_trgm ON mv_unified_items USING gin (from_name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_mv_ui_from_email_trgm ON mv_unified_items USING gin (from_email gin_trgm_ops);
 
 -- =====================================
 -- 3. UNIFIED PERSON DETAILS VIEW
@@ -310,4 +331,18 @@ COMMENT ON MATERIALIZED VIEW mv_message_recipients_agg IS 'Pre-aggregated messag
 COMMENT ON MATERIALIZED VIEW mv_message_attachments_agg IS 'Pre-aggregated message attachments for unified_items performance';
 COMMENT ON MATERIALIZED VIEW mv_conversation_labels_agg IS 'Pre-aggregated conversation labels for unified_items performance';
 COMMENT ON MATERIALIZED VIEW mv_conversation_comments_agg IS 'Pre-aggregated conversation comments for unified_items search';
+
+-- =====================================
+-- REGISTER MVS FOR CRON REFRESH
+-- =====================================
+
+INSERT INTO mv_refresh_status (view_name, needs_refresh, refresh_interval_minutes) VALUES
+    ('mv_task_assignees_agg', FALSE, 5),
+    ('mv_task_tags_agg', FALSE, 5),
+    ('mv_message_recipients_agg', FALSE, 5),
+    ('mv_message_attachments_agg', FALSE, 5),
+    ('mv_conversation_labels_agg', FALSE, 5),
+    ('mv_conversation_comments_agg', FALSE, 1),
+    ('mv_unified_items', FALSE, 2)
+ON CONFLICT (view_name) DO NOTHING;
 

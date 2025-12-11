@@ -660,7 +660,7 @@ DECLARE
     v_result UUID[];
 BEGIN
     IF p_search_text IS NULL OR TRIM(p_search_text) = '' THEN RETURN ARRAY[]::UUID[]; END IF;
-    v_pattern := '%' || LOWER(p_search_text) || '%';
+    v_pattern := '%' || p_search_text || '%';
     
     SELECT ARRAY_AGG(DISTINCT up.id) INTO v_result
     FROM unified_persons up
@@ -668,12 +668,12 @@ BEGIN
     LEFT JOIN teamwork.users twu ON upl.tw_user_id = twu.id
     LEFT JOIN teamwork.companies twc ON upl.tw_company_id = twc.id
     LEFT JOIN missive.contacts mc ON upl.m_contact_id = mc.id
-    WHERE LOWER(up.display_name) LIKE v_pattern OR LOWER(up.primary_email) LIKE v_pattern
-        OR LOWER(twu.first_name) LIKE v_pattern OR LOWER(twu.last_name) LIKE v_pattern
-        OR LOWER(twu.email) LIKE v_pattern
-        OR LOWER(COALESCE(twu.first_name, '') || ' ' || COALESCE(twu.last_name, '')) LIKE v_pattern
-        OR LOWER(twc.name) LIKE v_pattern OR LOWER(twc.email_one) LIKE v_pattern
-        OR LOWER(mc.name) LIKE v_pattern OR LOWER(mc.email) LIKE v_pattern;
+    WHERE up.display_name ILIKE v_pattern OR up.primary_email ILIKE v_pattern
+        OR twu.first_name ILIKE v_pattern OR twu.last_name ILIKE v_pattern
+        OR twu.email ILIKE v_pattern
+        OR (COALESCE(twu.first_name, '') || ' ' || COALESCE(twu.last_name, '')) ILIKE v_pattern
+        OR twc.name ILIKE v_pattern OR twc.email_one ILIKE v_pattern
+        OR mc.name ILIKE v_pattern OR mc.email ILIKE v_pattern;
     
     RETURN COALESCE(v_result, ARRAY[]::UUID[]);
 END;
@@ -1241,11 +1241,11 @@ BEGIN
         RETURN;
     END IF;
     
-    v_search_pattern := '%' || LOWER(p_search_text) || '%';
+    v_search_pattern := '%' || p_search_text || '%';
     RETURN QUERY SELECT p.id, p.name::TEXT, c.name::TEXT AS company_name, p.status
     FROM teamwork.projects p LEFT JOIN teamwork.companies c ON p.company_id = c.id
-    WHERE LOWER(p.name) LIKE v_search_pattern OR LOWER(c.name) LIKE v_search_pattern OR LOWER(p.description) LIKE v_search_pattern
-    ORDER BY CASE WHEN LOWER(p.name) LIKE LOWER(p_search_text) || '%' THEN 0 ELSE 1 END,
+    WHERE p.name ILIKE v_search_pattern OR c.name ILIKE v_search_pattern OR p.description ILIKE v_search_pattern
+    ORDER BY CASE WHEN p.name ILIKE p_search_text || '%' THEN 0 ELSE 1 END,
         CASE p.status WHEN 'active' THEN 0 ELSE 1 END, p.name ASC
     LIMIT p_limit;
 END;
@@ -1262,7 +1262,7 @@ BEGIN
         RETURN;
     END IF;
     
-    v_search_pattern := '%' || LOWER(p_search_text) || '%';
+    v_search_pattern := '%' || p_search_text || '%';
     RETURN QUERY SELECT DISTINCT ON (up.id) up.id, up.display_name::TEXT, up.primary_email::TEXT,
         CASE WHEN upl.tw_user_id IS NOT NULL THEN 'teamwork_user'
              WHEN upl.tw_company_id IS NOT NULL THEN 'teamwork_company'
@@ -1273,13 +1273,13 @@ BEGIN
     LEFT JOIN teamwork.users twu ON upl.tw_user_id = twu.id
     LEFT JOIN teamwork.companies twc ON upl.tw_company_id = twc.id
     LEFT JOIN missive.contacts mc ON upl.m_contact_id = mc.id
-    WHERE LOWER(up.display_name) LIKE v_search_pattern OR LOWER(up.primary_email) LIKE v_search_pattern
-        OR LOWER(twu.first_name) LIKE v_search_pattern OR LOWER(twu.last_name) LIKE v_search_pattern
-        OR LOWER(twu.email) LIKE v_search_pattern
-        OR LOWER(COALESCE(twu.first_name, '') || ' ' || COALESCE(twu.last_name, '')) LIKE v_search_pattern
-        OR LOWER(twc.name) LIKE v_search_pattern OR LOWER(twc.email_one) LIKE v_search_pattern
-        OR LOWER(mc.name) LIKE v_search_pattern OR LOWER(mc.email) LIKE v_search_pattern
-    ORDER BY up.id, CASE WHEN LOWER(up.display_name) LIKE LOWER(p_search_text) || '%' THEN 0 ELSE 1 END,
+    WHERE up.display_name ILIKE v_search_pattern OR up.primary_email ILIKE v_search_pattern
+        OR twu.first_name ILIKE v_search_pattern OR twu.last_name ILIKE v_search_pattern
+        OR twu.email ILIKE v_search_pattern
+        OR (COALESCE(twu.first_name, '') || ' ' || COALESCE(twu.last_name, '')) ILIKE v_search_pattern
+        OR twc.name ILIKE v_search_pattern OR twc.email_one ILIKE v_search_pattern
+        OR mc.name ILIKE v_search_pattern OR mc.email ILIKE v_search_pattern
+    ORDER BY up.id, CASE WHEN up.display_name ILIKE p_search_text || '%' THEN 0 ELSE 1 END,
         CASE WHEN up.is_internal THEN 0 ELSE 1 END, up.display_name ASC
     LIMIT p_limit;
 END;
@@ -1309,8 +1309,8 @@ BEGIN
         WHERE cg.code >= v_code_min AND cg.code <= v_code_max ORDER BY cg.code ASC LIMIT p_limit;
     ELSE
         RETURN QUERY SELECT cg.id, cg.code, cg.name::TEXT, cg.path::TEXT FROM cost_groups cg
-        WHERE LOWER(cg.name) LIKE '%' || LOWER(p_search_text) || '%'
-        ORDER BY CASE WHEN LOWER(cg.name) LIKE LOWER(p_search_text) || '%' THEN 0 ELSE 1 END, cg.code ASC
+        WHERE cg.name ILIKE '%' || p_search_text || '%'
+        ORDER BY CASE WHEN cg.name ILIKE p_search_text || '%' THEN 0 ELSE 1 END, cg.code ASC
         LIMIT p_limit;
     END IF;
 END;
@@ -1322,22 +1322,20 @@ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
 DECLARE v_search_pattern TEXT;
 BEGIN
     IF p_search_text IS NULL OR TRIM(p_search_text) = '' THEN
-        -- Return all top-level locations and their immediate children
         RETURN QUERY SELECT l.id, l.name::TEXT, l.type, l.search_text::TEXT AS path, l.depth
         FROM locations l
         ORDER BY l.type, l.name ASC LIMIT p_limit;
         RETURN;
     END IF;
     
-    v_search_pattern := '%' || LOWER(p_search_text) || '%';
+    v_search_pattern := '%' || p_search_text || '%';
     
-    -- Search locations by name or search_text (full path)
     RETURN QUERY SELECT l.id, l.name::TEXT, l.type, l.search_text::TEXT AS path, l.depth
     FROM locations l
-    WHERE LOWER(l.name) LIKE v_search_pattern OR LOWER(l.search_text) LIKE v_search_pattern
+    WHERE l.name ILIKE v_search_pattern OR l.search_text ILIKE v_search_pattern
     ORDER BY 
-        CASE WHEN LOWER(l.name) = LOWER(p_search_text) THEN 0
-             WHEN LOWER(l.name) LIKE LOWER(p_search_text) || '%' THEN 1
+        CASE WHEN l.name ILIKE p_search_text THEN 0
+             WHEN l.name ILIKE p_search_text || '%' THEN 1
              ELSE 2 END,
         l.type, l.name ASC
     LIMIT p_limit;
@@ -1363,15 +1361,15 @@ BEGIN
         RETURN;
     END IF;
     
-    v_search_pattern := '%' || LOWER(p_search_text) || '%';
+    v_search_pattern := '%' || p_search_text || '%';
     RETURN QUERY WITH combined_tags AS (
         SELECT 'tw_' || t.id::TEXT AS id, t.name::TEXT AS name, t.color::TEXT AS color, 'teamwork'::TEXT AS source
-        FROM teamwork.tags t WHERE LOWER(t.name) LIKE v_search_pattern
+        FROM teamwork.tags t WHERE t.name ILIKE v_search_pattern
         UNION ALL
         SELECT 'm_' || sl.id::TEXT AS id, sl.name::TEXT AS name, NULL::TEXT AS color, 'missive'::TEXT AS source
-        FROM missive.shared_labels sl WHERE LOWER(sl.name) LIKE v_search_pattern
+        FROM missive.shared_labels sl WHERE sl.name ILIKE v_search_pattern
     ) SELECT DISTINCT ON (LOWER(ct.name)) ct.id, ct.name, ct.color, ct.source
-    FROM combined_tags ct ORDER BY LOWER(ct.name), CASE WHEN LOWER(ct.name) LIKE LOWER(p_search_text) || '%' THEN 0 ELSE 1 END
+    FROM combined_tags ct ORDER BY LOWER(ct.name), CASE WHEN ct.name ILIKE p_search_text || '%' THEN 0 ELSE 1 END
     LIMIT p_limit;
 END;
 $$;
@@ -1410,12 +1408,12 @@ DECLARE
     v_matched_ids UUID[];
 BEGIN
     IF p_search_text IS NULL OR TRIM(p_search_text) = '' THEN RETURN ARRAY[]::UUID[]; END IF;
-    v_pattern := '%' || LOWER(p_search_text) || '%';
+    v_pattern := '%' || p_search_text || '%';
     
     -- Find locations matching the search
     SELECT ARRAY_AGG(l.id) INTO v_matched_ids
     FROM locations l
-    WHERE LOWER(l.name) LIKE v_pattern OR LOWER(l.search_text) LIKE v_pattern;
+    WHERE l.name ILIKE v_pattern OR l.search_text ILIKE v_pattern;
     
     IF v_matched_ids IS NULL OR array_length(v_matched_ids, 1) IS NULL THEN
         RETURN ARRAY[]::UUID[];
@@ -1504,19 +1502,19 @@ BEGIN
     WHERE (p_types IS NULL OR ui.type = ANY(p_types))
         AND (ui.type != 'task' OR p_task_types IS NULL OR ui.task_type_id = ANY(p_task_types))
         AND (p_text_search IS NULL OR p_text_search = '' OR
-            LOWER(ui.name) LIKE '%' || LOWER(p_text_search) || '%' OR
-            LOWER(ui.description) LIKE '%' || LOWER(p_text_search) || '%' OR
-            LOWER(ui.body) LIKE '%' || LOWER(p_text_search) || '%' OR
-            LOWER(ui.preview) LIKE '%' || LOWER(p_text_search) || '%' OR
-            LOWER(ui.conversation_comments_text) LIKE '%' || LOWER(p_text_search) || '%')
+            ui.name ILIKE '%' || p_text_search || '%' OR
+            ui.description ILIKE '%' || p_text_search || '%' OR
+            ui.body ILIKE '%' || p_text_search || '%' OR
+            ui.preview ILIKE '%' || p_text_search || '%' OR
+            ui.conversation_comments_text ILIKE '%' || p_text_search || '%')
         AND (NOT v_has_person_filter OR EXISTS (
             SELECT 1 FROM item_involved_persons iip
             WHERE iip.item_id = ui.id AND iip.item_type = ui.type AND iip.unified_person_id = ANY(v_person_ids)))
         AND (p_tag_search IS NULL OR p_tag_search = '' OR EXISTS (
-            SELECT 1 FROM jsonb_array_elements(ui.tags) t WHERE LOWER(t->>'name') LIKE '%' || LOWER(p_tag_search) || '%'))
+            SELECT 1 FROM jsonb_array_elements(ui.tags) t WHERE t->>'name' ILIKE '%' || p_tag_search || '%'))
         AND (NOT v_has_cost_filter OR (ui.cost_group_code IS NOT NULL AND ui.cost_group_code ~ '^\d+$'
             AND ui.cost_group_code::INTEGER >= v_cost_min AND ui.cost_group_code::INTEGER <= v_cost_max))
-        AND (p_project_search IS NULL OR p_project_search = '' OR LOWER(ui.project) LIKE '%' || LOWER(p_project_search) || '%')
+        AND (p_project_search IS NULL OR p_project_search = '' OR ui.project ILIKE '%' || p_project_search || '%')
         AND (NOT v_has_location_filter OR (
             (ui.type = 'task' AND EXISTS (
                 SELECT 1 FROM object_locations ol WHERE ol.tw_task_id = ui.id::INTEGER AND ol.location_id = ANY(v_location_ids)))
@@ -1526,12 +1524,12 @@ BEGIN
                 WHERE mm.id = ui.id::UUID AND ol.location_id = ANY(v_location_ids)))
             OR (ui.type = 'file' AND EXISTS (
                 SELECT 1 FROM object_locations ol WHERE ol.file_id = ui.id::UUID AND ol.location_id = ANY(v_location_ids)))))
-        AND (p_name_contains IS NULL OR p_name_contains = '' OR LOWER(ui.name) LIKE '%' || LOWER(p_name_contains) || '%')
-        AND (p_description_contains IS NULL OR p_description_contains = '' OR LOWER(ui.description) LIKE '%' || LOWER(p_description_contains) || '%')
-        AND (p_customer_contains IS NULL OR p_customer_contains = '' OR LOWER(ui.customer) LIKE '%' || LOWER(p_customer_contains) || '%')
-        AND (p_tasklist_contains IS NULL OR p_tasklist_contains = '' OR LOWER(ui.tasklist) LIKE '%' || LOWER(p_tasklist_contains) || '%')
-        AND (p_from_name_contains IS NULL OR p_from_name_contains = '' OR LOWER(ui.from_name) LIKE '%' || LOWER(p_from_name_contains) || '%')
-        AND (p_from_email_contains IS NULL OR p_from_email_contains = '' OR LOWER(ui.from_email) LIKE '%' || LOWER(p_from_email_contains) || '%')
+        AND (p_name_contains IS NULL OR p_name_contains = '' OR ui.name ILIKE '%' || p_name_contains || '%')
+        AND (p_description_contains IS NULL OR p_description_contains = '' OR ui.description ILIKE '%' || p_description_contains || '%')
+        AND (p_customer_contains IS NULL OR p_customer_contains = '' OR ui.customer ILIKE '%' || p_customer_contains || '%')
+        AND (p_tasklist_contains IS NULL OR p_tasklist_contains = '' OR ui.tasklist ILIKE '%' || p_tasklist_contains || '%')
+        AND (p_from_name_contains IS NULL OR p_from_name_contains = '' OR ui.from_name ILIKE '%' || p_from_name_contains || '%')
+        AND (p_from_email_contains IS NULL OR p_from_email_contains = '' OR ui.from_email ILIKE '%' || p_from_email_contains || '%')
         AND (p_status_in IS NULL OR ui.status = ANY(p_status_in))
         AND (p_status_not_in IS NULL OR ui.status IS NULL OR NOT (ui.status = ANY(p_status_not_in)))
         AND (p_priority_in IS NULL OR ui.priority = ANY(p_priority_in))
@@ -1627,18 +1625,18 @@ BEGIN
     WHERE (p_types IS NULL OR ui.type = ANY(p_types))
         AND (ui.type != 'task' OR p_task_types IS NULL OR ui.task_type_id = ANY(p_task_types))
         AND (p_text_search IS NULL OR p_text_search = '' OR
-            LOWER(ui.name) LIKE '%' || LOWER(p_text_search) || '%' OR
-            LOWER(ui.description) LIKE '%' || LOWER(p_text_search) || '%' OR
-            LOWER(ui.body) LIKE '%' || LOWER(p_text_search) || '%' OR
-            LOWER(ui.preview) LIKE '%' || LOWER(p_text_search) || '%' OR
-            LOWER(ui.conversation_comments_text) LIKE '%' || LOWER(p_text_search) || '%')
+            ui.name ILIKE '%' || p_text_search || '%' OR
+            ui.description ILIKE '%' || p_text_search || '%' OR
+            ui.body ILIKE '%' || p_text_search || '%' OR
+            ui.preview ILIKE '%' || p_text_search || '%' OR
+            ui.conversation_comments_text ILIKE '%' || p_text_search || '%')
         AND (NOT v_has_person_filter OR EXISTS (
             SELECT 1 FROM item_involved_persons iip WHERE iip.item_id = ui.id AND iip.item_type = ui.type AND iip.unified_person_id = ANY(v_person_ids)))
         AND (p_tag_search IS NULL OR p_tag_search = '' OR EXISTS (
-            SELECT 1 FROM jsonb_array_elements(ui.tags) t WHERE LOWER(t->>'name') LIKE '%' || LOWER(p_tag_search) || '%'))
+            SELECT 1 FROM jsonb_array_elements(ui.tags) t WHERE t->>'name' ILIKE '%' || p_tag_search || '%'))
         AND (NOT v_has_cost_filter OR (ui.cost_group_code IS NOT NULL AND ui.cost_group_code ~ '^\d+$'
             AND ui.cost_group_code::INTEGER >= v_cost_min AND ui.cost_group_code::INTEGER <= v_cost_max))
-        AND (p_project_search IS NULL OR p_project_search = '' OR LOWER(ui.project) LIKE '%' || LOWER(p_project_search) || '%')
+        AND (p_project_search IS NULL OR p_project_search = '' OR ui.project ILIKE '%' || p_project_search || '%')
         AND (NOT v_has_location_filter OR (
             (ui.type = 'task' AND EXISTS (
                 SELECT 1 FROM object_locations ol WHERE ol.tw_task_id = ui.id::INTEGER AND ol.location_id = ANY(v_location_ids)))
@@ -1648,12 +1646,12 @@ BEGIN
                 WHERE mm.id = ui.id::UUID AND ol.location_id = ANY(v_location_ids)))
             OR (ui.type = 'file' AND EXISTS (
                 SELECT 1 FROM object_locations ol WHERE ol.file_id = ui.id::UUID AND ol.location_id = ANY(v_location_ids)))))
-        AND (p_name_contains IS NULL OR p_name_contains = '' OR LOWER(ui.name) LIKE '%' || LOWER(p_name_contains) || '%')
-        AND (p_description_contains IS NULL OR p_description_contains = '' OR LOWER(ui.description) LIKE '%' || LOWER(p_description_contains) || '%')
-        AND (p_customer_contains IS NULL OR p_customer_contains = '' OR LOWER(ui.customer) LIKE '%' || LOWER(p_customer_contains) || '%')
-        AND (p_tasklist_contains IS NULL OR p_tasklist_contains = '' OR LOWER(ui.tasklist) LIKE '%' || LOWER(p_tasklist_contains) || '%')
-        AND (p_from_name_contains IS NULL OR p_from_name_contains = '' OR LOWER(ui.from_name) LIKE '%' || LOWER(p_from_name_contains) || '%')
-        AND (p_from_email_contains IS NULL OR p_from_email_contains = '' OR LOWER(ui.from_email) LIKE '%' || LOWER(p_from_email_contains) || '%')
+        AND (p_name_contains IS NULL OR p_name_contains = '' OR ui.name ILIKE '%' || p_name_contains || '%')
+        AND (p_description_contains IS NULL OR p_description_contains = '' OR ui.description ILIKE '%' || p_description_contains || '%')
+        AND (p_customer_contains IS NULL OR p_customer_contains = '' OR ui.customer ILIKE '%' || p_customer_contains || '%')
+        AND (p_tasklist_contains IS NULL OR p_tasklist_contains = '' OR ui.tasklist ILIKE '%' || p_tasklist_contains || '%')
+        AND (p_from_name_contains IS NULL OR p_from_name_contains = '' OR ui.from_name ILIKE '%' || p_from_name_contains || '%')
+        AND (p_from_email_contains IS NULL OR p_from_email_contains = '' OR ui.from_email ILIKE '%' || p_from_email_contains || '%')
         AND (p_status_in IS NULL OR ui.status = ANY(p_status_in))
         AND (p_status_not_in IS NULL OR ui.status IS NULL OR NOT (ui.status = ANY(p_status_not_in)))
         AND (p_priority_in IS NULL OR ui.priority = ANY(p_priority_in))
