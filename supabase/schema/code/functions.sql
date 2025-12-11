@@ -1436,7 +1436,7 @@ CREATE OR REPLACE FUNCTION query_unified_items(
     p_project_search TEXT DEFAULT NULL, p_location_search TEXT DEFAULT NULL,
     p_name_contains TEXT DEFAULT NULL, p_description_contains TEXT DEFAULT NULL,
     p_customer_contains TEXT DEFAULT NULL, p_tasklist_contains TEXT DEFAULT NULL,
-    p_creator_contains TEXT DEFAULT NULL,
+    p_creator_contains TEXT DEFAULT NULL, p_assigned_to_contains TEXT DEFAULT NULL,
     p_status_in TEXT[] DEFAULT NULL, p_status_not_in TEXT[] DEFAULT NULL,
     p_priority_in TEXT[] DEFAULT NULL, p_priority_not_in TEXT[] DEFAULT NULL,
     p_due_date_min TIMESTAMP DEFAULT NULL, p_due_date_max TIMESTAMP DEFAULT NULL,
@@ -1529,6 +1529,10 @@ BEGIN
         AND (p_customer_contains IS NULL OR p_customer_contains = '' OR ui.customer ILIKE '%' || p_customer_contains || '%')
         AND (p_tasklist_contains IS NULL OR p_tasklist_contains = '' OR ui.tasklist ILIKE '%' || p_tasklist_contains || '%')
         AND (p_creator_contains IS NULL OR p_creator_contains = '' OR ui.creator ILIKE '%' || p_creator_contains || '%')
+        AND (p_assigned_to_contains IS NULL OR p_assigned_to_contains = '' OR EXISTS (
+            SELECT 1 FROM jsonb_array_elements(ui.assigned_to) a
+            WHERE a->>'name' ILIKE '%' || p_assigned_to_contains || '%'
+               OR a->>'email' ILIKE '%' || p_assigned_to_contains || '%'))
         AND (p_status_in IS NULL OR ui.status = ANY(p_status_in))
         AND (p_status_not_in IS NULL OR ui.status IS NULL OR NOT (ui.status = ANY(p_status_not_in)))
         AND (p_priority_in IS NULL OR ui.priority = ANY(p_priority_in))
@@ -1582,7 +1586,7 @@ CREATE OR REPLACE FUNCTION count_unified_items_with_metadata(
     p_project_search TEXT DEFAULT NULL, p_location_search TEXT DEFAULT NULL,
     p_name_contains TEXT DEFAULT NULL, p_description_contains TEXT DEFAULT NULL,
     p_customer_contains TEXT DEFAULT NULL, p_tasklist_contains TEXT DEFAULT NULL,
-    p_creator_contains TEXT DEFAULT NULL,
+    p_creator_contains TEXT DEFAULT NULL, p_assigned_to_contains TEXT DEFAULT NULL,
     p_status_in TEXT[] DEFAULT NULL, p_status_not_in TEXT[] DEFAULT NULL,
     p_priority_in TEXT[] DEFAULT NULL, p_priority_not_in TEXT[] DEFAULT NULL,
     p_due_date_min TIMESTAMP DEFAULT NULL, p_due_date_max TIMESTAMP DEFAULT NULL,
@@ -1761,6 +1765,10 @@ BEGIN
         AND (p_customer_contains IS NULL OR p_customer_contains = '' OR ui.customer ILIKE '%' || p_customer_contains || '%')
         AND (p_tasklist_contains IS NULL OR p_tasklist_contains = '' OR ui.tasklist ILIKE '%' || p_tasklist_contains || '%')
         AND (p_creator_contains IS NULL OR p_creator_contains = '' OR ui.creator ILIKE '%' || p_creator_contains || '%')
+        AND (p_assigned_to_contains IS NULL OR p_assigned_to_contains = '' OR EXISTS (
+            SELECT 1 FROM jsonb_array_elements(ui.assigned_to) a
+            WHERE a->>'name' ILIKE '%' || p_assigned_to_contains || '%'
+               OR a->>'email' ILIKE '%' || p_assigned_to_contains || '%'))
         AND (p_status_in IS NULL OR ui.status = ANY(p_status_in))
         AND (p_status_not_in IS NULL OR ui.status IS NULL OR NOT (ui.status = ANY(p_status_not_in)))
         AND (p_priority_in IS NULL OR ui.priority = ANY(p_priority_in))
