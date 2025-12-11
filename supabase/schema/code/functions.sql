@@ -1459,133 +1459,153 @@ RETURNS TABLE(
 )
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
 DECLARE
+    v_sql TEXT;
+    v_where TEXT[] := ARRAY[]::TEXT[];
+    v_order_expr TEXT;
     v_person_ids UUID[];
-    v_has_person_filter BOOLEAN;
     v_cost_min INTEGER;
     v_cost_max INTEGER;
-    v_has_cost_filter BOOLEAN;
     v_location_ids UUID[];
-    v_has_location_filter BOOLEAN;
 BEGIN
+    -- Validate and sanitize sort parameters
     IF p_sort_field NOT IN ('name', 'status', 'project', 'customer', 'due_date', 'created_at', 'updated_at', 'priority', 'sort_date', 'progress', 'attachment_count', 'cost_group_code', 'creator', 'location', 'location_path', 'cost_group', 'tasklist', 'conversation_subject') THEN
         p_sort_field := 'sort_date';
     END IF;
     IF p_sort_order NOT IN ('asc', 'desc') THEN p_sort_order := 'desc'; END IF;
     
-    v_has_person_filter := p_involved_person IS NOT NULL AND TRIM(p_involved_person) != '';
-    IF v_has_person_filter THEN
+    -- Pre-compute lookup filters
+    IF p_involved_person IS NOT NULL AND TRIM(p_involved_person) != '' THEN
         v_person_ids := find_person_ids_by_search(p_involved_person);
         IF array_length(v_person_ids, 1) IS NULL THEN RETURN; END IF;
     END IF;
     
-    v_has_cost_filter := p_cost_group_code IS NOT NULL AND TRIM(p_cost_group_code) != '';
-    IF v_has_cost_filter THEN
+    IF p_cost_group_code IS NOT NULL AND TRIM(p_cost_group_code) != '' THEN
         SELECT cgr.min_code, cgr.max_code INTO v_cost_min, v_cost_max FROM compute_cost_group_range(p_cost_group_code) cgr;
-        IF v_cost_min IS NULL THEN v_has_cost_filter := FALSE; END IF;
     END IF;
     
-    v_has_location_filter := p_location_search IS NOT NULL AND TRIM(p_location_search) != '';
-    IF v_has_location_filter THEN
+    IF p_location_search IS NOT NULL AND TRIM(p_location_search) != '' THEN
         v_location_ids := find_location_ids_by_search(p_location_search);
         IF array_length(v_location_ids, 1) IS NULL THEN RETURN; END IF;
     END IF;
     
-    RETURN QUERY
-    SELECT ui.id, ui.type, ui.name, ui.description, ui.status, ui.project, ui.customer,
+    -- Build WHERE conditions dynamically (only add when filter is active)
+    IF p_types IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.type = ANY(%L::TEXT[])', p_types));
+    END IF;
+    IF p_task_types IS NOT NULL THEN
+        v_where := array_append(v_where, format('(ui.type != ''task'' OR ui.task_type_id = ANY(%L::UUID[]))', p_task_types));
+    END IF;
+    -- Text search uses consolidated search_text column + body fallback
+    IF p_text_search IS NOT NULL AND p_text_search != '' THEN
+        v_where := array_append(v_where, format('(ui.search_text ILIKE %L OR ui.body ILIKE %L)', '%' || p_text_search || '%', '%' || p_text_search || '%'));
+    END IF;
+    IF v_person_ids IS NOT NULL THEN
+        v_where := array_append(v_where, format('EXISTS (SELECT 1 FROM item_involved_persons iip WHERE iip.item_id = ui.id AND iip.item_type = ui.type AND iip.unified_person_id = ANY(%L::UUID[]))', v_person_ids));
+    END IF;
+    IF p_tag_search IS NOT NULL AND p_tag_search != '' THEN
+        v_where := array_append(v_where, format('EXISTS (SELECT 1 FROM jsonb_array_elements(ui.tags) t WHERE t->>''name'' ILIKE %L)', '%' || p_tag_search || '%'));
+    END IF;
+    IF v_cost_min IS NOT NULL THEN
+        v_where := array_append(v_where, format('(ui.cost_group_code IS NOT NULL AND ui.cost_group_code ~ ''^\d+$'' AND ui.cost_group_code::INTEGER >= %s AND ui.cost_group_code::INTEGER <= %s)', v_cost_min, v_cost_max));
+    END IF;
+    IF p_project_search IS NOT NULL AND p_project_search != '' THEN
+        v_where := array_append(v_where, format('ui.project ILIKE %L', '%' || p_project_search || '%'));
+    END IF;
+    IF v_location_ids IS NOT NULL THEN
+        v_where := array_append(v_where, format('((ui.type = ''task'' AND EXISTS (SELECT 1 FROM object_locations ol WHERE ol.tw_task_id = ui.id::INTEGER AND ol.location_id = ANY(%1$L::UUID[]))) OR (ui.type = ''email'' AND EXISTS (SELECT 1 FROM object_locations ol JOIN missive.messages mm ON mm.conversation_id = ol.m_conversation_id WHERE mm.id = ui.id::UUID AND ol.location_id = ANY(%1$L::UUID[]))) OR (ui.type = ''file'' AND EXISTS (SELECT 1 FROM object_locations ol WHERE ol.file_id = ui.id::UUID AND ol.location_id = ANY(%1$L::UUID[]))))', v_location_ids));
+    END IF;
+    IF p_name_contains IS NOT NULL AND p_name_contains != '' THEN
+        v_where := array_append(v_where, format('ui.name ILIKE %L', '%' || p_name_contains || '%'));
+    END IF;
+    IF p_description_contains IS NOT NULL AND p_description_contains != '' THEN
+        v_where := array_append(v_where, format('ui.description ILIKE %L', '%' || p_description_contains || '%'));
+    END IF;
+    IF p_customer_contains IS NOT NULL AND p_customer_contains != '' THEN
+        v_where := array_append(v_where, format('ui.customer ILIKE %L', '%' || p_customer_contains || '%'));
+    END IF;
+    IF p_tasklist_contains IS NOT NULL AND p_tasklist_contains != '' THEN
+        v_where := array_append(v_where, format('ui.tasklist ILIKE %L', '%' || p_tasklist_contains || '%'));
+    END IF;
+    IF p_creator_contains IS NOT NULL AND p_creator_contains != '' THEN
+        v_where := array_append(v_where, format('ui.creator ILIKE %L', '%' || p_creator_contains || '%'));
+    END IF;
+    -- Assignee search uses pre-extracted assignee_names array
+    IF p_assigned_to_contains IS NOT NULL AND p_assigned_to_contains != '' THEN
+        v_where := array_append(v_where, format('EXISTS (SELECT 1 FROM unnest(ui.assignee_names) n WHERE n ILIKE %L)', '%' || p_assigned_to_contains || '%'));
+    END IF;
+    IF p_status_in IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.status = ANY(%L::TEXT[])', p_status_in));
+    END IF;
+    IF p_status_not_in IS NOT NULL THEN
+        v_where := array_append(v_where, format('(ui.status IS NULL OR NOT (ui.status = ANY(%L::TEXT[])))', p_status_not_in));
+    END IF;
+    IF p_priority_in IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.priority = ANY(%L::TEXT[])', p_priority_in));
+    END IF;
+    IF p_priority_not_in IS NOT NULL THEN
+        v_where := array_append(v_where, format('(ui.priority IS NULL OR NOT (ui.priority = ANY(%L::TEXT[])))', p_priority_not_in));
+    END IF;
+    IF p_due_date_min IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.due_date >= %L', p_due_date_min));
+    END IF;
+    IF p_due_date_max IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.due_date <= %L', p_due_date_max));
+    END IF;
+    IF p_due_date_is_null = TRUE THEN
+        v_where := array_append(v_where, 'ui.due_date IS NULL');
+    ELSIF p_due_date_is_null = FALSE THEN
+        v_where := array_append(v_where, 'ui.due_date IS NOT NULL');
+    END IF;
+    IF p_created_at_min IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.created_at >= %L', p_created_at_min));
+    END IF;
+    IF p_created_at_max IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.created_at <= %L', p_created_at_max));
+    END IF;
+    IF p_updated_at_min IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.updated_at >= %L', p_updated_at_min));
+    END IF;
+    IF p_updated_at_max IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.updated_at <= %L', p_updated_at_max));
+    END IF;
+    IF p_progress_min IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.progress >= %s', p_progress_min));
+    END IF;
+    IF p_progress_max IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.progress <= %s', p_progress_max));
+    END IF;
+    IF p_attachment_count_min IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.attachment_count >= %s', p_attachment_count_min));
+    END IF;
+    IF p_attachment_count_max IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.attachment_count <= %s', p_attachment_count_max));
+    END IF;
+    
+    -- Build ORDER BY expression
+    IF p_sort_field = 'cost_group_code' THEN
+        v_order_expr := format('NULLIF(ui.cost_group_code, '''')::INTEGER %s NULLS LAST', p_sort_order);
+    ELSE
+        v_order_expr := format('ui.%I %s NULLS LAST', p_sort_field, p_sort_order);
+    END IF;
+    
+    -- Build and execute dynamic SQL
+    v_sql := 'SELECT ui.id, ui.type, ui.name, ui.description, ui.status, ui.project, ui.customer,
         ui.location, ui.location_path, ui.cost_group, ui.cost_group_code,
         ui.due_date, ui.created_at, ui.updated_at, ui.priority, ui.progress, ui.tasklist,
         ui.task_type_id, ui.task_type_name, ui.task_type_slug, ui.task_type_color,
         ui.assigned_to, ui.tags, ui.body, ui.preview, ui.creator,
         ui.conversation_subject, ui.recipients, ui.attachments, ui.attachment_count,
         ui.conversation_comments_text, ui.craft_url, ui.teamwork_url, ui.missive_url, ui.storage_path, ui.thumbnail_path, ui.sort_date
-    FROM mv_unified_items ui
-    WHERE (p_types IS NULL OR ui.type = ANY(p_types))
-        AND (ui.type != 'task' OR p_task_types IS NULL OR ui.task_type_id = ANY(p_task_types))
-        AND (p_text_search IS NULL OR p_text_search = '' OR
-            ui.name ILIKE '%' || p_text_search || '%' OR
-            ui.description ILIKE '%' || p_text_search || '%' OR
-            ui.body ILIKE '%' || p_text_search || '%' OR
-            ui.preview ILIKE '%' || p_text_search || '%' OR
-            ui.conversation_comments_text ILIKE '%' || p_text_search || '%')
-        AND (NOT v_has_person_filter OR EXISTS (
-            SELECT 1 FROM item_involved_persons iip
-            WHERE iip.item_id = ui.id AND iip.item_type = ui.type AND iip.unified_person_id = ANY(v_person_ids)))
-        AND (p_tag_search IS NULL OR p_tag_search = '' OR EXISTS (
-            SELECT 1 FROM jsonb_array_elements(ui.tags) t WHERE t->>'name' ILIKE '%' || p_tag_search || '%'))
-        AND (NOT v_has_cost_filter OR (ui.cost_group_code IS NOT NULL AND ui.cost_group_code ~ '^\d+$'
-            AND ui.cost_group_code::INTEGER >= v_cost_min AND ui.cost_group_code::INTEGER <= v_cost_max))
-        AND (p_project_search IS NULL OR p_project_search = '' OR ui.project ILIKE '%' || p_project_search || '%')
-        AND (NOT v_has_location_filter OR (
-            (ui.type = 'task' AND EXISTS (
-                SELECT 1 FROM object_locations ol WHERE ol.tw_task_id = ui.id::INTEGER AND ol.location_id = ANY(v_location_ids)))
-            OR (ui.type = 'email' AND EXISTS (
-                SELECT 1 FROM object_locations ol 
-                JOIN missive.messages mm ON mm.conversation_id = ol.m_conversation_id 
-                WHERE mm.id = ui.id::UUID AND ol.location_id = ANY(v_location_ids)))
-            OR (ui.type = 'file' AND EXISTS (
-                SELECT 1 FROM object_locations ol WHERE ol.file_id = ui.id::UUID AND ol.location_id = ANY(v_location_ids)))))
-        AND (p_name_contains IS NULL OR p_name_contains = '' OR ui.name ILIKE '%' || p_name_contains || '%')
-        AND (p_description_contains IS NULL OR p_description_contains = '' OR ui.description ILIKE '%' || p_description_contains || '%')
-        AND (p_customer_contains IS NULL OR p_customer_contains = '' OR ui.customer ILIKE '%' || p_customer_contains || '%')
-        AND (p_tasklist_contains IS NULL OR p_tasklist_contains = '' OR ui.tasklist ILIKE '%' || p_tasklist_contains || '%')
-        AND (p_creator_contains IS NULL OR p_creator_contains = '' OR ui.creator ILIKE '%' || p_creator_contains || '%')
-        AND (p_assigned_to_contains IS NULL OR p_assigned_to_contains = '' OR EXISTS (
-            SELECT 1 FROM jsonb_array_elements(ui.assigned_to) a
-            WHERE a->>'name' ILIKE '%' || p_assigned_to_contains || '%'
-               OR a->>'email' ILIKE '%' || p_assigned_to_contains || '%'))
-        AND (p_status_in IS NULL OR ui.status = ANY(p_status_in))
-        AND (p_status_not_in IS NULL OR ui.status IS NULL OR NOT (ui.status = ANY(p_status_not_in)))
-        AND (p_priority_in IS NULL OR ui.priority = ANY(p_priority_in))
-        AND (p_priority_not_in IS NULL OR ui.priority IS NULL OR NOT (ui.priority = ANY(p_priority_not_in)))
-        AND (p_due_date_min IS NULL OR ui.due_date >= p_due_date_min)
-        AND (p_due_date_max IS NULL OR ui.due_date <= p_due_date_max)
-        AND (p_due_date_is_null IS NULL OR (p_due_date_is_null = TRUE AND ui.due_date IS NULL) OR (p_due_date_is_null = FALSE AND ui.due_date IS NOT NULL))
-        AND (p_created_at_min IS NULL OR ui.created_at >= p_created_at_min)
-        AND (p_created_at_max IS NULL OR ui.created_at <= p_created_at_max)
-        AND (p_updated_at_min IS NULL OR ui.updated_at >= p_updated_at_min)
-        AND (p_updated_at_max IS NULL OR ui.updated_at <= p_updated_at_max)
-        AND (p_progress_min IS NULL OR ui.progress >= p_progress_min)
-        AND (p_progress_max IS NULL OR ui.progress <= p_progress_max)
-        AND (p_attachment_count_min IS NULL OR ui.attachment_count >= p_attachment_count_min)
-        AND (p_attachment_count_max IS NULL OR ui.attachment_count <= p_attachment_count_max)
-    ORDER BY
-        CASE WHEN p_sort_field = 'sort_date' AND p_sort_order = 'desc' THEN ui.sort_date END DESC NULLS LAST,
-        CASE WHEN p_sort_field = 'sort_date' AND p_sort_order = 'asc' THEN ui.sort_date END ASC NULLS LAST,
-        CASE WHEN p_sort_field = 'name' AND p_sort_order = 'desc' THEN ui.name END DESC NULLS LAST,
-        CASE WHEN p_sort_field = 'name' AND p_sort_order = 'asc' THEN ui.name END ASC NULLS LAST,
-        CASE WHEN p_sort_field = 'created_at' AND p_sort_order = 'desc' THEN ui.created_at END DESC NULLS LAST,
-        CASE WHEN p_sort_field = 'created_at' AND p_sort_order = 'asc' THEN ui.created_at END ASC NULLS LAST,
-        CASE WHEN p_sort_field = 'updated_at' AND p_sort_order = 'desc' THEN ui.updated_at END DESC NULLS LAST,
-        CASE WHEN p_sort_field = 'updated_at' AND p_sort_order = 'asc' THEN ui.updated_at END ASC NULLS LAST,
-        CASE WHEN p_sort_field = 'due_date' AND p_sort_order = 'desc' THEN ui.due_date END DESC NULLS LAST,
-        CASE WHEN p_sort_field = 'due_date' AND p_sort_order = 'asc' THEN ui.due_date END ASC NULLS LAST,
-        CASE WHEN p_sort_field = 'status' AND p_sort_order = 'desc' THEN ui.status END DESC NULLS LAST,
-        CASE WHEN p_sort_field = 'status' AND p_sort_order = 'asc' THEN ui.status END ASC NULLS LAST,
-        CASE WHEN p_sort_field = 'project' AND p_sort_order = 'desc' THEN ui.project END DESC NULLS LAST,
-        CASE WHEN p_sort_field = 'project' AND p_sort_order = 'asc' THEN ui.project END ASC NULLS LAST,
-        CASE WHEN p_sort_field = 'customer' AND p_sort_order = 'desc' THEN ui.customer END DESC NULLS LAST,
-        CASE WHEN p_sort_field = 'customer' AND p_sort_order = 'asc' THEN ui.customer END ASC NULLS LAST,
-        CASE WHEN p_sort_field = 'priority' AND p_sort_order = 'desc' THEN ui.priority END DESC NULLS LAST,
-        CASE WHEN p_sort_field = 'priority' AND p_sort_order = 'asc' THEN ui.priority END ASC NULLS LAST,
-        CASE WHEN p_sort_field = 'progress' AND p_sort_order = 'desc' THEN ui.progress END DESC NULLS LAST,
-        CASE WHEN p_sort_field = 'progress' AND p_sort_order = 'asc' THEN ui.progress END ASC NULLS LAST,
-        CASE WHEN p_sort_field = 'attachment_count' AND p_sort_order = 'desc' THEN ui.attachment_count END DESC NULLS LAST,
-        CASE WHEN p_sort_field = 'attachment_count' AND p_sort_order = 'asc' THEN ui.attachment_count END ASC NULLS LAST,
-        CASE WHEN p_sort_field = 'cost_group_code' AND p_sort_order = 'desc' THEN NULLIF(ui.cost_group_code, '')::INTEGER END DESC NULLS LAST,
-        CASE WHEN p_sort_field = 'cost_group_code' AND p_sort_order = 'asc' THEN NULLIF(ui.cost_group_code, '')::INTEGER END ASC NULLS LAST,
-        CASE WHEN p_sort_field = 'creator' AND p_sort_order = 'desc' THEN ui.creator END DESC NULLS LAST,
-        CASE WHEN p_sort_field = 'creator' AND p_sort_order = 'asc' THEN ui.creator END ASC NULLS LAST,
-        CASE WHEN p_sort_field = 'location' AND p_sort_order = 'desc' THEN ui.location END DESC NULLS LAST,
-        CASE WHEN p_sort_field = 'location' AND p_sort_order = 'asc' THEN ui.location END ASC NULLS LAST,
-        CASE WHEN p_sort_field = 'location_path' AND p_sort_order = 'desc' THEN ui.location_path END DESC NULLS LAST,
-        CASE WHEN p_sort_field = 'location_path' AND p_sort_order = 'asc' THEN ui.location_path END ASC NULLS LAST,
-        CASE WHEN p_sort_field = 'cost_group' AND p_sort_order = 'desc' THEN ui.cost_group END DESC NULLS LAST,
-        CASE WHEN p_sort_field = 'cost_group' AND p_sort_order = 'asc' THEN ui.cost_group END ASC NULLS LAST,
-        CASE WHEN p_sort_field = 'tasklist' AND p_sort_order = 'desc' THEN ui.tasklist END DESC NULLS LAST,
-        CASE WHEN p_sort_field = 'tasklist' AND p_sort_order = 'asc' THEN ui.tasklist END ASC NULLS LAST,
-        CASE WHEN p_sort_field = 'conversation_subject' AND p_sort_order = 'desc' THEN ui.conversation_subject END DESC NULLS LAST,
-        CASE WHEN p_sort_field = 'conversation_subject' AND p_sort_order = 'asc' THEN ui.conversation_subject END ASC NULLS LAST
-    LIMIT p_limit OFFSET p_offset;
+    FROM mv_unified_items ui';
+    
+    IF array_length(v_where, 1) > 0 THEN
+        v_sql := v_sql || ' WHERE ' || array_to_string(v_where, ' AND ');
+    END IF;
+    
+    v_sql := v_sql || ' ORDER BY ' || v_order_expr;
+    v_sql := v_sql || format(' LIMIT %s OFFSET %s', p_limit, p_offset);
+    
+    RETURN QUERY EXECUTE v_sql;
 END;
 $$;
 
@@ -1609,13 +1629,13 @@ CREATE OR REPLACE FUNCTION count_unified_items_with_metadata(
 RETURNS TABLE(total_count INTEGER, nonempty_columns TEXT[], type_counts JSONB, task_type_counts JSONB)
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
 DECLARE
+    v_sql TEXT;
+    v_where TEXT[] := ARRAY[]::TEXT[];
+    v_where_clause TEXT;
     v_person_ids UUID[];
-    v_has_person_filter BOOLEAN;
     v_cost_min INTEGER;
     v_cost_max INTEGER;
-    v_has_cost_filter BOOLEAN;
     v_location_ids UUID[];
-    v_has_location_filter BOOLEAN;
     -- Column presence flags
     v_has_name BOOLEAN; v_has_description BOOLEAN; v_has_body BOOLEAN;
     v_has_status BOOLEAN; v_has_project BOOLEAN; v_has_customer BOOLEAN;
@@ -1628,8 +1648,8 @@ DECLARE
     v_has_attachment_count BOOLEAN;
     v_has_created_at BOOLEAN; v_has_updated_at BOOLEAN;
 BEGIN
-    v_has_person_filter := p_involved_person IS NOT NULL AND TRIM(p_involved_person) != '';
-    IF v_has_person_filter THEN
+    -- Pre-compute lookup filters
+    IF p_involved_person IS NOT NULL AND TRIM(p_involved_person) != '' THEN
         v_person_ids := find_person_ids_by_search(p_involved_person);
         IF array_length(v_person_ids, 1) IS NULL THEN
             total_count := 0; nonempty_columns := ARRAY[]::TEXT[];
@@ -1638,14 +1658,11 @@ BEGIN
         END IF;
     END IF;
     
-    v_has_cost_filter := p_cost_group_code IS NOT NULL AND TRIM(p_cost_group_code) != '';
-    IF v_has_cost_filter THEN
+    IF p_cost_group_code IS NOT NULL AND TRIM(p_cost_group_code) != '' THEN
         SELECT cgr.min_code, cgr.max_code INTO v_cost_min, v_cost_max FROM compute_cost_group_range(p_cost_group_code) cgr;
-        IF v_cost_min IS NULL THEN v_has_cost_filter := FALSE; END IF;
     END IF;
     
-    v_has_location_filter := p_location_search IS NOT NULL AND TRIM(p_location_search) != '';
-    IF v_has_location_filter THEN
+    IF p_location_search IS NOT NULL AND TRIM(p_location_search) != '' THEN
         v_location_ids := find_location_ids_by_search(p_location_search);
         IF array_length(v_location_ids, 1) IS NULL THEN
             total_count := 0; nonempty_columns := ARRAY[]::TEXT[];
@@ -1654,87 +1671,149 @@ BEGIN
         END IF;
     END IF;
     
-    -- Main aggregation query
-    SELECT 
+    -- Build WHERE conditions dynamically
+    IF p_types IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.type = ANY(%L::TEXT[])', p_types));
+    END IF;
+    IF p_task_types IS NOT NULL THEN
+        v_where := array_append(v_where, format('(ui.type != ''task'' OR ui.task_type_id = ANY(%L::UUID[]))', p_task_types));
+    END IF;
+    IF p_text_search IS NOT NULL AND p_text_search != '' THEN
+        v_where := array_append(v_where, format('(ui.search_text ILIKE %L OR ui.body ILIKE %L)', '%' || p_text_search || '%', '%' || p_text_search || '%'));
+    END IF;
+    IF v_person_ids IS NOT NULL THEN
+        v_where := array_append(v_where, format('EXISTS (SELECT 1 FROM item_involved_persons iip WHERE iip.item_id = ui.id AND iip.item_type = ui.type AND iip.unified_person_id = ANY(%L::UUID[]))', v_person_ids));
+    END IF;
+    IF p_tag_search IS NOT NULL AND p_tag_search != '' THEN
+        v_where := array_append(v_where, format('EXISTS (SELECT 1 FROM jsonb_array_elements(ui.tags) t WHERE t->>''name'' ILIKE %L)', '%' || p_tag_search || '%'));
+    END IF;
+    IF v_cost_min IS NOT NULL THEN
+        v_where := array_append(v_where, format('(ui.cost_group_code IS NOT NULL AND ui.cost_group_code ~ ''^\d+$'' AND ui.cost_group_code::INTEGER >= %s AND ui.cost_group_code::INTEGER <= %s)', v_cost_min, v_cost_max));
+    END IF;
+    IF p_project_search IS NOT NULL AND p_project_search != '' THEN
+        v_where := array_append(v_where, format('ui.project ILIKE %L', '%' || p_project_search || '%'));
+    END IF;
+    IF v_location_ids IS NOT NULL THEN
+        v_where := array_append(v_where, format('((ui.type = ''task'' AND EXISTS (SELECT 1 FROM object_locations ol WHERE ol.tw_task_id = ui.id::INTEGER AND ol.location_id = ANY(%1$L::UUID[]))) OR (ui.type = ''email'' AND EXISTS (SELECT 1 FROM object_locations ol JOIN missive.messages mm ON mm.conversation_id = ol.m_conversation_id WHERE mm.id = ui.id::UUID AND ol.location_id = ANY(%1$L::UUID[]))) OR (ui.type = ''file'' AND EXISTS (SELECT 1 FROM object_locations ol WHERE ol.file_id = ui.id::UUID AND ol.location_id = ANY(%1$L::UUID[]))))', v_location_ids));
+    END IF;
+    IF p_name_contains IS NOT NULL AND p_name_contains != '' THEN
+        v_where := array_append(v_where, format('ui.name ILIKE %L', '%' || p_name_contains || '%'));
+    END IF;
+    IF p_description_contains IS NOT NULL AND p_description_contains != '' THEN
+        v_where := array_append(v_where, format('ui.description ILIKE %L', '%' || p_description_contains || '%'));
+    END IF;
+    IF p_customer_contains IS NOT NULL AND p_customer_contains != '' THEN
+        v_where := array_append(v_where, format('ui.customer ILIKE %L', '%' || p_customer_contains || '%'));
+    END IF;
+    IF p_tasklist_contains IS NOT NULL AND p_tasklist_contains != '' THEN
+        v_where := array_append(v_where, format('ui.tasklist ILIKE %L', '%' || p_tasklist_contains || '%'));
+    END IF;
+    IF p_creator_contains IS NOT NULL AND p_creator_contains != '' THEN
+        v_where := array_append(v_where, format('ui.creator ILIKE %L', '%' || p_creator_contains || '%'));
+    END IF;
+    IF p_assigned_to_contains IS NOT NULL AND p_assigned_to_contains != '' THEN
+        v_where := array_append(v_where, format('EXISTS (SELECT 1 FROM unnest(ui.assignee_names) n WHERE n ILIKE %L)', '%' || p_assigned_to_contains || '%'));
+    END IF;
+    IF p_status_in IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.status = ANY(%L::TEXT[])', p_status_in));
+    END IF;
+    IF p_status_not_in IS NOT NULL THEN
+        v_where := array_append(v_where, format('(ui.status IS NULL OR NOT (ui.status = ANY(%L::TEXT[])))', p_status_not_in));
+    END IF;
+    IF p_priority_in IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.priority = ANY(%L::TEXT[])', p_priority_in));
+    END IF;
+    IF p_priority_not_in IS NOT NULL THEN
+        v_where := array_append(v_where, format('(ui.priority IS NULL OR NOT (ui.priority = ANY(%L::TEXT[])))', p_priority_not_in));
+    END IF;
+    IF p_due_date_min IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.due_date >= %L', p_due_date_min));
+    END IF;
+    IF p_due_date_max IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.due_date <= %L', p_due_date_max));
+    END IF;
+    IF p_due_date_is_null = TRUE THEN
+        v_where := array_append(v_where, 'ui.due_date IS NULL');
+    ELSIF p_due_date_is_null = FALSE THEN
+        v_where := array_append(v_where, 'ui.due_date IS NOT NULL');
+    END IF;
+    IF p_created_at_min IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.created_at >= %L', p_created_at_min));
+    END IF;
+    IF p_created_at_max IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.created_at <= %L', p_created_at_max));
+    END IF;
+    IF p_updated_at_min IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.updated_at >= %L', p_updated_at_min));
+    END IF;
+    IF p_updated_at_max IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.updated_at <= %L', p_updated_at_max));
+    END IF;
+    IF p_progress_min IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.progress >= %s', p_progress_min));
+    END IF;
+    IF p_progress_max IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.progress <= %s', p_progress_max));
+    END IF;
+    IF p_attachment_count_min IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.attachment_count >= %s', p_attachment_count_min));
+    END IF;
+    IF p_attachment_count_max IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.attachment_count <= %s', p_attachment_count_max));
+    END IF;
+    
+    -- Build WHERE clause strings (one for main query with ui, one for subquery with ui2)
+    IF array_length(v_where, 1) > 0 THEN
+        v_where_clause := ' WHERE ' || array_to_string(v_where, ' AND ');
+    ELSE
+        v_where_clause := '';
+    END IF;
+    
+    -- Build and execute dynamic SQL
+    v_sql := 'SELECT 
         COUNT(*)::INTEGER,
-        -- Column presence checks (BOOL_OR short-circuits)
-        BOOL_OR(ui.name IS NOT NULL AND ui.name != ''),
-        BOOL_OR(ui.description IS NOT NULL AND ui.description != ''),
-        BOOL_OR(ui.body IS NOT NULL AND ui.body != ''),
-        BOOL_OR(ui.status IS NOT NULL AND ui.status != ''),
-        BOOL_OR(ui.project IS NOT NULL AND ui.project != ''),
-        BOOL_OR(ui.customer IS NOT NULL AND ui.customer != ''),
-        BOOL_OR(ui.location IS NOT NULL AND ui.location != ''),
-        BOOL_OR(ui.location_path IS NOT NULL AND ui.location_path != ''),
-        BOOL_OR(ui.cost_group IS NOT NULL AND ui.cost_group != ''),
-        BOOL_OR(ui.cost_group_code IS NOT NULL AND ui.cost_group_code != ''),
+        BOOL_OR(ui.name IS NOT NULL AND ui.name != ''''),
+        BOOL_OR(ui.description IS NOT NULL AND ui.description != ''''),
+        BOOL_OR(ui.body IS NOT NULL AND ui.body != ''''),
+        BOOL_OR(ui.status IS NOT NULL AND ui.status != ''''),
+        BOOL_OR(ui.project IS NOT NULL AND ui.project != ''''),
+        BOOL_OR(ui.customer IS NOT NULL AND ui.customer != ''''),
+        BOOL_OR(ui.location IS NOT NULL AND ui.location != ''''),
+        BOOL_OR(ui.location_path IS NOT NULL AND ui.location_path != ''''),
+        BOOL_OR(ui.cost_group IS NOT NULL AND ui.cost_group != ''''),
+        BOOL_OR(ui.cost_group_code IS NOT NULL AND ui.cost_group_code != ''''),
         BOOL_OR(ui.due_date IS NOT NULL),
-        BOOL_OR(ui.priority IS NOT NULL AND ui.priority != ''),
+        BOOL_OR(ui.priority IS NOT NULL AND ui.priority != ''''),
         BOOL_OR(ui.progress IS NOT NULL),
-        BOOL_OR(ui.tasklist IS NOT NULL AND ui.tasklist != ''),
+        BOOL_OR(ui.tasklist IS NOT NULL AND ui.tasklist != ''''),
         BOOL_OR(ui.assigned_to IS NOT NULL AND jsonb_array_length(ui.assigned_to) > 0),
         BOOL_OR(ui.tags IS NOT NULL AND jsonb_array_length(ui.tags) > 0),
-        BOOL_OR(ui.creator IS NOT NULL AND ui.creator != ''),
+        BOOL_OR(ui.creator IS NOT NULL AND ui.creator != ''''),
         BOOL_OR(ui.recipients IS NOT NULL AND jsonb_array_length(ui.recipients) > 0),
-        BOOL_OR(ui.conversation_subject IS NOT NULL AND ui.conversation_subject != ''),
+        BOOL_OR(ui.conversation_subject IS NOT NULL AND ui.conversation_subject != ''''),
         BOOL_OR(ui.attachment_count IS NOT NULL AND ui.attachment_count > 0),
         BOOL_OR(ui.created_at IS NOT NULL),
         BOOL_OR(ui.updated_at IS NOT NULL),
-        -- Type counts as JSONB
         jsonb_build_object(
-            'task', COUNT(*) FILTER (WHERE ui.type = 'task'),
-            'email', COUNT(*) FILTER (WHERE ui.type = 'email'),
-            'craft', COUNT(*) FILTER (WHERE ui.type = 'craft'),
-            'file', COUNT(*) FILTER (WHERE ui.type = 'file')
+            ''task'', COUNT(*) FILTER (WHERE ui.type = ''task''),
+            ''email'', COUNT(*) FILTER (WHERE ui.type = ''email''),
+            ''craft'', COUNT(*) FILTER (WHERE ui.type = ''craft''),
+            ''file'', COUNT(*) FILTER (WHERE ui.type = ''file'')
         ),
-        -- Task type counts: aggregate task_type_id -> count
         COALESCE(
             (SELECT jsonb_object_agg(tt.task_type_id, tt.cnt)
-             FROM (
-                 SELECT ui2.task_type_id, COUNT(*)::INTEGER as cnt
-                 FROM mv_unified_items ui2
-                 WHERE ui2.type = 'task' AND ui2.task_type_id IS NOT NULL
-                     AND (p_types IS NULL OR ui2.type = ANY(p_types))
-                     AND (p_task_types IS NULL OR ui2.task_type_id = ANY(p_task_types))
-                     AND (p_text_search IS NULL OR p_text_search = '' OR
-                         ui2.name ILIKE '%' || p_text_search || '%' OR
-                         ui2.description ILIKE '%' || p_text_search || '%' OR
-                         ui2.body ILIKE '%' || p_text_search || '%' OR
-                         ui2.preview ILIKE '%' || p_text_search || '%' OR
-                         ui2.conversation_comments_text ILIKE '%' || p_text_search || '%')
-                     AND (NOT v_has_person_filter OR EXISTS (
-                         SELECT 1 FROM item_involved_persons iip WHERE iip.item_id = ui2.id AND iip.item_type = ui2.type AND iip.unified_person_id = ANY(v_person_ids)))
-                     AND (p_tag_search IS NULL OR p_tag_search = '' OR EXISTS (
-                         SELECT 1 FROM jsonb_array_elements(ui2.tags) t WHERE t->>'name' ILIKE '%' || p_tag_search || '%'))
-                     AND (NOT v_has_cost_filter OR (ui2.cost_group_code IS NOT NULL AND ui2.cost_group_code ~ '^\d+$'
-                         AND ui2.cost_group_code::INTEGER >= v_cost_min AND ui2.cost_group_code::INTEGER <= v_cost_max))
-                     AND (p_project_search IS NULL OR p_project_search = '' OR ui2.project ILIKE '%' || p_project_search || '%')
-                     AND (NOT v_has_location_filter OR EXISTS (
-                         SELECT 1 FROM object_locations ol WHERE ol.tw_task_id = ui2.id::INTEGER AND ol.location_id = ANY(v_location_ids)))
-                     AND (p_name_contains IS NULL OR p_name_contains = '' OR ui2.name ILIKE '%' || p_name_contains || '%')
-                     AND (p_description_contains IS NULL OR p_description_contains = '' OR ui2.description ILIKE '%' || p_description_contains || '%')
-                     AND (p_customer_contains IS NULL OR p_customer_contains = '' OR ui2.customer ILIKE '%' || p_customer_contains || '%')
-                     AND (p_tasklist_contains IS NULL OR p_tasklist_contains = '' OR ui2.tasklist ILIKE '%' || p_tasklist_contains || '%')
-                     AND (p_status_in IS NULL OR ui2.status = ANY(p_status_in))
-                     AND (p_status_not_in IS NULL OR ui2.status IS NULL OR NOT (ui2.status = ANY(p_status_not_in)))
-                     AND (p_priority_in IS NULL OR ui2.priority = ANY(p_priority_in))
-                     AND (p_priority_not_in IS NULL OR ui2.priority IS NULL OR NOT (ui2.priority = ANY(p_priority_not_in)))
-                     AND (p_due_date_min IS NULL OR ui2.due_date >= p_due_date_min)
-                     AND (p_due_date_max IS NULL OR ui2.due_date <= p_due_date_max)
-                     AND (p_due_date_is_null IS NULL OR (p_due_date_is_null = TRUE AND ui2.due_date IS NULL) OR (p_due_date_is_null = FALSE AND ui2.due_date IS NOT NULL))
-                     AND (p_created_at_min IS NULL OR ui2.created_at >= p_created_at_min)
-                     AND (p_created_at_max IS NULL OR ui2.created_at <= p_created_at_max)
-                     AND (p_updated_at_min IS NULL OR ui2.updated_at >= p_updated_at_min)
-                     AND (p_updated_at_max IS NULL OR ui2.updated_at <= p_updated_at_max)
-                     AND (p_progress_min IS NULL OR ui2.progress >= p_progress_min)
-                     AND (p_progress_max IS NULL OR ui2.progress <= p_progress_max)
-                     AND (p_attachment_count_min IS NULL OR ui2.attachment_count >= p_attachment_count_min)
-                     AND (p_attachment_count_max IS NULL OR ui2.attachment_count <= p_attachment_count_max)
-                 GROUP BY ui2.task_type_id
-             ) tt),
-            '{}'::JSONB
+             FROM (SELECT ui2.task_type_id, COUNT(*)::INTEGER as cnt
+                   FROM mv_unified_items ui2
+                   WHERE ui2.type = ''task'' AND ui2.task_type_id IS NOT NULL' ||
+                   CASE WHEN array_length(v_where, 1) > 0 
+                        THEN ' AND ' || replace(array_to_string(v_where, ' AND '), 'ui.', 'ui2.') 
+                        ELSE '' END ||
+                   ' GROUP BY ui2.task_type_id) tt),
+            ''{}''::JSONB
         )
-    INTO total_count,
+    FROM mv_unified_items ui' || v_where_clause;
+    
+    EXECUTE v_sql INTO total_count,
         v_has_name, v_has_description, v_has_body,
         v_has_status, v_has_project, v_has_customer,
         v_has_location, v_has_location_path,
@@ -1744,56 +1823,7 @@ BEGIN
         v_has_creator,
         v_has_recipients, v_has_conversation_subject,
         v_has_attachment_count, v_has_created_at, v_has_updated_at,
-        type_counts, task_type_counts
-    FROM mv_unified_items ui
-    WHERE (p_types IS NULL OR ui.type = ANY(p_types))
-        AND (ui.type != 'task' OR p_task_types IS NULL OR ui.task_type_id = ANY(p_task_types))
-        AND (p_text_search IS NULL OR p_text_search = '' OR
-            ui.name ILIKE '%' || p_text_search || '%' OR
-            ui.description ILIKE '%' || p_text_search || '%' OR
-            ui.body ILIKE '%' || p_text_search || '%' OR
-            ui.preview ILIKE '%' || p_text_search || '%' OR
-            ui.conversation_comments_text ILIKE '%' || p_text_search || '%')
-        AND (NOT v_has_person_filter OR EXISTS (
-            SELECT 1 FROM item_involved_persons iip WHERE iip.item_id = ui.id AND iip.item_type = ui.type AND iip.unified_person_id = ANY(v_person_ids)))
-        AND (p_tag_search IS NULL OR p_tag_search = '' OR EXISTS (
-            SELECT 1 FROM jsonb_array_elements(ui.tags) t WHERE t->>'name' ILIKE '%' || p_tag_search || '%'))
-        AND (NOT v_has_cost_filter OR (ui.cost_group_code IS NOT NULL AND ui.cost_group_code ~ '^\d+$'
-            AND ui.cost_group_code::INTEGER >= v_cost_min AND ui.cost_group_code::INTEGER <= v_cost_max))
-        AND (p_project_search IS NULL OR p_project_search = '' OR ui.project ILIKE '%' || p_project_search || '%')
-        AND (NOT v_has_location_filter OR (
-            (ui.type = 'task' AND EXISTS (
-                SELECT 1 FROM object_locations ol WHERE ol.tw_task_id = ui.id::INTEGER AND ol.location_id = ANY(v_location_ids)))
-            OR (ui.type = 'email' AND EXISTS (
-                SELECT 1 FROM object_locations ol 
-                JOIN missive.messages mm ON mm.conversation_id = ol.m_conversation_id 
-                WHERE mm.id = ui.id::UUID AND ol.location_id = ANY(v_location_ids)))
-            OR (ui.type = 'file' AND EXISTS (
-                SELECT 1 FROM object_locations ol WHERE ol.file_id = ui.id::UUID AND ol.location_id = ANY(v_location_ids)))))
-        AND (p_name_contains IS NULL OR p_name_contains = '' OR ui.name ILIKE '%' || p_name_contains || '%')
-        AND (p_description_contains IS NULL OR p_description_contains = '' OR ui.description ILIKE '%' || p_description_contains || '%')
-        AND (p_customer_contains IS NULL OR p_customer_contains = '' OR ui.customer ILIKE '%' || p_customer_contains || '%')
-        AND (p_tasklist_contains IS NULL OR p_tasklist_contains = '' OR ui.tasklist ILIKE '%' || p_tasklist_contains || '%')
-        AND (p_creator_contains IS NULL OR p_creator_contains = '' OR ui.creator ILIKE '%' || p_creator_contains || '%')
-        AND (p_assigned_to_contains IS NULL OR p_assigned_to_contains = '' OR EXISTS (
-            SELECT 1 FROM jsonb_array_elements(ui.assigned_to) a
-            WHERE a->>'name' ILIKE '%' || p_assigned_to_contains || '%'
-               OR a->>'email' ILIKE '%' || p_assigned_to_contains || '%'))
-        AND (p_status_in IS NULL OR ui.status = ANY(p_status_in))
-        AND (p_status_not_in IS NULL OR ui.status IS NULL OR NOT (ui.status = ANY(p_status_not_in)))
-        AND (p_priority_in IS NULL OR ui.priority = ANY(p_priority_in))
-        AND (p_priority_not_in IS NULL OR ui.priority IS NULL OR NOT (ui.priority = ANY(p_priority_not_in)))
-        AND (p_due_date_min IS NULL OR ui.due_date >= p_due_date_min)
-        AND (p_due_date_max IS NULL OR ui.due_date <= p_due_date_max)
-        AND (p_due_date_is_null IS NULL OR (p_due_date_is_null = TRUE AND ui.due_date IS NULL) OR (p_due_date_is_null = FALSE AND ui.due_date IS NOT NULL))
-        AND (p_created_at_min IS NULL OR ui.created_at >= p_created_at_min)
-        AND (p_created_at_max IS NULL OR ui.created_at <= p_created_at_max)
-        AND (p_updated_at_min IS NULL OR ui.updated_at >= p_updated_at_min)
-        AND (p_updated_at_max IS NULL OR ui.updated_at <= p_updated_at_max)
-        AND (p_progress_min IS NULL OR ui.progress >= p_progress_min)
-        AND (p_progress_max IS NULL OR ui.progress <= p_progress_max)
-        AND (p_attachment_count_min IS NULL OR ui.attachment_count >= p_attachment_count_min)
-        AND (p_attachment_count_max IS NULL OR ui.attachment_count <= p_attachment_count_max);
+        type_counts, task_type_counts;
     
     -- Build nonempty_columns array from flags
     nonempty_columns := ARRAY_REMOVE(ARRAY[

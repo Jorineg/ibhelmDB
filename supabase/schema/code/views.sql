@@ -93,7 +93,13 @@ SELECT * FROM (
         0 AS attachment_count, NULL::TEXT AS conversation_comments_text,
         NULL::TEXT AS craft_url, t.source_links->>'teamwork_url' AS teamwork_url, NULL::TEXT AS missive_url,
         NULL::TEXT AS storage_path, NULL::TEXT AS thumbnail_path,
-        COALESCE(t.updated_at, t.created_at) AS sort_date
+        COALESCE(t.updated_at, t.created_at) AS sort_date,
+        -- Pre-computed search text (excludes body for index size)
+        CONCAT_WS(' ', t.name, t.description, p.name, c.name, tl.name, 
+            NULLIF(TRIM(CONCAT(creator_user.first_name, ' ', creator_user.last_name)), '')) AS search_text,
+        -- Pre-extracted assignee names for fast filtering
+        ARRAY(SELECT COALESCE(elem->>'first_name', '') || ' ' || COALESCE(elem->>'last_name', '') 
+              FROM jsonb_array_elements(taa.assignees) elem) AS assignee_names
     FROM teamwork.tasks t
     LEFT JOIN teamwork.projects p ON t.project_id = p.id
     LEFT JOIN teamwork.companies c ON p.company_id = c.id
@@ -129,7 +135,11 @@ SELECT * FROM (
         COALESCE(maa.attachment_count, 0) AS attachment_count, cca.comments_text AS conversation_comments_text,
         NULL::TEXT AS craft_url, NULL::TEXT AS teamwork_url, conv.app_url AS missive_url,
         NULL::TEXT AS storage_path, NULL::TEXT AS thumbnail_path,
-        COALESCE(m.delivered_at, m.updated_at, m.created_at) AS sort_date
+        COALESCE(m.delivered_at, m.updated_at, m.created_at) AS sort_date,
+        -- Pre-computed search text (excludes body for index size)
+        CONCAT_WS(' ', m.subject, m.preview, twp.name, from_contact.name, conv.subject, cca.comments_text) AS search_text,
+        -- Pre-extracted assignee names for fast filtering
+        ARRAY(SELECT COALESCE(elem->>'name', '') FROM jsonb_array_elements(caa.assignees) elem) AS assignee_names
     FROM missive.messages m
     LEFT JOIN missive.conversations conv ON m.conversation_id = conv.id
     LEFT JOIN missive.contacts from_contact ON m.from_contact_id = from_contact.id
@@ -163,7 +173,11 @@ SELECT
     NULL::JSONB AS recipients, NULL::JSONB AS attachments, 0 AS attachment_count, NULL::TEXT AS conversation_comments_text,
     'craftdocs://open?blockId=' || cd.id AS craft_url, NULL::TEXT AS teamwork_url, NULL::TEXT AS missive_url,
     NULL::TEXT AS storage_path, NULL::TEXT AS thumbnail_path,
-    COALESCE(cd.craft_last_modified_at, cd.db_updated_at, cd.db_created_at) AS sort_date
+    COALESCE(cd.craft_last_modified_at, cd.db_updated_at, cd.db_created_at) AS sort_date,
+    -- Pre-computed search text
+    cd.title AS search_text,
+    -- No assignees for craft docs
+    ARRAY[]::TEXT[] AS assignee_names
 FROM craft_documents cd
 WHERE cd.is_deleted = FALSE
 
@@ -184,7 +198,11 @@ SELECT * FROM (
         NULL::JSONB AS recipients, NULL::JSONB AS attachments, 0 AS attachment_count, NULL::TEXT AS conversation_comments_text,
         NULL::TEXT AS craft_url, NULL::TEXT AS teamwork_url, NULL::TEXT AS missive_url,
         f.storage_path, f.thumbnail_path,
-        COALESCE(f.file_modified_at, f.db_updated_at, f.db_created_at) AS sort_date
+        COALESCE(f.file_modified_at, f.db_updated_at, f.db_created_at) AS sort_date,
+        -- Pre-computed search text
+        CONCAT_WS(' ', f.filename, f.folder_path, twp.name, f.file_created_by) AS search_text,
+        -- No assignees for files
+        ARRAY[]::TEXT[] AS assignee_names
     FROM files f
     LEFT JOIN object_locations ol ON f.id = ol.file_id
     LEFT JOIN locations l ON ol.location_id = l.id
@@ -197,16 +215,12 @@ SELECT * FROM (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_unified_items_id_type ON mv_unified_items(id, type);
 
--- Trigram indexes for ILIKE substring search
-CREATE INDEX IF NOT EXISTS idx_mv_ui_name_trgm ON mv_unified_items USING gin (name gin_trgm_ops);
-CREATE INDEX IF NOT EXISTS idx_mv_ui_description_trgm ON mv_unified_items USING gin (description gin_trgm_ops);
+-- Consolidated trigram index for text search (single index instead of 9 separate ones)
+CREATE INDEX IF NOT EXISTS idx_mv_ui_search_text_trgm ON mv_unified_items USING gin (search_text gin_trgm_ops);
+-- Body search still needs its own index (not in search_text due to size)
 CREATE INDEX IF NOT EXISTS idx_mv_ui_body_trgm ON mv_unified_items USING gin (body gin_trgm_ops);
-CREATE INDEX IF NOT EXISTS idx_mv_ui_preview_trgm ON mv_unified_items USING gin (preview gin_trgm_ops);
-CREATE INDEX IF NOT EXISTS idx_mv_ui_comments_trgm ON mv_unified_items USING gin (conversation_comments_text gin_trgm_ops);
-CREATE INDEX IF NOT EXISTS idx_mv_ui_project_trgm ON mv_unified_items USING gin (project gin_trgm_ops);
-CREATE INDEX IF NOT EXISTS idx_mv_ui_customer_trgm ON mv_unified_items USING gin (customer gin_trgm_ops);
-CREATE INDEX IF NOT EXISTS idx_mv_ui_tasklist_trgm ON mv_unified_items USING gin (tasklist gin_trgm_ops);
-CREATE INDEX IF NOT EXISTS idx_mv_ui_creator_trgm ON mv_unified_items USING gin (creator gin_trgm_ops);
+-- Assignee names array for fast filtering
+CREATE INDEX IF NOT EXISTS idx_mv_ui_assignee_names ON mv_unified_items USING gin (assignee_names);
 
 -- =====================================
 -- 3. UNIFIED PERSON DETAILS VIEW
