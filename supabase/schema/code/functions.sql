@@ -1574,7 +1574,7 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION count_unified_items(
+CREATE OR REPLACE FUNCTION count_unified_items_with_metadata(
     p_types TEXT[] DEFAULT NULL, p_task_types UUID[] DEFAULT NULL,
     p_text_search TEXT DEFAULT NULL, p_involved_person TEXT DEFAULT NULL,
     p_tag_search TEXT DEFAULT NULL, p_cost_group_code TEXT DEFAULT NULL,
@@ -1591,10 +1591,9 @@ CREATE OR REPLACE FUNCTION count_unified_items(
     p_progress_min INTEGER DEFAULT NULL, p_progress_max INTEGER DEFAULT NULL,
     p_attachment_count_min INTEGER DEFAULT NULL, p_attachment_count_max INTEGER DEFAULT NULL
 )
-RETURNS INTEGER
+RETURNS TABLE(total_count INTEGER, nonempty_columns TEXT[], type_counts JSONB, task_type_counts JSONB)
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
 DECLARE
-    v_count INTEGER;
     v_person_ids UUID[];
     v_has_person_filter BOOLEAN;
     v_cost_min INTEGER;
@@ -1602,11 +1601,25 @@ DECLARE
     v_has_cost_filter BOOLEAN;
     v_location_ids UUID[];
     v_has_location_filter BOOLEAN;
+    -- Column presence flags
+    v_has_name BOOLEAN; v_has_description BOOLEAN; v_has_body BOOLEAN;
+    v_has_status BOOLEAN; v_has_project BOOLEAN; v_has_customer BOOLEAN;
+    v_has_location BOOLEAN; v_has_location_path BOOLEAN;
+    v_has_cost_group BOOLEAN; v_has_cost_group_code BOOLEAN;
+    v_has_due_date BOOLEAN; v_has_priority BOOLEAN; v_has_progress BOOLEAN;
+    v_has_tasklist BOOLEAN; v_has_assignees BOOLEAN; v_has_tags BOOLEAN;
+    v_has_from_name BOOLEAN; v_has_from_email BOOLEAN;
+    v_has_recipients BOOLEAN; v_has_conversation_subject BOOLEAN;
+    v_has_attachment_count BOOLEAN;
 BEGIN
     v_has_person_filter := p_involved_person IS NOT NULL AND TRIM(p_involved_person) != '';
     IF v_has_person_filter THEN
         v_person_ids := find_person_ids_by_search(p_involved_person);
-        IF array_length(v_person_ids, 1) IS NULL THEN RETURN 0; END IF;
+        IF array_length(v_person_ids, 1) IS NULL THEN
+            total_count := 0; nonempty_columns := ARRAY[]::TEXT[];
+            type_counts := '{}'::JSONB; task_type_counts := '{}'::JSONB;
+            RETURN NEXT; RETURN;
+        END IF;
     END IF;
     
     v_has_cost_filter := p_cost_group_code IS NOT NULL AND TRIM(p_cost_group_code) != '';
@@ -1618,10 +1631,103 @@ BEGIN
     v_has_location_filter := p_location_search IS NOT NULL AND TRIM(p_location_search) != '';
     IF v_has_location_filter THEN
         v_location_ids := find_location_ids_by_search(p_location_search);
-        IF array_length(v_location_ids, 1) IS NULL THEN RETURN 0; END IF;
+        IF array_length(v_location_ids, 1) IS NULL THEN
+            total_count := 0; nonempty_columns := ARRAY[]::TEXT[];
+            type_counts := '{}'::JSONB; task_type_counts := '{}'::JSONB;
+            RETURN NEXT; RETURN;
+        END IF;
     END IF;
     
-    SELECT COUNT(*)::INTEGER INTO v_count FROM mv_unified_items ui
+    -- Main aggregation query
+    SELECT 
+        COUNT(*)::INTEGER,
+        -- Column presence checks (BOOL_OR short-circuits)
+        BOOL_OR(ui.name IS NOT NULL AND ui.name != ''),
+        BOOL_OR(ui.description IS NOT NULL AND ui.description != ''),
+        BOOL_OR(ui.body IS NOT NULL AND ui.body != ''),
+        BOOL_OR(ui.status IS NOT NULL AND ui.status != ''),
+        BOOL_OR(ui.project IS NOT NULL AND ui.project != ''),
+        BOOL_OR(ui.customer IS NOT NULL AND ui.customer != ''),
+        BOOL_OR(ui.location IS NOT NULL AND ui.location != ''),
+        BOOL_OR(ui.location_path IS NOT NULL AND ui.location_path != ''),
+        BOOL_OR(ui.cost_group IS NOT NULL AND ui.cost_group != ''),
+        BOOL_OR(ui.cost_group_code IS NOT NULL AND ui.cost_group_code != ''),
+        BOOL_OR(ui.due_date IS NOT NULL),
+        BOOL_OR(ui.priority IS NOT NULL AND ui.priority != ''),
+        BOOL_OR(ui.progress IS NOT NULL),
+        BOOL_OR(ui.tasklist IS NOT NULL AND ui.tasklist != ''),
+        BOOL_OR(ui.assignees IS NOT NULL AND jsonb_array_length(ui.assignees) > 0),
+        BOOL_OR(ui.tags IS NOT NULL AND jsonb_array_length(ui.tags) > 0),
+        BOOL_OR(ui.from_name IS NOT NULL AND ui.from_name != ''),
+        BOOL_OR(ui.from_email IS NOT NULL AND ui.from_email != ''),
+        BOOL_OR(ui.recipients IS NOT NULL AND jsonb_array_length(ui.recipients) > 0),
+        BOOL_OR(ui.conversation_subject IS NOT NULL AND ui.conversation_subject != ''),
+        BOOL_OR(ui.attachment_count IS NOT NULL AND ui.attachment_count > 0),
+        -- Type counts as JSONB
+        jsonb_build_object(
+            'task', COUNT(*) FILTER (WHERE ui.type = 'task'),
+            'email', COUNT(*) FILTER (WHERE ui.type = 'email'),
+            'craft', COUNT(*) FILTER (WHERE ui.type = 'craft'),
+            'file', COUNT(*) FILTER (WHERE ui.type = 'file')
+        ),
+        -- Task type counts: aggregate task_type_id -> count
+        COALESCE(
+            (SELECT jsonb_object_agg(tt.task_type_id, tt.cnt)
+             FROM (
+                 SELECT ui2.task_type_id, COUNT(*)::INTEGER as cnt
+                 FROM mv_unified_items ui2
+                 WHERE ui2.type = 'task' AND ui2.task_type_id IS NOT NULL
+                     AND (p_types IS NULL OR ui2.type = ANY(p_types))
+                     AND (p_task_types IS NULL OR ui2.task_type_id = ANY(p_task_types))
+                     AND (p_text_search IS NULL OR p_text_search = '' OR
+                         ui2.name ILIKE '%' || p_text_search || '%' OR
+                         ui2.description ILIKE '%' || p_text_search || '%' OR
+                         ui2.body ILIKE '%' || p_text_search || '%' OR
+                         ui2.preview ILIKE '%' || p_text_search || '%' OR
+                         ui2.conversation_comments_text ILIKE '%' || p_text_search || '%')
+                     AND (NOT v_has_person_filter OR EXISTS (
+                         SELECT 1 FROM item_involved_persons iip WHERE iip.item_id = ui2.id AND iip.item_type = ui2.type AND iip.unified_person_id = ANY(v_person_ids)))
+                     AND (p_tag_search IS NULL OR p_tag_search = '' OR EXISTS (
+                         SELECT 1 FROM jsonb_array_elements(ui2.tags) t WHERE t->>'name' ILIKE '%' || p_tag_search || '%'))
+                     AND (NOT v_has_cost_filter OR (ui2.cost_group_code IS NOT NULL AND ui2.cost_group_code ~ '^\d+$'
+                         AND ui2.cost_group_code::INTEGER >= v_cost_min AND ui2.cost_group_code::INTEGER <= v_cost_max))
+                     AND (p_project_search IS NULL OR p_project_search = '' OR ui2.project ILIKE '%' || p_project_search || '%')
+                     AND (NOT v_has_location_filter OR EXISTS (
+                         SELECT 1 FROM object_locations ol WHERE ol.tw_task_id = ui2.id::INTEGER AND ol.location_id = ANY(v_location_ids)))
+                     AND (p_name_contains IS NULL OR p_name_contains = '' OR ui2.name ILIKE '%' || p_name_contains || '%')
+                     AND (p_description_contains IS NULL OR p_description_contains = '' OR ui2.description ILIKE '%' || p_description_contains || '%')
+                     AND (p_customer_contains IS NULL OR p_customer_contains = '' OR ui2.customer ILIKE '%' || p_customer_contains || '%')
+                     AND (p_tasklist_contains IS NULL OR p_tasklist_contains = '' OR ui2.tasklist ILIKE '%' || p_tasklist_contains || '%')
+                     AND (p_status_in IS NULL OR ui2.status = ANY(p_status_in))
+                     AND (p_status_not_in IS NULL OR ui2.status IS NULL OR NOT (ui2.status = ANY(p_status_not_in)))
+                     AND (p_priority_in IS NULL OR ui2.priority = ANY(p_priority_in))
+                     AND (p_priority_not_in IS NULL OR ui2.priority IS NULL OR NOT (ui2.priority = ANY(p_priority_not_in)))
+                     AND (p_due_date_min IS NULL OR ui2.due_date >= p_due_date_min)
+                     AND (p_due_date_max IS NULL OR ui2.due_date <= p_due_date_max)
+                     AND (p_due_date_is_null IS NULL OR (p_due_date_is_null = TRUE AND ui2.due_date IS NULL) OR (p_due_date_is_null = FALSE AND ui2.due_date IS NOT NULL))
+                     AND (p_created_at_min IS NULL OR ui2.created_at >= p_created_at_min)
+                     AND (p_created_at_max IS NULL OR ui2.created_at <= p_created_at_max)
+                     AND (p_updated_at_min IS NULL OR ui2.updated_at >= p_updated_at_min)
+                     AND (p_updated_at_max IS NULL OR ui2.updated_at <= p_updated_at_max)
+                     AND (p_progress_min IS NULL OR ui2.progress >= p_progress_min)
+                     AND (p_progress_max IS NULL OR ui2.progress <= p_progress_max)
+                     AND (p_attachment_count_min IS NULL OR ui2.attachment_count >= p_attachment_count_min)
+                     AND (p_attachment_count_max IS NULL OR ui2.attachment_count <= p_attachment_count_max)
+                 GROUP BY ui2.task_type_id
+             ) tt),
+            '{}'::JSONB
+        )
+    INTO total_count,
+        v_has_name, v_has_description, v_has_body,
+        v_has_status, v_has_project, v_has_customer,
+        v_has_location, v_has_location_path,
+        v_has_cost_group, v_has_cost_group_code,
+        v_has_due_date, v_has_priority, v_has_progress,
+        v_has_tasklist, v_has_assignees, v_has_tags,
+        v_has_from_name, v_has_from_email,
+        v_has_recipients, v_has_conversation_subject,
+        v_has_attachment_count, type_counts, task_type_counts
+    FROM mv_unified_items ui
     WHERE (p_types IS NULL OR ui.type = ANY(p_types))
         AND (ui.type != 'task' OR p_task_types IS NULL OR ui.task_type_id = ANY(p_task_types))
         AND (p_text_search IS NULL OR p_text_search = '' OR
@@ -1667,7 +1773,33 @@ BEGIN
         AND (p_progress_max IS NULL OR ui.progress <= p_progress_max)
         AND (p_attachment_count_min IS NULL OR ui.attachment_count >= p_attachment_count_min)
         AND (p_attachment_count_max IS NULL OR ui.attachment_count <= p_attachment_count_max);
-    RETURN v_count;
+    
+    -- Build nonempty_columns array from flags
+    nonempty_columns := ARRAY_REMOVE(ARRAY[
+        CASE WHEN v_has_name THEN 'name' END,
+        CASE WHEN v_has_description THEN 'description' END,
+        CASE WHEN v_has_body THEN 'body' END,
+        CASE WHEN v_has_status THEN 'status' END,
+        CASE WHEN v_has_project THEN 'project' END,
+        CASE WHEN v_has_customer THEN 'customer' END,
+        CASE WHEN v_has_location THEN 'location' END,
+        CASE WHEN v_has_location_path THEN 'location_path' END,
+        CASE WHEN v_has_cost_group THEN 'cost_group' END,
+        CASE WHEN v_has_cost_group_code THEN 'cost_group_code' END,
+        CASE WHEN v_has_due_date THEN 'due_date' END,
+        CASE WHEN v_has_priority THEN 'priority' END,
+        CASE WHEN v_has_progress THEN 'progress' END,
+        CASE WHEN v_has_tasklist THEN 'tasklist' END,
+        CASE WHEN v_has_assignees THEN 'assignees' END,
+        CASE WHEN v_has_tags THEN 'tags' END,
+        CASE WHEN v_has_from_name THEN 'from_name' END,
+        CASE WHEN v_has_from_email THEN 'from_email' END,
+        CASE WHEN v_has_recipients THEN 'recipients' END,
+        CASE WHEN v_has_conversation_subject THEN 'conversation_subject' END,
+        CASE WHEN v_has_attachment_count THEN 'attachment_count' END
+    ], NULL);
+    
+    RETURN NEXT;
 END;
 $$;
 

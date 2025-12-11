@@ -159,14 +159,14 @@ UNION ALL
 -- Files (wrapped for DISTINCT ON)
 SELECT * FROM (
     SELECT DISTINCT ON (f.id)
-        f.id::TEXT AS id, 'file'::TEXT AS type, f.filename AS name, f.extracted_text AS description, ''::VARCHAR AS status,
+        f.id::TEXT AS id, 'file'::TEXT AS type, f.filename AS name, f.folder_path AS description, ''::VARCHAR AS status,
         COALESCE(twp.name, '') AS project, ''::TEXT AS customer, l.name AS location, l.search_text AS location_path,
         cg.name AS cost_group, cg.code::TEXT AS cost_group_code, NULL::TIMESTAMP AS due_date,
         f.file_created_at AS created_at, f.file_modified_at AS updated_at,
         ''::VARCHAR AS priority, NULL::INTEGER AS progress, ''::TEXT AS tasklist,
         NULL::UUID AS task_type_id, NULL::TEXT AS task_type_name, NULL::TEXT AS task_type_slug, NULL::VARCHAR(50) AS task_type_color,
         NULL::JSONB AS assignees, NULL::JSONB AS tags,
-        NULL::TEXT AS body, NULL::TEXT AS preview,
+        f.extracted_text AS body, NULL::TEXT AS preview,
         f.file_created_by AS from_name, NULL::TEXT AS from_email, NULL::TEXT AS conversation_subject,
         NULL::JSONB AS recipients, NULL::JSONB AS attachments, 0 AS attachment_count, NULL::TEXT AS conversation_comments_text,
         NULL::TEXT AS craft_url, NULL::TEXT AS teamwork_url, NULL::TEXT AS missive_url,
