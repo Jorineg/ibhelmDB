@@ -1611,6 +1611,7 @@ DECLARE
     v_has_from_name BOOLEAN; v_has_from_email BOOLEAN;
     v_has_recipients BOOLEAN; v_has_conversation_subject BOOLEAN;
     v_has_attachment_count BOOLEAN;
+    v_has_created_at BOOLEAN; v_has_updated_at BOOLEAN;
 BEGIN
     v_has_person_filter := p_involved_person IS NOT NULL AND TRIM(p_involved_person) != '';
     IF v_has_person_filter THEN
@@ -1663,6 +1664,8 @@ BEGIN
         BOOL_OR(ui.recipients IS NOT NULL AND jsonb_array_length(ui.recipients) > 0),
         BOOL_OR(ui.conversation_subject IS NOT NULL AND ui.conversation_subject != ''),
         BOOL_OR(ui.attachment_count IS NOT NULL AND ui.attachment_count > 0),
+        BOOL_OR(ui.created_at IS NOT NULL),
+        BOOL_OR(ui.updated_at IS NOT NULL),
         -- Type counts as JSONB
         jsonb_build_object(
             'task', COUNT(*) FILTER (WHERE ui.type = 'task'),
@@ -1726,7 +1729,8 @@ BEGIN
         v_has_tasklist, v_has_assignees, v_has_tags,
         v_has_from_name, v_has_from_email,
         v_has_recipients, v_has_conversation_subject,
-        v_has_attachment_count, type_counts, task_type_counts
+        v_has_attachment_count, v_has_created_at, v_has_updated_at,
+        type_counts, task_type_counts
     FROM mv_unified_items ui
     WHERE (p_types IS NULL OR ui.type = ANY(p_types))
         AND (ui.type != 'task' OR p_task_types IS NULL OR ui.task_type_id = ANY(p_task_types))
@@ -1796,7 +1800,9 @@ BEGIN
         CASE WHEN v_has_from_email THEN 'from_email' END,
         CASE WHEN v_has_recipients THEN 'recipients' END,
         CASE WHEN v_has_conversation_subject THEN 'conversation_subject' END,
-        CASE WHEN v_has_attachment_count THEN 'attachment_count' END
+        CASE WHEN v_has_attachment_count THEN 'attachment_count' END,
+        CASE WHEN v_has_created_at THEN 'created_at' END,
+        CASE WHEN v_has_updated_at THEN 'updated_at' END
     ], NULL);
     
     RETURN NEXT;
