@@ -36,3 +36,11 @@ CREATE INDEX IF NOT EXISTS idx_mv_ui_sort_lookup ON mv_unified_items(sort_date D
 CREATE INDEX IF NOT EXISTS idx_mv_ui_created_at_lookup ON mv_unified_items(created_at DESC, type, id);
 
 -- Note: Trigram indexes for mv_unified_items are in views.sql (recreated with MV)
+
+-- =====================================
+-- ITEM_INVOLVED_PERSONS INDEXES
+-- =====================================
+-- Composite index for involved person filter in query_unified_items (P2 optimization)
+-- Allows efficient lookup by person_id first, then verify item_id/item_type
+CREATE INDEX IF NOT EXISTS idx_iip_person_item 
+    ON item_involved_persons(unified_person_id, item_id, item_type);

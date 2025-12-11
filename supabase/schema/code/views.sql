@@ -99,7 +99,11 @@ SELECT * FROM (
             NULLIF(TRIM(CONCAT(creator_user.first_name, ' ', creator_user.last_name)), '')) AS search_text,
         -- Flattened assignee names for fast trigram search (TEXT instead of ARRAY)
         (SELECT string_agg(COALESCE(elem->>'first_name', '') || ' ' || COALESCE(elem->>'last_name', ''), ' ')
-         FROM jsonb_array_elements(taa.assignees) elem) AS assignee_search_text
+         FROM jsonb_array_elements(taa.assignees) elem) AS assignee_search_text,
+        -- Flattened tag names for fast trigram search (P0 optimization)
+        (SELECT string_agg(elem->>'name', ' ') FROM jsonb_array_elements(tta.tags) elem) AS tag_names_text,
+        -- Pre-computed location IDs for fast array overlap filter (P1 optimization)
+        (SELECT array_agg(ol2.location_id) FROM object_locations ol2 WHERE ol2.tw_task_id = t.id) AS location_ids
     FROM teamwork.tasks t
     LEFT JOIN teamwork.projects p ON t.project_id = p.id
     LEFT JOIN teamwork.companies c ON p.company_id = c.id
@@ -139,7 +143,11 @@ SELECT * FROM (
         -- Pre-computed search text (excludes body for index size)
         CONCAT_WS(' ', m.subject, m.preview, twp.name, from_contact.name, conv.subject, cca.comments_text) AS search_text,
         -- Flattened assignee names for fast trigram search
-        (SELECT string_agg(COALESCE(elem->>'name', ''), ' ') FROM jsonb_array_elements(caa.assignees) elem) AS assignee_search_text
+        (SELECT string_agg(COALESCE(elem->>'name', ''), ' ') FROM jsonb_array_elements(caa.assignees) elem) AS assignee_search_text,
+        -- Flattened tag names for fast trigram search (P0 optimization)
+        (SELECT string_agg(elem->>'name', ' ') FROM jsonb_array_elements(cla.tags) elem) AS tag_names_text,
+        -- Pre-computed location IDs for fast array overlap filter (P1 optimization)
+        (SELECT array_agg(ol2.location_id) FROM object_locations ol2 WHERE ol2.m_conversation_id = conv.id) AS location_ids
     FROM missive.messages m
     LEFT JOIN missive.conversations conv ON m.conversation_id = conv.id
     LEFT JOIN missive.contacts from_contact ON m.from_contact_id = from_contact.id
@@ -177,7 +185,11 @@ SELECT
     -- Pre-computed search text
     cd.title AS search_text,
     -- No assignees for craft docs
-    NULL::TEXT AS assignee_search_text
+    NULL::TEXT AS assignee_search_text,
+    -- No tags for craft docs
+    NULL::TEXT AS tag_names_text,
+    -- No locations for craft docs
+    NULL::UUID[] AS location_ids
 FROM craft_documents cd
 WHERE cd.is_deleted = FALSE
 
@@ -202,7 +214,11 @@ SELECT * FROM (
         -- Pre-computed search text
         CONCAT_WS(' ', f.filename, f.folder_path, twp.name, f.file_created_by) AS search_text,
         -- No assignees for files
-        NULL::TEXT AS assignee_search_text
+        NULL::TEXT AS assignee_search_text,
+        -- No tags for files
+        NULL::TEXT AS tag_names_text,
+        -- Pre-computed location IDs for fast array overlap filter (P1 optimization)
+        (SELECT array_agg(ol2.location_id) FROM object_locations ol2 WHERE ol2.file_id = f.id) AS location_ids
     FROM files f
     LEFT JOIN object_locations ol ON f.id = ol.file_id
     LEFT JOIN locations l ON ol.location_id = l.id
@@ -227,6 +243,10 @@ CREATE INDEX IF NOT EXISTS idx_mv_ui_name_trgm ON mv_unified_items USING gin (na
 CREATE INDEX IF NOT EXISTS idx_mv_ui_creator_trgm ON mv_unified_items USING gin (creator gin_trgm_ops);
 -- Flattened assignee text for fast trigram search (replaces slow array unnest)
 CREATE INDEX IF NOT EXISTS idx_mv_ui_assignee_trgm ON mv_unified_items USING gin (assignee_search_text gin_trgm_ops);
+-- Flattened tag names for fast trigram search (P0 optimization - replaces jsonb_array_elements)
+CREATE INDEX IF NOT EXISTS idx_mv_ui_tags_trgm ON mv_unified_items USING gin (tag_names_text gin_trgm_ops);
+-- Pre-computed location IDs for fast array overlap filter (P1 optimization - replaces 3x EXISTS subqueries)
+CREATE INDEX IF NOT EXISTS idx_mv_ui_location_ids ON mv_unified_items USING GIN (location_ids);
 
 -- =====================================
 -- 3. UNIFIED PERSON DETAILS VIEW

@@ -1503,8 +1503,9 @@ BEGIN
     IF v_person_ids IS NOT NULL THEN
         v_where := array_append(v_where, format('EXISTS (SELECT 1 FROM item_involved_persons iip WHERE iip.item_id = ui.id AND iip.item_type = ui.type AND iip.unified_person_id = ANY(%L::UUID[]))', v_person_ids));
     END IF;
+    -- P0 optimization: Use pre-computed tag_names_text with trigram index instead of jsonb_array_elements
     IF p_tag_search IS NOT NULL AND p_tag_search != '' THEN
-        v_where := array_append(v_where, format('EXISTS (SELECT 1 FROM jsonb_array_elements(ui.tags) t WHERE t->>''name'' ILIKE %L)', '%' || p_tag_search || '%'));
+        v_where := array_append(v_where, format('ui.tag_names_text ILIKE %L', '%' || p_tag_search || '%'));
     END IF;
     IF v_cost_min IS NOT NULL THEN
         v_where := array_append(v_where, format('(ui.cost_group_code IS NOT NULL AND ui.cost_group_code ~ ''^\d+$'' AND ui.cost_group_code::INTEGER >= %s AND ui.cost_group_code::INTEGER <= %s)', v_cost_min, v_cost_max));
@@ -1512,8 +1513,9 @@ BEGIN
     IF p_project_search IS NOT NULL AND p_project_search != '' THEN
         v_where := array_append(v_where, format('ui.project ILIKE %L', '%' || p_project_search || '%'));
     END IF;
+    -- P1 optimization: Use pre-computed location_ids array with GIN index instead of 3x EXISTS subqueries
     IF v_location_ids IS NOT NULL THEN
-        v_where := array_append(v_where, format('((ui.type = ''task'' AND EXISTS (SELECT 1 FROM object_locations ol WHERE ol.tw_task_id = ui.id::INTEGER AND ol.location_id = ANY(%1$L::UUID[]))) OR (ui.type = ''email'' AND EXISTS (SELECT 1 FROM object_locations ol JOIN missive.messages mm ON mm.conversation_id = ol.m_conversation_id WHERE mm.id = ui.id::UUID AND ol.location_id = ANY(%1$L::UUID[]))) OR (ui.type = ''file'' AND EXISTS (SELECT 1 FROM object_locations ol WHERE ol.file_id = ui.id::UUID AND ol.location_id = ANY(%1$L::UUID[]))))', v_location_ids));
+        v_where := array_append(v_where, format('ui.location_ids && %L::UUID[]', v_location_ids));
     END IF;
     IF p_name_contains IS NOT NULL AND p_name_contains != '' THEN
         v_where := array_append(v_where, format('ui.name ILIKE %L', '%' || p_name_contains || '%'));
@@ -1678,8 +1680,9 @@ BEGIN
     IF v_person_ids IS NOT NULL THEN
         v_where := array_append(v_where, format('EXISTS (SELECT 1 FROM item_involved_persons iip WHERE iip.item_id = ui.id AND iip.item_type = ui.type AND iip.unified_person_id = ANY(%L::UUID[]))', v_person_ids));
     END IF;
+    -- P0 optimization: Use pre-computed tag_names_text with trigram index instead of jsonb_array_elements
     IF p_tag_search IS NOT NULL AND p_tag_search != '' THEN
-        v_where := array_append(v_where, format('EXISTS (SELECT 1 FROM jsonb_array_elements(ui.tags) t WHERE t->>''name'' ILIKE %L)', '%' || p_tag_search || '%'));
+        v_where := array_append(v_where, format('ui.tag_names_text ILIKE %L', '%' || p_tag_search || '%'));
     END IF;
     IF v_cost_min IS NOT NULL THEN
         v_where := array_append(v_where, format('(ui.cost_group_code IS NOT NULL AND ui.cost_group_code ~ ''^\d+$'' AND ui.cost_group_code::INTEGER >= %s AND ui.cost_group_code::INTEGER <= %s)', v_cost_min, v_cost_max));
@@ -1687,8 +1690,9 @@ BEGIN
     IF p_project_search IS NOT NULL AND p_project_search != '' THEN
         v_where := array_append(v_where, format('ui.project ILIKE %L', '%' || p_project_search || '%'));
     END IF;
+    -- P1 optimization: Use pre-computed location_ids array with GIN index instead of 3x EXISTS subqueries
     IF v_location_ids IS NOT NULL THEN
-        v_where := array_append(v_where, format('((ui.type = ''task'' AND EXISTS (SELECT 1 FROM object_locations ol WHERE ol.tw_task_id = ui.id::INTEGER AND ol.location_id = ANY(%1$L::UUID[]))) OR (ui.type = ''email'' AND EXISTS (SELECT 1 FROM object_locations ol JOIN missive.messages mm ON mm.conversation_id = ol.m_conversation_id WHERE mm.id = ui.id::UUID AND ol.location_id = ANY(%1$L::UUID[]))) OR (ui.type = ''file'' AND EXISTS (SELECT 1 FROM object_locations ol WHERE ol.file_id = ui.id::UUID AND ol.location_id = ANY(%1$L::UUID[]))))', v_location_ids));
+        v_where := array_append(v_where, format('ui.location_ids && %L::UUID[]', v_location_ids));
     END IF;
     IF p_name_contains IS NOT NULL AND p_name_contains != '' THEN
         v_where := array_append(v_where, format('ui.name ILIKE %L', '%' || p_name_contains || '%'));
