@@ -1467,7 +1467,7 @@ DECLARE
     v_location_ids UUID[];
     v_has_location_filter BOOLEAN;
 BEGIN
-    IF p_sort_field NOT IN ('name', 'status', 'project', 'customer', 'due_date', 'created_at', 'updated_at', 'priority', 'sort_date', 'progress', 'attachment_count', 'cost_group_code', 'creator') THEN
+    IF p_sort_field NOT IN ('name', 'status', 'project', 'customer', 'due_date', 'created_at', 'updated_at', 'priority', 'sort_date', 'progress', 'attachment_count', 'cost_group_code', 'creator', 'location', 'location_path', 'cost_group', 'tasklist', 'conversation_subject') THEN
         p_sort_field := 'sort_date';
     END IF;
     IF p_sort_order NOT IN ('asc', 'desc') THEN p_sort_order := 'desc'; END IF;
@@ -1574,7 +1574,17 @@ BEGIN
         CASE WHEN p_sort_field = 'cost_group_code' AND p_sort_order = 'desc' THEN NULLIF(ui.cost_group_code, '')::INTEGER END DESC NULLS LAST,
         CASE WHEN p_sort_field = 'cost_group_code' AND p_sort_order = 'asc' THEN NULLIF(ui.cost_group_code, '')::INTEGER END ASC NULLS LAST,
         CASE WHEN p_sort_field = 'creator' AND p_sort_order = 'desc' THEN ui.creator END DESC NULLS LAST,
-        CASE WHEN p_sort_field = 'creator' AND p_sort_order = 'asc' THEN ui.creator END ASC NULLS LAST
+        CASE WHEN p_sort_field = 'creator' AND p_sort_order = 'asc' THEN ui.creator END ASC NULLS LAST,
+        CASE WHEN p_sort_field = 'location' AND p_sort_order = 'desc' THEN ui.location END DESC NULLS LAST,
+        CASE WHEN p_sort_field = 'location' AND p_sort_order = 'asc' THEN ui.location END ASC NULLS LAST,
+        CASE WHEN p_sort_field = 'location_path' AND p_sort_order = 'desc' THEN ui.location_path END DESC NULLS LAST,
+        CASE WHEN p_sort_field = 'location_path' AND p_sort_order = 'asc' THEN ui.location_path END ASC NULLS LAST,
+        CASE WHEN p_sort_field = 'cost_group' AND p_sort_order = 'desc' THEN ui.cost_group END DESC NULLS LAST,
+        CASE WHEN p_sort_field = 'cost_group' AND p_sort_order = 'asc' THEN ui.cost_group END ASC NULLS LAST,
+        CASE WHEN p_sort_field = 'tasklist' AND p_sort_order = 'desc' THEN ui.tasklist END DESC NULLS LAST,
+        CASE WHEN p_sort_field = 'tasklist' AND p_sort_order = 'asc' THEN ui.tasklist END ASC NULLS LAST,
+        CASE WHEN p_sort_field = 'conversation_subject' AND p_sort_order = 'desc' THEN ui.conversation_subject END DESC NULLS LAST,
+        CASE WHEN p_sort_field = 'conversation_subject' AND p_sort_order = 'asc' THEN ui.conversation_subject END ASC NULLS LAST
     LIMIT p_limit OFFSET p_offset;
 END;
 $$;
@@ -1841,7 +1851,7 @@ DECLARE
     v_has_project_filter BOOLEAN;
     v_matching_person_ids UUID[];
 BEGIN
-    IF p_sort_field NOT IN ('display_name', 'primary_email', 'is_internal', 'is_company', 'db_created_at', 'db_updated_at') THEN
+    IF p_sort_field NOT IN ('display_name', 'primary_email', 'is_internal', 'is_company', 'db_created_at', 'db_updated_at', 'preferred_contact_method', 'tw_company_name', 'tw_company_website', 'tw_user_first_name', 'tw_user_last_name', 'tw_user_email', 'm_contact_name', 'm_contact_email') THEN
         p_sort_field := 'display_name';
     END IF;
     IF p_sort_order NOT IN ('asc', 'desc') THEN p_sort_order := 'asc'; END IF;
@@ -1889,7 +1899,23 @@ BEGIN
         CASE WHEN p_sort_field = 'db_created_at' AND p_sort_order = 'asc' THEN upd.db_created_at END ASC NULLS LAST,
         CASE WHEN p_sort_field = 'db_created_at' AND p_sort_order = 'desc' THEN upd.db_created_at END DESC NULLS LAST,
         CASE WHEN p_sort_field = 'db_updated_at' AND p_sort_order = 'asc' THEN upd.db_updated_at END ASC NULLS LAST,
-        CASE WHEN p_sort_field = 'db_updated_at' AND p_sort_order = 'desc' THEN upd.db_updated_at END DESC NULLS LAST
+        CASE WHEN p_sort_field = 'db_updated_at' AND p_sort_order = 'desc' THEN upd.db_updated_at END DESC NULLS LAST,
+        CASE WHEN p_sort_field = 'preferred_contact_method' AND p_sort_order = 'asc' THEN upd.preferred_contact_method END ASC NULLS LAST,
+        CASE WHEN p_sort_field = 'preferred_contact_method' AND p_sort_order = 'desc' THEN upd.preferred_contact_method END DESC NULLS LAST,
+        CASE WHEN p_sort_field = 'tw_company_name' AND p_sort_order = 'asc' THEN upd.tw_company_name END ASC NULLS LAST,
+        CASE WHEN p_sort_field = 'tw_company_name' AND p_sort_order = 'desc' THEN upd.tw_company_name END DESC NULLS LAST,
+        CASE WHEN p_sort_field = 'tw_company_website' AND p_sort_order = 'asc' THEN upd.tw_company_website END ASC NULLS LAST,
+        CASE WHEN p_sort_field = 'tw_company_website' AND p_sort_order = 'desc' THEN upd.tw_company_website END DESC NULLS LAST,
+        CASE WHEN p_sort_field = 'tw_user_first_name' AND p_sort_order = 'asc' THEN upd.tw_user_first_name END ASC NULLS LAST,
+        CASE WHEN p_sort_field = 'tw_user_first_name' AND p_sort_order = 'desc' THEN upd.tw_user_first_name END DESC NULLS LAST,
+        CASE WHEN p_sort_field = 'tw_user_last_name' AND p_sort_order = 'asc' THEN upd.tw_user_last_name END ASC NULLS LAST,
+        CASE WHEN p_sort_field = 'tw_user_last_name' AND p_sort_order = 'desc' THEN upd.tw_user_last_name END DESC NULLS LAST,
+        CASE WHEN p_sort_field = 'tw_user_email' AND p_sort_order = 'asc' THEN upd.tw_user_email END ASC NULLS LAST,
+        CASE WHEN p_sort_field = 'tw_user_email' AND p_sort_order = 'desc' THEN upd.tw_user_email END DESC NULLS LAST,
+        CASE WHEN p_sort_field = 'm_contact_name' AND p_sort_order = 'asc' THEN upd.m_contact_name END ASC NULLS LAST,
+        CASE WHEN p_sort_field = 'm_contact_name' AND p_sort_order = 'desc' THEN upd.m_contact_name END DESC NULLS LAST,
+        CASE WHEN p_sort_field = 'm_contact_email' AND p_sort_order = 'asc' THEN upd.m_contact_email END ASC NULLS LAST,
+        CASE WHEN p_sort_field = 'm_contact_email' AND p_sort_order = 'desc' THEN upd.m_contact_email END DESC NULLS LAST
     LIMIT p_limit OFFSET p_offset;
 END;
 $$;
