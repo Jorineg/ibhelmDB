@@ -1907,6 +1907,29 @@ END;
 $$ LANGUAGE plpgsql STABLE;
 
 -- =====================================
+-- 18. FILES CHECKPOINT UPSERT
+-- =====================================
+
+CREATE OR REPLACE FUNCTION upsert_files_checkpoint(p_last_event_time TIMESTAMPTZ DEFAULT NULL)
+RETURNS VOID AS $$
+BEGIN
+    IF p_last_event_time IS NOT NULL THEN
+        -- New files uploaded, update both timestamps
+        INSERT INTO teamworkmissiveconnector.checkpoints (source, last_event_time, updated_at)
+        VALUES ('files', p_last_event_time, NOW())
+        ON CONFLICT (source) DO UPDATE SET
+            last_event_time = EXCLUDED.last_event_time,
+            updated_at = NOW();
+    ELSE
+        -- No new files, only update updated_at if record exists, otherwise create with epoch
+        INSERT INTO teamworkmissiveconnector.checkpoints (source, last_event_time, updated_at)
+        VALUES ('files', '1970-01-01T00:00:00Z', NOW())
+        ON CONFLICT (source) DO UPDATE SET updated_at = NOW();
+    END IF;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- =====================================
 -- GRANTS
 -- =====================================
 
@@ -1917,4 +1940,5 @@ GRANT EXECUTE ON FUNCTION refresh_stale_unified_items_aggregates() TO authentica
 GRANT EXECUTE ON FUNCTION compute_cost_group_range(TEXT) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_sync_status() TO authenticated;
 GRANT EXECUTE ON FUNCTION get_thumbnail_queue_status() TO authenticated;
+GRANT EXECUTE ON FUNCTION upsert_files_checkpoint(TIMESTAMPTZ) TO service_role;
 
