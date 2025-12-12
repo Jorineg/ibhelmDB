@@ -2443,7 +2443,7 @@ RETURNS TABLE(
     delivered_at TIMESTAMP,
     missive_url TEXT
 )
-LANGUAGE sql STABLE AS $$
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, missive AS $$
     SELECT 
         m.id AS message_id,
         COALESCE(m.subject, c.subject, c.latest_message_subject) AS subject,
@@ -2467,7 +2467,7 @@ RETURNS TABLE(
     storage_path TEXT,
     thumbnail_path TEXT
 )
-LANGUAGE sql STABLE AS $$
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, missive AS $$
     SELECT 
         f.id AS file_id,
         f.filename,
