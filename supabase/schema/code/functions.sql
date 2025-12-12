@@ -2429,9 +2429,61 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- =====================================
+-- FILE-EMAIL RELATIONSHIP QUERIES
+-- =====================================
+
+-- Get the source email for a file (if it came from an email attachment)
+CREATE OR REPLACE FUNCTION get_file_source_email(p_file_id UUID)
+RETURNS TABLE(
+    message_id UUID,
+    subject TEXT,
+    from_name TEXT,
+    from_email VARCHAR(500),
+    delivered_at TIMESTAMP,
+    missive_url TEXT
+)
+LANGUAGE sql STABLE AS $$
+    SELECT 
+        m.id AS message_id,
+        COALESCE(m.subject, c.subject, c.latest_message_subject) AS subject,
+        fc.name AS from_name,
+        fc.email AS from_email,
+        m.delivered_at,
+        c.app_url AS missive_url
+    FROM files f
+    JOIN missive.attachments ma ON f.source_missive_attachment_id = ma.id
+    JOIN missive.messages m ON ma.message_id = m.id
+    JOIN missive.conversations c ON m.conversation_id = c.id
+    LEFT JOIN missive.contacts fc ON m.from_contact_id = fc.id
+    WHERE f.id = p_file_id;
+$$;
+
+-- Get all files that belong to an email/message (via attachments)
+CREATE OR REPLACE FUNCTION get_email_files(p_message_id UUID)
+RETURNS TABLE(
+    file_id UUID,
+    filename TEXT,
+    storage_path TEXT,
+    thumbnail_path TEXT
+)
+LANGUAGE sql STABLE AS $$
+    SELECT 
+        f.id AS file_id,
+        f.filename,
+        f.storage_path,
+        f.thumbnail_path
+    FROM missive.attachments ma
+    JOIN files f ON f.source_missive_attachment_id = ma.id
+    WHERE ma.message_id = p_message_id
+    AND f.deleted_at IS NULL;
+$$;
+
+-- =====================================
 -- GRANTS
 -- =====================================
 
+GRANT EXECUTE ON FUNCTION get_file_source_email(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION get_email_files(UUID) TO authenticated;
 GRANT SELECT ON mv_refresh_status TO authenticated;
 GRANT EXECUTE ON FUNCTION mark_mv_needs_refresh(TEXT) TO authenticated;
 GRANT EXECUTE ON FUNCTION refresh_unified_items_aggregates(BOOLEAN) TO authenticated;
