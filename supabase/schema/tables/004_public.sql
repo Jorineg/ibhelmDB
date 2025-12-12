@@ -259,14 +259,19 @@ CREATE TABLE email_attachment_files (
     missive_attachment_id UUID PRIMARY KEY,
     missive_message_id UUID NOT NULL,
     
-    -- Original attachment info (denormalized for convenience)
+    -- Original attachment info (denormalized for skip-filtering)
     original_filename TEXT NOT NULL,
     original_url TEXT NOT NULL,
     file_size INTEGER,
+    width INTEGER,
+    height INTEGER,
+    media_type VARCHAR(50),
+    sub_type VARCHAR(50),
     
     -- Download tracking
     status VARCHAR(20) DEFAULT 'pending' NOT NULL,
     local_filename TEXT UNIQUE,  -- e.g. "Invoice_0001f0d0-0c46-4036-84c7-c493a226a993.pdf"
+    skip_reason TEXT,
     error_message TEXT,
     retry_count INTEGER DEFAULT 0,
     
@@ -275,7 +280,7 @@ CREATE TABLE email_attachment_files (
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     downloaded_at TIMESTAMPTZ,
     
-    CONSTRAINT eaf_valid_status CHECK (status IN ('pending', 'downloading', 'completed', 'failed'))
+    CONSTRAINT eaf_valid_status CHECK (status IN ('pending', 'downloading', 'completed', 'failed', 'skipped'))
 );
 
 -- =====================================
