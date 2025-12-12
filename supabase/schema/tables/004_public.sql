@@ -265,8 +265,8 @@ CREATE TABLE email_attachment_files (
     file_size INTEGER,
     width INTEGER,
     height INTEGER,
-    media_type VARCHAR(50),
-    sub_type VARCHAR(50),
+    media_type VARCHAR(100),
+    sub_type VARCHAR(100),
     
     -- Download tracking
     status VARCHAR(20) DEFAULT 'pending' NOT NULL,

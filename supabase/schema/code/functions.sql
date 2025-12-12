@@ -2404,6 +2404,31 @@ BEGIN RETURN QUERY SELECT * FROM get_latest_operation_run('file_linking'); END;
 $$ LANGUAGE plpgsql STABLE;
 
 -- =====================================
+-- ATTACHMENT DOWNLOAD QUEUE
+-- =====================================
+
+CREATE OR REPLACE FUNCTION trigger_queue_attachment_download()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.url IS NOT NULL THEN
+        INSERT INTO email_attachment_files (
+            missive_attachment_id, missive_message_id,
+            original_filename, original_url, file_size,
+            width, height, media_type, sub_type
+        ) VALUES (
+            NEW.id, NEW.message_id,
+            COALESCE(NEW.filename, 'attachment'), NEW.url, NEW.size,
+            NEW.width, NEW.height, NEW.media_type, NEW.sub_type
+        )
+        ON CONFLICT (missive_attachment_id) DO UPDATE SET
+            original_url = EXCLUDED.original_url,
+            updated_at = NOW();
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- =====================================
 -- GRANTS
 -- =====================================
 

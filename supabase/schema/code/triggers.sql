@@ -245,27 +245,6 @@ CREATE TRIGGER trg_conv_comments_mv_stale AFTER INSERT OR UPDATE OR DELETE ON mi
 -- 9. ATTACHMENT DOWNLOAD QUEUE TRIGGER
 -- =====================================
 
-CREATE OR REPLACE FUNCTION trigger_queue_attachment_download()
-RETURNS TRIGGER AS $$
-BEGIN
-    IF NEW.url IS NOT NULL THEN
-        INSERT INTO email_attachment_files (
-            missive_attachment_id, missive_message_id,
-            original_filename, original_url, file_size,
-            width, height, media_type, sub_type
-        ) VALUES (
-            NEW.id, NEW.message_id,
-            COALESCE(NEW.filename, 'attachment'), NEW.url, NEW.size,
-            NEW.width, NEW.height, NEW.media_type, NEW.sub_type
-        )
-        ON CONFLICT (missive_attachment_id) DO UPDATE SET
-            original_url = EXCLUDED.original_url,
-            updated_at = NOW();
-    END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
 DROP TRIGGER IF EXISTS trg_queue_attachment_download ON missive.attachments;
 CREATE TRIGGER trg_queue_attachment_download AFTER INSERT OR UPDATE ON missive.attachments
     FOR EACH ROW EXECUTE FUNCTION trigger_queue_attachment_download();
