@@ -1585,12 +1585,13 @@ BEGIN
     END IF;
     
     -- Build ORDER BY expressions (for inner skinny query and outer full query)
+    -- Always add id as secondary sort for deterministic ordering when primary sort values are equal
     IF p_sort_field = 'cost_group_code' THEN
-        v_order_expr := format('NULLIF(ui.cost_group_code, '''')::INTEGER %s NULLS LAST', p_sort_order);
-        v_order_expr_outer := format('NULLIF(full_ui.cost_group_code, '''')::INTEGER %s NULLS LAST', p_sort_order);
+        v_order_expr := format('NULLIF(ui.cost_group_code, '''')::INTEGER %s NULLS LAST, ui.id', p_sort_order);
+        v_order_expr_outer := format('NULLIF(full_ui.cost_group_code, '''')::INTEGER %s NULLS LAST, full_ui.id', p_sort_order);
     ELSE
-        v_order_expr := format('ui.%I %s NULLS LAST', p_sort_field, p_sort_order);
-        v_order_expr_outer := format('full_ui.%I %s NULLS LAST', p_sort_field, p_sort_order);
+        v_order_expr := format('ui.%I %s NULLS LAST, ui.id', p_sort_field, p_sort_order);
+        v_order_expr_outer := format('full_ui.%I %s NULLS LAST, full_ui.id', p_sort_field, p_sort_order);
     END IF;
     
     -- Build dynamic SQL using DEFERRED JOIN pattern:
