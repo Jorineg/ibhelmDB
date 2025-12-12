@@ -2211,21 +2211,22 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Link file to project if path contains project name
+-- Link file to project if filename/folder contains project name
 CREATE OR REPLACE FUNCTION link_file_to_project(p_file_id UUID)
 RETURNS INTEGER SECURITY DEFINER SET search_path = public, teamwork, missive AS $$
 DECLARE
-    v_storage_path TEXT;
+    v_full_path TEXT;
     v_project RECORD;
     v_links_created INTEGER := 0;
 BEGIN
-    SELECT storage_path INTO v_storage_path FROM files WHERE id = p_file_id;
-    IF NOT FOUND OR v_storage_path IS NULL THEN RETURN 0; END IF;
+    SELECT COALESCE(folder_path || '/', '') || COALESCE(filename, '')
+    INTO v_full_path FROM files WHERE id = p_file_id;
+    IF NOT FOUND OR v_full_path = '' THEN RETURN 0; END IF;
     
     -- Check if path contains any project name (case-insensitive)
     FOR v_project IN 
         SELECT id, name FROM teamwork.projects 
-        WHERE v_storage_path ILIKE '%' || name || '%'
+        WHERE v_full_path ILIKE '%' || name || '%'
     LOOP
         INSERT INTO project_files (file_id, tw_project_id, assigned_at)
         VALUES (p_file_id, v_project.id, NOW())
@@ -2240,15 +2241,16 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Extract cost groups from file path
+-- Extract cost groups from file path (searches anywhere in filename/folder)
 CREATE OR REPLACE FUNCTION extract_cost_groups_for_file(p_file_id UUID)
 RETURNS void SECURITY DEFINER SET search_path = public AS $$
 DECLARE
     v_prefixes TEXT[];
-    v_storage_path TEXT;
-    v_parsed RECORD;
+    v_full_path TEXT;
+    v_prefix TEXT;
+    v_match TEXT[];
     v_cost_group_id UUID;
-    v_path_segment TEXT;
+    v_code INTEGER;
 BEGIN
     SELECT COALESCE(
         (SELECT ARRAY(SELECT jsonb_array_elements_text(body->'cost_group_prefixes')) 
@@ -2256,42 +2258,41 @@ BEGIN
         ARRAY['KGR']
     ) INTO v_prefixes;
     
-    SELECT storage_path INTO v_storage_path FROM files WHERE id = p_file_id;
-    IF NOT FOUND OR v_storage_path IS NULL THEN RETURN; END IF;
+    SELECT COALESCE(folder_path || '/', '') || COALESCE(filename, '')
+    INTO v_full_path FROM files WHERE id = p_file_id;
+    IF NOT FOUND OR v_full_path = '' THEN RETURN; END IF;
     
-    -- Delete existing auto-extracted cost groups for this file
     DELETE FROM object_cost_groups WHERE file_id = p_file_id AND source = 'auto_path';
     
-    -- Split path and check each segment for cost group patterns
-    FOREACH v_path_segment IN ARRAY string_to_array(v_storage_path, '/')
-    LOOP
-        SELECT * INTO v_parsed FROM parse_cost_group_tag(v_path_segment, v_prefixes);
-        IF v_parsed.code IS NOT NULL THEN
-            v_cost_group_id := get_or_create_cost_group(v_parsed.code, v_parsed.name);
+    -- Search for cost group patterns anywhere in the path
+    FOREACH v_prefix IN ARRAY v_prefixes LOOP
+        FOR v_match IN SELECT regexp_matches(v_full_path, v_prefix || '\s*(\d{3})', 'gi') LOOP
+            v_code := v_match[1]::INTEGER;
+            v_cost_group_id := get_or_create_cost_group(v_code, NULL);
             INSERT INTO object_cost_groups (cost_group_id, file_id, source, source_tag_name)
-            VALUES (v_cost_group_id, p_file_id, 'auto_path', v_path_segment)
+            VALUES (v_cost_group_id, p_file_id, 'auto_path', v_prefix || ' ' || v_code::TEXT)
             ON CONFLICT DO NOTHING;
-        END IF;
+        END LOOP;
     END LOOP;
 END;
 $$ LANGUAGE plpgsql;
 
--- Link file to document type if path contains document type name
+-- Link file to document type if filename/folder contains document type name
 CREATE OR REPLACE FUNCTION link_file_to_document_type(p_file_id UUID)
 RETURNS TEXT AS $$
 DECLARE
-    v_storage_path TEXT;
-    v_doc_type RECORD;
+    v_full_path TEXT;
     v_matched_type_id INTEGER;
 BEGIN
-    SELECT storage_path INTO v_storage_path FROM files WHERE id = p_file_id;
-    IF NOT FOUND OR v_storage_path IS NULL THEN RETURN 'skipped'; END IF;
+    SELECT COALESCE(folder_path || '/', '') || COALESCE(filename, '')
+    INTO v_full_path FROM files WHERE id = p_file_id;
+    IF NOT FOUND OR v_full_path = '' THEN RETURN 'skipped'; END IF;
     
     -- Find document type by name match in path (case-insensitive)
     -- Prefer longer matches (more specific document types)
     SELECT id INTO v_matched_type_id
     FROM document_types
-    WHERE v_storage_path ILIKE '%' || name || '%'
+    WHERE v_full_path ILIKE '%' || name || '%'
     ORDER BY LENGTH(name) DESC
     LIMIT 1;
     
