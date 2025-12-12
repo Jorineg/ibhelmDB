@@ -202,7 +202,19 @@ CREATE TRIGGER trg_conversation_comment_involvement AFTER INSERT OR UPDATE OR DE
     FOR EACH ROW EXECUTE FUNCTION trigger_refresh_conversation_involvement();
 
 -- =====================================
--- 7. MATERIALIZED VIEW STALENESS TRIGGERS
+-- 7. FILE METADATA EXTRACTION TRIGGERS
+-- =====================================
+
+DROP TRIGGER IF EXISTS extract_file_metadata_on_insert ON files;
+CREATE TRIGGER extract_file_metadata_on_insert AFTER INSERT ON files
+    FOR EACH ROW EXECUTE FUNCTION trigger_extract_file_metadata();
+
+DROP TRIGGER IF EXISTS extract_file_metadata_on_update ON files;
+CREATE TRIGGER extract_file_metadata_on_update AFTER UPDATE OF storage_path, filename ON files
+    FOR EACH ROW EXECUTE FUNCTION trigger_extract_file_metadata();
+
+-- =====================================
+-- 8. MATERIALIZED VIEW STALENESS TRIGGERS
 -- =====================================
 
 DROP TRIGGER IF EXISTS trg_task_assignees_mv_stale ON teamwork.task_assignees;

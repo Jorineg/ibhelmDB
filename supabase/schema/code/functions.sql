@@ -2173,6 +2173,226 @@ END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- =====================================
+-- 18. FILE METADATA EXTRACTION
+-- =====================================
+
+-- Link file to email attachment by matching local_filename
+CREATE OR REPLACE FUNCTION link_file_to_email_attachment(p_file_id UUID)
+RETURNS TEXT AS $$
+DECLARE
+    v_filename TEXT;
+    v_attachment_id UUID;
+BEGIN
+    SELECT filename INTO v_filename FROM files WHERE id = p_file_id;
+    IF NOT FOUND OR v_filename IS NULL THEN RETURN 'skipped'; END IF;
+    
+    -- Look up by local_filename in email_attachment_files
+    SELECT missive_attachment_id INTO v_attachment_id
+    FROM email_attachment_files
+    WHERE local_filename = v_filename AND status = 'completed';
+    
+    IF v_attachment_id IS NOT NULL THEN
+        UPDATE files SET source_missive_attachment_id = v_attachment_id WHERE id = p_file_id;
+        RETURN 'linked';
+    END IF;
+    
+    RETURN 'skipped';
+END;
+$$ LANGUAGE plpgsql;
+
+-- Link file to project if path contains project name
+CREATE OR REPLACE FUNCTION link_file_to_project(p_file_id UUID)
+RETURNS INTEGER AS $$
+DECLARE
+    v_storage_path TEXT;
+    v_project RECORD;
+    v_links_created INTEGER := 0;
+BEGIN
+    SELECT storage_path INTO v_storage_path FROM files WHERE id = p_file_id;
+    IF NOT FOUND OR v_storage_path IS NULL THEN RETURN 0; END IF;
+    
+    -- Check if path contains any project name (case-insensitive)
+    FOR v_project IN 
+        SELECT id, name FROM teamwork.projects 
+        WHERE v_storage_path ILIKE '%' || name || '%'
+    LOOP
+        INSERT INTO project_files (file_id, tw_project_id, assigned_at)
+        VALUES (p_file_id, v_project.id, NOW())
+        ON CONFLICT (tw_project_id, file_id) DO NOTHING;
+        
+        IF FOUND THEN
+            v_links_created := v_links_created + 1;
+        END IF;
+    END LOOP;
+    
+    RETURN v_links_created;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Extract cost groups from file path
+CREATE OR REPLACE FUNCTION extract_cost_groups_for_file(p_file_id UUID)
+RETURNS void SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_prefixes TEXT[];
+    v_storage_path TEXT;
+    v_parsed RECORD;
+    v_cost_group_id UUID;
+    v_path_segment TEXT;
+BEGIN
+    SELECT COALESCE(
+        (SELECT ARRAY(SELECT jsonb_array_elements_text(body->'cost_group_prefixes')) 
+         FROM app_settings WHERE lock = 'X'),
+        ARRAY['KGR']
+    ) INTO v_prefixes;
+    
+    SELECT storage_path INTO v_storage_path FROM files WHERE id = p_file_id;
+    IF NOT FOUND OR v_storage_path IS NULL THEN RETURN; END IF;
+    
+    -- Delete existing auto-extracted cost groups for this file
+    DELETE FROM object_cost_groups WHERE file_id = p_file_id AND source = 'auto_path';
+    
+    -- Split path and check each segment for cost group patterns
+    FOREACH v_path_segment IN ARRAY string_to_array(v_storage_path, '/')
+    LOOP
+        SELECT * INTO v_parsed FROM parse_cost_group_tag(v_path_segment, v_prefixes);
+        IF v_parsed.code IS NOT NULL THEN
+            v_cost_group_id := get_or_create_cost_group(v_parsed.code, v_parsed.name);
+            INSERT INTO object_cost_groups (cost_group_id, file_id, source, source_tag_name)
+            VALUES (v_cost_group_id, p_file_id, 'auto_path', v_path_segment)
+            ON CONFLICT DO NOTHING;
+        END IF;
+    END LOOP;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Link file to document type if path contains document type name
+CREATE OR REPLACE FUNCTION link_file_to_document_type(p_file_id UUID)
+RETURNS TEXT AS $$
+DECLARE
+    v_storage_path TEXT;
+    v_doc_type RECORD;
+    v_matched_type_id INTEGER;
+BEGIN
+    SELECT storage_path INTO v_storage_path FROM files WHERE id = p_file_id;
+    IF NOT FOUND OR v_storage_path IS NULL THEN RETURN 'skipped'; END IF;
+    
+    -- Find document type by name match in path (case-insensitive)
+    -- Prefer longer matches (more specific document types)
+    SELECT id INTO v_matched_type_id
+    FROM document_types
+    WHERE v_storage_path ILIKE '%' || name || '%'
+    ORDER BY LENGTH(name) DESC
+    LIMIT 1;
+    
+    IF v_matched_type_id IS NOT NULL THEN
+        UPDATE files SET document_type_id = v_matched_type_id WHERE id = p_file_id;
+        RETURN 'linked';
+    END IF;
+    
+    RETURN 'skipped';
+END;
+$$ LANGUAGE plpgsql;
+
+-- Master function: extract all file metadata
+CREATE OR REPLACE FUNCTION extract_file_metadata(p_file_id UUID)
+RETURNS void AS $$
+BEGIN
+    PERFORM link_file_to_email_attachment(p_file_id);
+    PERFORM link_file_to_project(p_file_id);
+    PERFORM extract_cost_groups_for_file(p_file_id);
+    PERFORM link_file_to_document_type(p_file_id);
+END;
+$$ LANGUAGE plpgsql;
+
+-- Trigger for auto-extraction on file insert/update
+CREATE OR REPLACE FUNCTION trigger_extract_file_metadata()
+RETURNS TRIGGER AS $$
+BEGIN
+    PERFORM extract_file_metadata(NEW.id);
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Bulk rerun function for all files
+CREATE OR REPLACE FUNCTION rerun_all_file_linking()
+RETURNS UUID SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_run_id UUID;
+    v_total_count INTEGER;
+    v_processed INTEGER := 0;
+    v_linked INTEGER := 0;
+    v_created INTEGER := 0;
+    v_record RECORD;
+    v_result TEXT;
+    v_project_links INTEGER;
+    v_initial_cg_count INTEGER;
+    v_initial_pf_count INTEGER;
+    v_final_cg_count INTEGER;
+    v_final_pf_count INTEGER;
+BEGIN
+    INSERT INTO operation_runs (run_type, status, started_at)
+    VALUES ('file_linking', 'running', NOW())
+    RETURNING id INTO v_run_id;
+
+    SELECT COUNT(*) INTO v_total_count FROM files;
+    UPDATE operation_runs SET total_count = v_total_count WHERE id = v_run_id;
+    
+    SELECT COUNT(*) INTO v_initial_cg_count FROM object_cost_groups WHERE file_id IS NOT NULL;
+    SELECT COUNT(*) INTO v_initial_pf_count FROM project_files;
+
+    FOR v_record IN SELECT id FROM files ORDER BY db_created_at LOOP
+        BEGIN
+            -- Link to email attachment
+            v_result := link_file_to_email_attachment(v_record.id);
+            IF v_result = 'linked' THEN v_linked := v_linked + 1; END IF;
+            
+            -- Link to projects
+            v_project_links := link_file_to_project(v_record.id);
+            
+            -- Extract cost groups
+            PERFORM extract_cost_groups_for_file(v_record.id);
+            
+            -- Link to document type
+            v_result := link_file_to_document_type(v_record.id);
+            
+            v_processed := v_processed + 1;
+            IF v_processed % 100 = 0 THEN
+                UPDATE operation_runs SET processed_count = v_processed WHERE id = v_run_id;
+            END IF;
+        EXCEPTION WHEN OTHERS THEN
+            v_processed := v_processed + 1;
+        END;
+    END LOOP;
+
+    SELECT COUNT(*) INTO v_final_cg_count FROM object_cost_groups WHERE file_id IS NOT NULL;
+    SELECT COUNT(*) INTO v_final_pf_count FROM project_files;
+    v_created := (v_final_cg_count - v_initial_cg_count) + (v_final_pf_count - v_initial_pf_count);
+
+    UPDATE operation_runs SET status = 'completed', processed_count = v_processed,
+        linked_count = v_linked, created_count = v_created, completed_at = NOW()
+    WHERE id = v_run_id;
+    RETURN v_run_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Status functions for file linking
+CREATE OR REPLACE FUNCTION get_file_linking_run_status(p_run_id UUID)
+RETURNS TABLE (id UUID, status VARCHAR(50), total_count INTEGER, processed_count INTEGER,
+    created_count INTEGER, linked_count INTEGER, skipped_count INTEGER,
+    progress_percent NUMERIC, started_at TIMESTAMP, completed_at TIMESTAMP, error_message TEXT)
+AS $$
+BEGIN RETURN QUERY SELECT * FROM get_operation_run_status(p_run_id); END;
+$$ LANGUAGE plpgsql STABLE;
+
+CREATE OR REPLACE FUNCTION get_latest_file_linking_run()
+RETURNS TABLE (id UUID, status VARCHAR(50), total_count INTEGER, processed_count INTEGER,
+    created_count INTEGER, linked_count INTEGER, skipped_count INTEGER,
+    progress_percent NUMERIC, started_at TIMESTAMP, completed_at TIMESTAMP, error_message TEXT)
+AS $$
+BEGIN RETURN QUERY SELECT * FROM get_latest_operation_run('file_linking'); END;
+$$ LANGUAGE plpgsql STABLE;
+
+-- =====================================
 -- GRANTS
 -- =====================================
 
@@ -2186,4 +2406,7 @@ GRANT EXECUTE ON FUNCTION get_thumbnail_queue_status() TO authenticated;
 GRANT EXECUTE ON FUNCTION query_unified_persons(TEXT, TEXT, BOOLEAN, BOOLEAN, TEXT, TEXT, INTEGER, INTEGER) TO authenticated;
 GRANT EXECUTE ON FUNCTION count_unified_persons(TEXT, TEXT, BOOLEAN, BOOLEAN) TO authenticated;
 GRANT EXECUTE ON FUNCTION upsert_files_checkpoint(TIMESTAMPTZ) TO service_role;
+GRANT EXECUTE ON FUNCTION rerun_all_file_linking() TO authenticated;
+GRANT EXECUTE ON FUNCTION get_file_linking_run_status(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION get_latest_file_linking_run() TO authenticated;
 

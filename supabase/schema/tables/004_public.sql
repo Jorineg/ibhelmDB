@@ -249,6 +249,36 @@ CREATE TABLE thumbnail_processing_queue (
 );
 
 -- =====================================
+-- 10. EMAIL ATTACHMENT FILES
+-- =====================================
+-- Tracks download status of Missive attachments to NAS.
+-- Created by TeamworkMissiveConnector, processed by MissiveAttachmentDownloader.
+-- FileMetadataSync links files to attachments via local_filename match.
+
+CREATE TABLE email_attachment_files (
+    missive_attachment_id UUID PRIMARY KEY,
+    missive_message_id UUID NOT NULL,
+    
+    -- Original attachment info (denormalized for convenience)
+    original_filename TEXT NOT NULL,
+    original_url TEXT NOT NULL,
+    file_size INTEGER,
+    
+    -- Download tracking
+    status VARCHAR(20) DEFAULT 'pending' NOT NULL,
+    local_filename TEXT UNIQUE,  -- e.g. "Invoice_0001f0d0-0c46-4036-84c7-c493a226a993.pdf"
+    error_message TEXT,
+    retry_count INTEGER DEFAULT 0,
+    
+    -- Timestamps
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    downloaded_at TIMESTAMPTZ,
+    
+    CONSTRAINT eaf_valid_status CHECK (status IN ('pending', 'downloading', 'completed', 'failed'))
+);
+
+-- =====================================
 -- INDEXES
 -- =====================================
 
@@ -304,6 +334,9 @@ CREATE INDEX idx_iip_unified_person_id ON item_involved_persons(unified_person_i
 CREATE INDEX idx_iip_item ON item_involved_persons(item_id, item_type);
 CREATE INDEX idx_thumb_queue_status ON thumbnail_processing_queue(status, created_at);
 CREATE INDEX idx_thumb_queue_file_id ON thumbnail_processing_queue(file_id);
+CREATE INDEX idx_eaf_status ON email_attachment_files(status) WHERE status IN ('pending', 'downloading');
+CREATE INDEX idx_eaf_message_id ON email_attachment_files(missive_message_id);
+CREATE INDEX idx_eaf_local_filename ON email_attachment_files(local_filename) WHERE local_filename IS NOT NULL;
 
 -- =====================================
 -- COMMENTS
@@ -328,4 +361,6 @@ COMMENT ON TABLE object_locations IS 'Polymorphic table connecting objects to lo
 COMMENT ON TABLE object_cost_groups IS 'Polymorphic table connecting objects to cost groups';
 COMMENT ON TABLE item_involved_persons IS 'Junction table for filtering items by involved person';
 COMMENT ON TABLE thumbnail_processing_queue IS 'Queue for thumbnail generation and text extraction processing';
+COMMENT ON TABLE email_attachment_files IS 'Download tracking for Missive email attachments. Filename format: {name}_{attachment_id}.{ext}';
+COMMENT ON COLUMN email_attachment_files.local_filename IS 'Unique filename used for FileMetadataSync matching. Format: OriginalName_UUID.ext';
 
