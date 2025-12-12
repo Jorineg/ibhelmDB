@@ -88,7 +88,10 @@ SELECT * FROM (
         tt.id AS task_type_id, tt.name AS task_type_name, tt.slug AS task_type_slug, tt.color AS task_type_color,
         taa.assignees AS assigned_to, tta.tags,
         NULL::TEXT AS body, NULL::TEXT AS preview,
-        NULLIF(TRIM(CONCAT(creator_user.first_name, ' ', creator_user.last_name)), '') AS creator,
+        NULLIF(TRIM(CONCAT_WS(' ', 
+            NULLIF(TRIM(CONCAT(creator_user.first_name, ' ', creator_user.last_name)), ''),
+            CASE WHEN creator_user.email IS NOT NULL THEN CONCAT('<', creator_user.email, '>') END
+        )), '') AS creator,
         NULL::TEXT AS conversation_subject, NULL::JSONB AS recipients, NULL::JSONB AS attachments,
         0 AS attachment_count, NULL::TEXT AS conversation_comments_text,
         NULL::TEXT AS craft_url, t.source_links->>'teamwork_url' AS teamwork_url, NULL::TEXT AS missive_url,
@@ -96,7 +99,7 @@ SELECT * FROM (
         COALESCE(t.updated_at, t.created_at) AS sort_date,
         -- Pre-computed search text (excludes body for index size)
         CONCAT_WS(' ', t.name, t.description, p.name, c.name, tl.name, 
-            NULLIF(TRIM(CONCAT(creator_user.first_name, ' ', creator_user.last_name)), '')) AS search_text,
+            NULLIF(TRIM(CONCAT(creator_user.first_name, ' ', creator_user.last_name)), ''), creator_user.email) AS search_text,
         -- Flattened assignee names for fast trigram search (TEXT instead of ARRAY)
         (SELECT string_agg(COALESCE(elem->>'first_name', '') || ' ' || COALESCE(elem->>'last_name', ''), ' ')
          FROM jsonb_array_elements(taa.assignees) elem) AS assignee_search_text,
@@ -134,14 +137,17 @@ SELECT * FROM (
         NULL::UUID AS task_type_id, NULL::TEXT AS task_type_name, NULL::TEXT AS task_type_slug, NULL::VARCHAR(50) AS task_type_color,
         caa.assignees AS assigned_to, cla.tags,
         m.body_plain_text AS body, m.preview,
-        from_contact.name AS creator,
+        NULLIF(TRIM(CONCAT_WS(' ', 
+            NULLIF(TRIM(from_contact.name), ''),
+            CONCAT('<', from_contact.email, '>')
+        )), '') AS creator,
         conv.subject AS conversation_subject, mra.recipients, maa.attachments,
         COALESCE(maa.attachment_count, 0) AS attachment_count, cca.comments_text AS conversation_comments_text,
         NULL::TEXT AS craft_url, NULL::TEXT AS teamwork_url, conv.app_url AS missive_url,
         NULL::TEXT AS storage_path, NULL::TEXT AS thumbnail_path,
         COALESCE(m.delivered_at, m.updated_at, m.created_at) AS sort_date,
         -- Pre-computed search text (excludes body for index size)
-        CONCAT_WS(' ', m.subject, m.preview, twp.name, from_contact.name, conv.subject, cca.comments_text) AS search_text,
+        CONCAT_WS(' ', m.subject, m.preview, twp.name, from_contact.name, from_contact.email, conv.subject, cca.comments_text) AS search_text,
         -- Flattened assignee names for fast trigram search
         (SELECT string_agg(COALESCE(elem->>'name', ''), ' ') FROM jsonb_array_elements(caa.assignees) elem) AS assignee_search_text,
         -- Flattened tag names for fast trigram search (P0 optimization)
