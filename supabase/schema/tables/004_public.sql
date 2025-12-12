@@ -145,6 +145,8 @@ CREATE TABLE files (
     filesystem_access_rights JSONB,
     filesystem_attributes JSONB,
     auto_extracted_metadata JSONB,
+    deleted_at TIMESTAMPTZ,
+    last_seen_at TIMESTAMPTZ DEFAULT NOW(),
     db_created_at TIMESTAMP DEFAULT NOW(),
     db_updated_at TIMESTAMP DEFAULT NOW()
 );
@@ -319,6 +321,8 @@ CREATE INDEX idx_files_content_hash ON files(content_hash);
 CREATE INDEX idx_files_document_type_id ON files(document_type_id);
 CREATE INDEX idx_files_source_missive_attachment_id ON files(source_missive_attachment_id);
 CREATE INDEX idx_files_storage_path ON files(storage_path);
+CREATE INDEX idx_files_deleted_at ON files(deleted_at) WHERE deleted_at IS NOT NULL;
+CREATE INDEX idx_files_last_seen_at ON files(last_seen_at);
 CREATE INDEX idx_project_conversations_m_conversation_id ON project_conversations(m_conversation_id);
 CREATE INDEX idx_project_conversations_tw_project_id ON project_conversations(tw_project_id);
 CREATE INDEX idx_project_conversations_source ON project_conversations(source);
@@ -361,6 +365,8 @@ COMMENT ON COLUMN project_extensions.nas_folder_path IS 'e.g. /projects/2024-001
 COMMENT ON TABLE task_extensions IS 'Decorator pattern: extends Teamwork tasks with ibhelm semantics';
 COMMENT ON TABLE craft_documents IS 'Stores Craft documents with their full markdown content';
 COMMENT ON TABLE files IS 'File metadata. storage_path is UUID-based path in Supabase Storage (e.g. a1b2c3d4.pdf)';
+COMMENT ON COLUMN files.deleted_at IS 'Soft delete timestamp. Set when file no longer exists on filesystem.';
+COMMENT ON COLUMN files.last_seen_at IS 'Last time file was found during filesystem scan.';
 COMMENT ON TABLE project_conversations IS 'n:m - A conversation can belong to multiple projects';
 COMMENT ON TABLE object_locations IS 'Polymorphic table connecting objects to locations';
 COMMENT ON TABLE object_cost_groups IS 'Polymorphic table connecting objects to cost groups';

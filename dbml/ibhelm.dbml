@@ -223,6 +223,9 @@ Table files {
   filesystem_attributes jsonb
 
   auto_extracted_metadata jsonb [note: "Information extracted from filename and path"]
+  
+  deleted_at timestamptz [note: "Soft delete timestamp. Set when file no longer exists on filesystem."]
+  last_seen_at timestamptz [default: `now()`, note: "Last time file was found during filesystem scan."]
 
   db_created_at timestamp [default: `now()`]
   db_updated_at timestamp [default: `now()`]
