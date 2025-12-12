@@ -1960,6 +1960,17 @@ BEGIN
         COUNT(*) FILTER (WHERE tq.status = 'failed') AS failed_count,
         MAX(tq.processed_at) FILTER (WHERE tq.status = 'completed') AS last_processed_at
     FROM thumbnail_processing_queue tq;
+    
+    -- Return attachments download queue status
+    RETURN QUERY SELECT 
+        'attachments'::VARCHAR(50) AS source,
+        NULL::TIMESTAMPTZ AS last_event_time,
+        NULL::TIMESTAMPTZ AS checkpoint_updated_at,
+        COUNT(*) FILTER (WHERE eaf.status = 'pending') AS pending_count,
+        COUNT(*) FILTER (WHERE eaf.status = 'downloading') AS processing_count,
+        COUNT(*) FILTER (WHERE eaf.status = 'failed') AS failed_count,
+        MAX(eaf.downloaded_at) FILTER (WHERE eaf.status = 'completed') AS last_processed_at
+    FROM email_attachment_files eaf;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER STABLE;
 
