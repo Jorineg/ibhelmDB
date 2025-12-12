@@ -2213,7 +2213,7 @@ $$ LANGUAGE plpgsql;
 
 -- Link file to project if path contains project name
 CREATE OR REPLACE FUNCTION link_file_to_project(p_file_id UUID)
-RETURNS INTEGER AS $$
+RETURNS INTEGER SECURITY DEFINER SET search_path = public, teamwork, missive AS $$
 DECLARE
     v_storage_path TEXT;
     v_project RECORD;
@@ -2306,7 +2306,7 @@ $$ LANGUAGE plpgsql;
 
 -- Master function: extract all file metadata
 CREATE OR REPLACE FUNCTION extract_file_metadata(p_file_id UUID)
-RETURNS void AS $$
+RETURNS void SECURITY DEFINER SET search_path = public, teamwork, missive AS $$
 BEGIN
     PERFORM link_file_to_email_attachment(p_file_id);
     PERFORM link_file_to_project(p_file_id);
@@ -2317,7 +2317,7 @@ $$ LANGUAGE plpgsql;
 
 -- Trigger for auto-extraction on file insert/update
 CREATE OR REPLACE FUNCTION trigger_extract_file_metadata()
-RETURNS TRIGGER AS $$
+RETURNS TRIGGER SECURITY DEFINER SET search_path = public, teamwork, missive AS $$
 BEGIN
     PERFORM extract_file_metadata(NEW.id);
     RETURN NEW;
