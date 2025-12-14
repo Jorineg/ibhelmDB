@@ -22,7 +22,7 @@ CREATE TABLE service_agent.configurations (
     category TEXT,
     description TEXT,
     updated_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_by UUID REFERENCES auth.users(id) ON DELETE SET NULL
+    updated_by UUID  -- No FK to auth.users (separate schema in self-hosted)
 );
 
 CREATE INDEX idx_sac_scope ON service_agent.configurations USING GIN(scope);
@@ -39,7 +39,7 @@ CREATE TABLE service_agent.operation_logs (
     operation TEXT NOT NULL,  -- 'start', 'stop', 'restart', 'update', 'config_change'
     success BOOLEAN NOT NULL,
     message TEXT,
-    performed_by UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+    performed_by UUID,  -- No FK to auth.users
     performed_by_email TEXT,
     performed_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -71,4 +71,3 @@ COMMENT ON TABLE service_agent.configurations IS 'Centralized config for IBHelm 
 COMMENT ON COLUMN service_agent.configurations.scope IS 'Array of service names. Use * for all services.';
 COMMENT ON COLUMN service_agent.configurations.is_secret IS 'If true, value is masked in dashboard UI.';
 COMMENT ON TABLE service_agent.operation_logs IS 'Audit log of all service operations.';
-
