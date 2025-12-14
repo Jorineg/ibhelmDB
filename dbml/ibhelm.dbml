@@ -10,7 +10,7 @@ Table unified_persons {
   display_name text [not null]
   primary_email text
   
-  preferred_contact_method varchar [note: "'email', 'phone', 'teamwork'"]
+  preferred_contact_method varchar(50)
   
   is_internal boolean [default: false, note: "ibhelm Mitarbeiter"]
   is_company boolean [default: false, note: "true = Firma, false = Person"]
@@ -32,7 +32,7 @@ Table unified_person_links {
   tw_company_id integer [ref: - tw_companies.id]
   m_contact_id integer [ref: - m_contacts.id]
   
-  link_type varchar [
+  link_type varchar(50) [
     default: 'auto_email',
     note: "'auto_email', 'auto_name', 'manual'"
   ]
@@ -76,7 +76,7 @@ Table project_contractors {
   id serial [pk]
   tw_project_id integer [ref: > tw_projects.id]
   contractor_person_id uuid [ref: > unified_persons.id]
-  role varchar [note: "z.B. Elektroplanung, Architekt, Heizung"]
+  role varchar(100)
   
   db_created_at timestamp [default: `now()`]
   
@@ -90,8 +90,8 @@ Table task_types {
   name text [not null]
   slug text [not null, unique]
   description text
-  color varchar
-  icon varchar
+  color varchar(50)
+  icon varchar(100)
   is_default boolean [default: false, note: "Default type for unmatched tasks"]
   display_order integer [default: 0]
   
@@ -111,26 +111,30 @@ Table task_type_rules {
   Note: "Maps Teamwork tag names to task types"
 }
 
-Table extraction_runs {
+Table operation_runs {
   id uuid [pk, default: `gen_random_uuid()`]
-  status varchar [not null, default: 'running', note: "'running', 'completed', 'failed'"]
+  run_type varchar(50) [not null]
+  status varchar(50) [not null, default: 'running', note: "'running', 'completed', 'failed'"]
   total_count integer
   processed_count integer [default: 0]
+  created_count integer [default: 0]
+  linked_count integer [default: 0]
+  skipped_count integer [default: 0]
   error_message text
   started_at timestamp [default: `now()`]
   completed_at timestamp
   
-  Note: "Tracks status of bulk extraction re-run operations"
+  Note: "Tracks status of bulk operations (task_type_extraction, person_linking, project_linking)"
 }
 
 // --- 4. TASK EXTENSIONS ---
 
 Table task_extensions {
-  tw_task_id integer [pk, ref: - tw_tasks.task_id, note: "1:1 Beziehung"]
+  tw_task_id integer [pk, ref: - tw_tasks.id, note: "1:1 Beziehung"]
   
   task_type_id uuid [ref: > task_types.id, note: "Reference to task_types table"]
-  type_source varchar [default: 'auto', note: "'auto' or 'manual'"]
-  type_source_tag_name varchar [note: "Tag that triggered auto-assignment"]
+  type_source varchar(50) [default: 'auto', note: "'auto' or 'manual'"]
+  type_source_tag_name varchar(255) [note: "Tag that triggered auto-assignment"]
   
   db_created_at timestamp [default: `now()`]
   db_updated_at timestamp [default: `now()`]
@@ -145,28 +149,20 @@ Table locations {
   parent_id uuid [ref: > locations.id]
   
   name text
-  type varchar [note: "'building', 'level', 'room'"]
+  type location_type [note: "'building', 'level', 'room'"]
   
-  teamwork_tag_pattern varchar [note: "Regex oder Prefix für Auto-Matching, z.B. 'LOC_GEB_A_EG'"]
+  teamwork_tag_pattern varchar(255) [note: "Regex oder Prefix für Auto-Matching"]
   
   path text [
     note: '''
     Materialized Path für effiziente Hierarchie-Queries.
     Format: '1.5.23' oder '/gebaeude-a/eg/raum-101/'
-    Ermöglicht LIKE Queries: path LIKE '1.5.%'
     '''
   ]
   path_ids uuid[] [note: "Array aller Parent-IDs für schnelle Filter"]
-  depth int [note: "0=Building, 1=Level, 2=Room"]
+  depth integer [note: "0=Building, 1=Level, 2=Room"]
 
-  search_text text [
-    note: '''
-    GENERATED ALWAYS AS (
-      -- Rekursiv alle Parent-Namen konkatenieren
-      -- z.B. 'Haus A / EG / Raum 101'
-    ) STORED
-    '''
-  ]
+  search_text text [note: "Generated search text including all parent names"]
 
   db_created_at timestamp [default: `now()`]
   db_updated_at timestamp [default: `now()`]
@@ -188,10 +184,24 @@ Table cost_groups {
 
 // --- 6. FILES & CONTENT ---
 
+Table craft_documents {
+  id text [pk]
+  title text [not null]
+  markdown_content text
+  is_deleted boolean [default: false]
+  craft_created_at timestamptz
+  craft_last_modified_at timestamptz
+  db_created_at timestamptz [default: `now()`]
+  db_updated_at timestamptz [default: `now()`]
+  raw_data jsonb
+  
+  Note: "Stores Craft documents with their full markdown content"
+}
+
 Table document_types {
   id serial [pk]
-  name text [note: "Rechnung, Plan, Protokoll, Zeichnung"]
-  slug varchar [unique]
+  name text
+  slug varchar(100) [unique]
   description text
   
   db_created_at timestamp [default: `now()`]
@@ -204,7 +214,7 @@ Table files {
   
   filename text [not null, note: "Original filename"]
   folder_path text [note: "Original folder path"]
-  content_hash varchar [not null, note: "SHA256 for change detection"]
+  content_hash varchar(64) [not null, note: "SHA256 for change detection"]
   
   extracted_text text [note: "Für PDF-Volltextsuche"]
   
@@ -215,8 +225,8 @@ Table files {
   
   source_missive_attachment_id uuid [ref: - m_attachments.id]
   
-  file_created_at timestamp [note: "with time zone"]
-  file_modified_at timestamp [note: "with time zone"]
+  file_created_at timestamptz
+  file_modified_at timestamptz
   file_created_by text
   filesystem_inode bigint
   filesystem_access_rights jsonb
@@ -237,11 +247,8 @@ Table project_conversations {
   m_conversation_id uuid [ref: > m_conversations.id]
   tw_project_id integer [ref: > tw_projects.id]
   
-  source varchar [
-    not null,
-    note: "'auto_missive', 'manual'"
-  ]
-  source_label_name varchar [note: "Original Label-Name falls auto"]
+  source varchar(50) [not null, note: "'auto_missive', 'manual'"]
+  source_label_name varchar(255) [note: "Original Label-Name falls auto"]
   
   assigned_at timestamp [default: `now()`]
   
@@ -271,16 +278,13 @@ Table object_locations {
   location_id uuid [ref: > locations.id]
   
   // Polymorphe Spalten (Nur EINE darf gesetzt sein)
-  tw_task_id integer [ref: > tw_tasks.task_id]
-  m_conversation_id uuid [ref: > m_conversations.id]  // ← GEÄNDERT
+  tw_task_id integer [ref: > tw_tasks.id]
+  m_conversation_id uuid [ref: > m_conversations.id]
   file_id uuid [ref: > files.id]
   
   // Source Tracking
-  source varchar [
-    not null,
-    note: "'auto_teamwork', 'auto_missive', 'auto_path', 'manual'"  // ← auto_missive hinzugefügt
-  ]
-  source_tag_name varchar [note: "Original Tag/Label-Name falls aus Teamwork/Missive"]
+  source varchar(50) [not null, note: "'auto_teamwork', 'auto_missive', 'auto_path', 'manual'"]
+  source_tag_name varchar(255) [note: "Original Tag/Label-Name falls aus Teamwork/Missive"]
   
   db_created_at timestamp [default: `now()`]
   
@@ -298,16 +302,13 @@ Table object_cost_groups {
   cost_group_id uuid [ref: > cost_groups.id]
   
   // Polymorphe Spalten (Nur EINE darf gesetzt sein)
-  tw_task_id integer [ref: > tw_tasks.task_id]
-  m_conversation_id uuid [ref: > m_conversations.id]  // ← GEÄNDERT
+  tw_task_id integer [ref: > tw_tasks.id]
+  m_conversation_id uuid [ref: > m_conversations.id]
   file_id uuid [ref: > files.id]
   
   // Source Tracking
-  source varchar [
-    not null,
-    note: "'auto_teamwork', 'auto_missive', 'auto_path', 'manual'"  // ← auto_missive hinzugefügt
-  ]
-  source_tag_name varchar [note: "Original Tag/Label-Name falls aus Teamwork/Missive"]
+  source varchar(50) [not null, note: "'auto_teamwork', 'auto_missive', 'auto_path', 'manual'"]
+  source_tag_name varchar(255) [note: "Original Tag/Label-Name falls aus Teamwork/Missive"]
   
   db_created_at timestamp [default: `now()`]
   
@@ -320,6 +321,80 @@ Table object_cost_groups {
   '''
 }
 
+// --- 8. ADDITIONAL JUNCTION TABLES ---
+
+Table item_involved_persons {
+  item_id text [not null]
+  item_type text [not null]
+  unified_person_id uuid [not null, ref: > unified_persons.id]
+  involvement_type text [not null]
+  
+  indexes {
+    (item_id, item_type, unified_person_id, involvement_type) [pk]
+  }
+  
+  Note: "Junction table for filtering items by involved person"
+}
+
+// --- 9. SYSTEM TABLES ---
+
+Table mv_refresh_status {
+  view_name text [pk]
+  needs_refresh boolean [default: false]
+  last_refreshed_at timestamp [default: `now()`]
+  refresh_interval_minutes integer [default: 5]
+}
+
+Table thumbnail_processing_queue {
+  id serial [pk]
+  file_id uuid [not null, ref: > files.id, unique]
+  status varchar(20) [default: 'pending']
+  attempts integer [default: 0]
+  last_error text
+  created_at timestamptz [default: `now()`]
+  updated_at timestamptz [default: `now()`]
+  processed_at timestamptz
+  
+  Note: "Queue for thumbnail generation and text extraction processing"
+}
+
+Table email_attachment_files {
+  missive_attachment_id uuid [pk]
+  missive_message_id uuid [not null]
+  
+  original_filename text [not null]
+  original_url text [not null]
+  file_size integer
+  width integer
+  height integer
+  media_type varchar(100)
+  sub_type varchar(100)
+  
+  status varchar(20) [default: 'pending', not null]
+  local_filename text [unique, note: "Format: OriginalName_UUID.ext"]
+  skip_reason text
+  error_message text
+  retry_count integer [default: 0]
+  
+  created_at timestamptz [default: `now()`]
+  updated_at timestamptz [default: `now()`]
+  downloaded_at timestamptz
+  
+  Note: '''
+  Download tracking for Missive email attachments.
+  CONSTRAINT valid_status CHECK (status IN ('pending', 'downloading', 'completed', 'failed', 'skipped'))
+  '''
+}
+
+Table app_settings {
+  lock char(1) [pk, default: 'X']
+  body jsonb [not null, default: '{}']
+  
+  Note: '''
+  Single-row settings table.
+  CONSTRAINT single_row CHECK (lock = 'X')
+  '''
+}
 
 // =====================================
 // GHOST TABLES (Visual Reference Only)
@@ -332,16 +407,16 @@ TableGroup teamwork_ghosts [color: #cccccc] {
   tw_tasks
   tw_users
 }
-Table tw_companies { id int [pk] }
-Table tw_projects { id int [pk] }
-Table tw_tasks { task_id varchar [pk] }
-Table tw_users { id varchar [pk] }
+Table tw_companies { id integer [pk] }
+Table tw_projects { id integer [pk] }
+Table tw_tasks { id integer [pk] }
+Table tw_users { id integer [pk] }
 
 TableGroup missive_ghosts [color: #cccccc] {
   m_contacts
   m_attachments
   m_conversations
 }
-Table m_contacts { id int [pk] }
+Table m_contacts { id integer [pk] }
 Table m_attachments { id uuid [pk] }
 Table m_conversations { id uuid [pk] }

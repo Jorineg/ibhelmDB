@@ -149,7 +149,7 @@ Table tw_tasklists {
   db_updated_at timestamp [default: `now()`]
 }
 
-Table tasks {
+Table tw_tasks {
   id integer [pk]
   project_id integer
   tasklist_id integer
@@ -158,7 +158,7 @@ Table tasks {
   status varchar(100)
   priority varchar(50)
   progress integer
-  parent_task varchar(255)
+  parent_task integer [note: "Self-reference to parent task"]
   start_date timestamp
   due_date timestamp
   estimate_minutes integer
@@ -175,7 +175,7 @@ Table tasks {
 }
 
 // Junction Tables
-Table task_tags {
+Table tw_task_tags {
   task_id integer
   tag_id integer
   
@@ -184,9 +184,9 @@ Table task_tags {
   }
 }
 
-Table task_assignees {
-  user_id integer
+Table tw_task_assignees {
   task_id integer
+  user_id integer
   
   indexes {
     (task_id, user_id) [pk]
@@ -217,19 +217,18 @@ Ref: tw_projects.updated_by > tw_users.id [delete: set null]
 Ref: tw_tasklists.project_id > tw_projects.id [delete: cascade]
 
 // Tasks References
-Ref: tasks.project_id > tw_projects.id [delete: set null]
-Ref: tasks.tasklist_id > tw_tasklists.id [delete: set null]
-Ref: tasks.created_by_id > tw_users.id [delete: set null]
-Ref: tasks.updated_by_id > tw_users.id [delete: set null]
-Ref: tasks.parent_task - tasks.id [delete: set null] // Self reference via string ID
+Ref: tw_tasks.project_id > tw_projects.id [delete: set null]
+Ref: tw_tasks.tasklist_id > tw_tasklists.id [delete: set null]
+Ref: tw_tasks.created_by_id > tw_users.id [delete: set null]
+Ref: tw_tasks.updated_by_id > tw_users.id [delete: set null]
+Ref: tw_tasks.parent_task > tw_tasks.id [delete: set null]
 
 // Junction References
-// Note: task_tags and task_assignees use task_id (string), not id (int)
-Ref: task_tags.task_id > tasks.id [delete: cascade]
-Ref: task_tags.tag_id > tw_tags.id [delete: cascade]
+Ref: tw_task_tags.task_id > tw_tasks.id [delete: cascade]
+Ref: tw_task_tags.tag_id > tw_tags.id [delete: cascade]
 
-Ref: task_assignees.task_id > tasks.id [delete: cascade]
-Ref: task_assignees.user_id > tw_users.id [delete: cascade]
+Ref: tw_task_assignees.task_id > tw_tasks.id [delete: cascade]
+Ref: tw_task_assignees.user_id > tw_users.id [delete: cascade]
 
 Ref: tw_user_teams.user_id > tw_users.id [delete: cascade]
 Ref: tw_user_teams.team_id > tw_teams.id [delete: cascade]
