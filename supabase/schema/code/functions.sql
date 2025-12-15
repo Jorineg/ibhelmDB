@@ -2487,6 +2487,25 @@ GRANT EXECUTE ON FUNCTION get_file_source_email(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_email_files(UUID) TO authenticated;
 GRANT SELECT ON mv_refresh_status TO authenticated;
 GRANT EXECUTE ON FUNCTION mark_mv_needs_refresh(TEXT) TO authenticated;
+-- =====================================
+-- EMAIL HTML BODY (for iframe preview)
+-- =====================================
+
+CREATE OR REPLACE FUNCTION get_email_html_body(p_message_id UUID)
+RETURNS TEXT
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = missive AS $$
+    SELECT body FROM messages WHERE id = p_message_id;
+$$;
+
+CREATE OR REPLACE FUNCTION get_email_html_bodies(p_message_ids UUID[])
+RETURNS TABLE(message_id UUID, html_body TEXT)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = missive AS $$
+    SELECT id, body FROM messages WHERE id = ANY(p_message_ids);
+$$;
+
+GRANT EXECUTE ON FUNCTION get_email_html_body(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION get_email_html_bodies(UUID[]) TO authenticated;
+
 GRANT EXECUTE ON FUNCTION refresh_unified_items_aggregates(BOOLEAN) TO authenticated;
 GRANT EXECUTE ON FUNCTION refresh_stale_unified_items_aggregates() TO authenticated;
 GRANT EXECUTE ON FUNCTION compute_cost_group_range(TEXT) TO authenticated;
