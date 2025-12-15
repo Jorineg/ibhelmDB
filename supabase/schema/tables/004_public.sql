@@ -175,6 +175,13 @@ CREATE TABLE project_files (
     PRIMARY KEY (tw_project_id, file_id)
 );
 
+CREATE TABLE project_craft_documents (
+    craft_document_id TEXT REFERENCES craft_documents(id) ON DELETE CASCADE,
+    tw_project_id INTEGER REFERENCES teamwork.projects(id) ON DELETE CASCADE,
+    assigned_at TIMESTAMP DEFAULT NOW(),
+    PRIMARY KEY (tw_project_id, craft_document_id)
+);
+
 CREATE TABLE object_locations (
     id SERIAL PRIMARY KEY,
     location_id UUID REFERENCES locations(id) ON DELETE CASCADE,
@@ -336,6 +343,8 @@ CREATE INDEX idx_project_conversations_source ON project_conversations(source);
 CREATE INDEX idx_project_files_file_id ON project_files(file_id);
 CREATE INDEX idx_project_files_tw_project_id ON project_files(tw_project_id);
 CREATE INDEX idx_project_files_composite ON project_files(tw_project_id, file_id);
+CREATE INDEX idx_project_craft_documents_craft_document_id ON project_craft_documents(craft_document_id);
+CREATE INDEX idx_project_craft_documents_tw_project_id ON project_craft_documents(tw_project_id);
 CREATE INDEX idx_object_locations_location_id ON object_locations(location_id);
 CREATE INDEX idx_object_locations_tw_task_id ON object_locations(tw_task_id);
 CREATE INDEX idx_object_locations_m_conversation_id ON object_locations(m_conversation_id);

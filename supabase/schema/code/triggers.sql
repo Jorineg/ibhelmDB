@@ -214,6 +214,18 @@ CREATE TRIGGER extract_file_metadata_on_update AFTER UPDATE OF storage_path, fil
     FOR EACH ROW EXECUTE FUNCTION trigger_extract_file_metadata();
 
 -- =====================================
+-- 7b. CRAFT DOCUMENT METADATA EXTRACTION TRIGGERS
+-- =====================================
+
+DROP TRIGGER IF EXISTS extract_craft_metadata_on_insert ON craft_documents;
+CREATE TRIGGER extract_craft_metadata_on_insert AFTER INSERT ON craft_documents
+    FOR EACH ROW EXECUTE FUNCTION trigger_extract_craft_metadata();
+
+DROP TRIGGER IF EXISTS extract_craft_metadata_on_update ON craft_documents;
+CREATE TRIGGER extract_craft_metadata_on_update AFTER UPDATE OF folder_path ON craft_documents
+    FOR EACH ROW EXECUTE FUNCTION trigger_extract_craft_metadata();
+
+-- =====================================
 -- 8. MATERIALIZED VIEW STALENESS TRIGGERS
 -- =====================================
 

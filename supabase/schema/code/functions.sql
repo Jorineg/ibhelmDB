@@ -1496,9 +1496,9 @@ BEGIN
     IF p_task_types IS NOT NULL THEN
         v_where := array_append(v_where, format('(ui.type != ''task'' OR ui.task_type_id = ANY(%L::UUID[]))', p_task_types));
     END IF;
-    -- Text search uses consolidated search_text column + body fallback
+    -- Text search uses consolidated search_text column (includes body, tags, assignees, recipients, attachments)
     IF p_text_search IS NOT NULL AND p_text_search != '' THEN
-        v_where := array_append(v_where, format('(ui.search_text ILIKE %L OR ui.body ILIKE %L)', '%' || p_text_search || '%', '%' || p_text_search || '%'));
+        v_where := array_append(v_where, format('ui.search_text ILIKE %L', '%' || p_text_search || '%'));
     END IF;
     IF v_person_ids IS NOT NULL THEN
         v_where := array_append(v_where, format('EXISTS (SELECT 1 FROM item_involved_persons iip WHERE iip.item_id = ui.id AND iip.item_type = ui.type AND iip.unified_person_id = ANY(%L::UUID[]))', v_person_ids));
@@ -2405,6 +2405,76 @@ BEGIN RETURN QUERY SELECT * FROM get_latest_operation_run('file_linking'); END;
 $$ LANGUAGE plpgsql STABLE;
 
 -- =====================================
+-- CRAFT DOCUMENT AUTO-LINKING
+-- =====================================
+
+-- Link craft document to project if folder_path contains project name
+CREATE OR REPLACE FUNCTION link_craft_document_to_project(p_craft_document_id TEXT)
+RETURNS INTEGER SECURITY DEFINER SET search_path = public, teamwork AS $$
+DECLARE
+    v_folder_path TEXT;
+    v_project RECORD;
+    v_links_created INTEGER := 0;
+BEGIN
+    SELECT folder_path INTO v_folder_path FROM craft_documents WHERE id = p_craft_document_id;
+    IF NOT FOUND OR v_folder_path IS NULL OR v_folder_path = '' THEN RETURN 0; END IF;
+    
+    FOR v_project IN 
+        SELECT id, name FROM teamwork.projects 
+        WHERE v_folder_path ILIKE '%' || name || '%'
+    LOOP
+        INSERT INTO project_craft_documents (craft_document_id, tw_project_id, assigned_at)
+        VALUES (p_craft_document_id, v_project.id, NOW())
+        ON CONFLICT (tw_project_id, craft_document_id) DO NOTHING;
+        
+        IF FOUND THEN
+            v_links_created := v_links_created + 1;
+        END IF;
+    END LOOP;
+    
+    RETURN v_links_created;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Master function: extract all craft document metadata
+CREATE OR REPLACE FUNCTION extract_craft_metadata(p_craft_document_id TEXT)
+RETURNS void SECURITY DEFINER SET search_path = public, teamwork AS $$
+BEGIN
+    PERFORM link_craft_document_to_project(p_craft_document_id);
+END;
+$$ LANGUAGE plpgsql;
+
+-- Trigger for auto-extraction on craft document insert/update
+CREATE OR REPLACE FUNCTION trigger_extract_craft_metadata()
+RETURNS TRIGGER SECURITY DEFINER SET search_path = public, teamwork AS $$
+BEGIN
+    PERFORM extract_craft_metadata(NEW.id);
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Bulk rerun function for all craft documents
+CREATE OR REPLACE FUNCTION rerun_all_craft_linking()
+RETURNS TABLE (total INTEGER, linked INTEGER) SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_total INTEGER := 0;
+    v_linked INTEGER := 0;
+    v_record RECORD;
+    v_result INTEGER;
+BEGIN
+    FOR v_record IN SELECT id FROM craft_documents WHERE is_deleted = FALSE LOOP
+        v_result := link_craft_document_to_project(v_record.id);
+        v_total := v_total + 1;
+        IF v_result > 0 THEN
+            v_linked := v_linked + 1;
+        END IF;
+    END LOOP;
+    
+    RETURN QUERY SELECT v_total, v_linked;
+END;
+$$ LANGUAGE plpgsql;
+
+-- =====================================
 -- ATTACHMENT DOWNLOAD QUEUE
 -- =====================================
 
@@ -2506,6 +2576,25 @@ $$;
 GRANT EXECUTE ON FUNCTION get_email_html_body(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_email_html_bodies(UUID[]) TO authenticated;
 
+-- =====================================
+-- CRAFT MARKDOWN BODY (for preview)
+-- =====================================
+
+CREATE OR REPLACE FUNCTION get_craft_markdown(p_document_id TEXT)
+RETURNS TEXT
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT markdown_content FROM craft_documents WHERE id = p_document_id;
+$$;
+
+CREATE OR REPLACE FUNCTION get_craft_markdowns(p_document_ids TEXT[])
+RETURNS TABLE(document_id TEXT, markdown TEXT)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT id, markdown_content FROM craft_documents WHERE id = ANY(p_document_ids);
+$$;
+
+GRANT EXECUTE ON FUNCTION get_craft_markdown(TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION get_craft_markdowns(TEXT[]) TO authenticated;
+
 GRANT EXECUTE ON FUNCTION refresh_unified_items_aggregates(BOOLEAN) TO authenticated;
 GRANT EXECUTE ON FUNCTION refresh_stale_unified_items_aggregates() TO authenticated;
 GRANT EXECUTE ON FUNCTION compute_cost_group_range(TEXT) TO authenticated;
@@ -2517,4 +2606,5 @@ GRANT EXECUTE ON FUNCTION upsert_files_checkpoint(TIMESTAMPTZ) TO service_role;
 GRANT EXECUTE ON FUNCTION rerun_all_file_linking() TO authenticated;
 GRANT EXECUTE ON FUNCTION get_file_linking_run_status(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_latest_file_linking_run() TO authenticated;
+GRANT EXECUTE ON FUNCTION rerun_all_craft_linking() TO authenticated;
 

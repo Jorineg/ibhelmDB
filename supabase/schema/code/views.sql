@@ -97,9 +97,12 @@ SELECT * FROM (
         NULL::TEXT AS craft_url, t.source_links->>'teamwork_url' AS teamwork_url, NULL::TEXT AS missive_url,
         NULL::TEXT AS storage_path, NULL::TEXT AS thumbnail_path,
         COALESCE(t.updated_at, t.created_at) AS sort_date,
-        -- Pre-computed search text (excludes body for index size)
+        -- Pre-computed search text (includes tags + assignees for single-index search)
         CONCAT_WS(' ', t.name, t.description, p.name, c.name, tl.name, 
-            NULLIF(TRIM(CONCAT(creator_user.first_name, ' ', creator_user.last_name)), ''), creator_user.email) AS search_text,
+            NULLIF(TRIM(CONCAT(creator_user.first_name, ' ', creator_user.last_name)), ''), creator_user.email,
+            (SELECT string_agg(elem->>'name', ' ') FROM jsonb_array_elements(tta.tags) elem),
+            (SELECT string_agg(COALESCE(elem->>'first_name', '') || ' ' || COALESCE(elem->>'last_name', ''), ' ') FROM jsonb_array_elements(taa.assignees) elem)
+        ) AS search_text,
         -- Flattened assignee names for fast trigram search (TEXT instead of ARRAY)
         (SELECT string_agg(COALESCE(elem->>'first_name', '') || ' ' || COALESCE(elem->>'last_name', ''), ' ')
          FROM jsonb_array_elements(taa.assignees) elem) AS assignee_search_text,
@@ -146,8 +149,13 @@ SELECT * FROM (
         NULL::TEXT AS craft_url, NULL::TEXT AS teamwork_url, conv.app_url AS missive_url,
         NULL::TEXT AS storage_path, NULL::TEXT AS thumbnail_path,
         COALESCE(m.delivered_at, m.updated_at, m.created_at) AS sort_date,
-        -- Pre-computed search text (excludes body for index size)
-        CONCAT_WS(' ', m.subject, m.preview, twp.name, from_contact.name, from_contact.email, conv.subject, cca.comments_text) AS search_text,
+        -- Pre-computed search text (includes body, recipients, attachments, labels for single-index search)
+        CONCAT_WS(' ', m.subject, m.preview, m.body_plain_text, twp.name, from_contact.name, from_contact.email, conv.subject, cca.comments_text,
+            (SELECT string_agg(CONCAT_WS(' ', elem->'contact'->>'name', elem->'contact'->>'email'), ' ') FROM jsonb_array_elements(mra.recipients) elem),
+            (SELECT string_agg(elem->>'filename', ' ') FROM jsonb_array_elements(maa.attachments) elem),
+            (SELECT string_agg(elem->>'name', ' ') FROM jsonb_array_elements(cla.tags) elem),
+            (SELECT string_agg(COALESCE(elem->>'name', ''), ' ') FROM jsonb_array_elements(caa.assignees) elem)
+        ) AS search_text,
         -- Flattened assignee names for fast trigram search
         (SELECT string_agg(COALESCE(elem->>'name', ''), ' ') FROM jsonb_array_elements(caa.assignees) elem) AS assignee_search_text,
         -- Flattened tag names for fast trigram search (P0 optimization)
@@ -173,31 +181,36 @@ SELECT * FROM (
 
 UNION ALL
 
--- Craft Documents (no duplicates possible)
-SELECT 
-    cd.id::TEXT AS id, 'craft'::TEXT AS type, cd.title AS name, NULL::TEXT AS description, ''::VARCHAR AS status,
-    ''::TEXT AS project, ''::TEXT AS customer, NULL::TEXT AS location, NULL::TEXT AS location_path,
-    NULL::TEXT AS cost_group, NULL::TEXT AS cost_group_code, NULL::TIMESTAMP AS due_date,
-    cd.craft_created_at AS created_at, cd.craft_last_modified_at AS updated_at,
-    ''::VARCHAR AS priority, NULL::INTEGER AS progress, ''::TEXT AS tasklist,
-    NULL::UUID AS task_type_id, NULL::TEXT AS task_type_name, NULL::TEXT AS task_type_slug, NULL::VARCHAR(50) AS task_type_color,
-    NULL::JSONB AS assigned_to, NULL::JSONB AS tags,
-    cd.markdown_content AS body, NULL::TEXT AS preview,
-    NULL::TEXT AS creator, NULL::TEXT AS conversation_subject,
-    NULL::JSONB AS recipients, NULL::JSONB AS attachments, 0 AS attachment_count, NULL::TEXT AS conversation_comments_text,
-    'craftdocs://open?blockId=' || cd.id AS craft_url, NULL::TEXT AS teamwork_url, NULL::TEXT AS missive_url,
-    NULL::TEXT AS storage_path, NULL::TEXT AS thumbnail_path,
-    COALESCE(cd.craft_last_modified_at, cd.db_updated_at, cd.db_created_at) AS sort_date,
-    -- Pre-computed search text
-    cd.title AS search_text,
-    -- No assignees for craft docs
-    NULL::TEXT AS assignee_search_text,
-    -- No tags for craft docs
-    NULL::TEXT AS tag_names_text,
-    -- No locations for craft docs
-    NULL::UUID[] AS location_ids
-FROM craft_documents cd
-WHERE cd.is_deleted = FALSE
+-- Craft Documents (wrapped for DISTINCT ON due to multiple projects)
+SELECT * FROM (
+    SELECT DISTINCT ON (cd.id)
+        cd.id::TEXT AS id, 'craft'::TEXT AS type, cd.title AS name, cd.folder_path AS description, ''::VARCHAR AS status,
+        COALESCE(twp.name, '') AS project, ''::TEXT AS customer, NULL::TEXT AS location, NULL::TEXT AS location_path,
+        NULL::TEXT AS cost_group, NULL::TEXT AS cost_group_code, NULL::TIMESTAMP AS due_date,
+        cd.craft_created_at AS created_at, cd.craft_last_modified_at AS updated_at,
+        ''::VARCHAR AS priority, NULL::INTEGER AS progress, ''::TEXT AS tasklist,
+        NULL::UUID AS task_type_id, NULL::TEXT AS task_type_name, NULL::TEXT AS task_type_slug, NULL::VARCHAR(50) AS task_type_color,
+        NULL::JSONB AS assigned_to, NULL::JSONB AS tags,
+        cd.markdown_content AS body, NULL::TEXT AS preview,
+        NULL::TEXT AS creator, NULL::TEXT AS conversation_subject,
+        NULL::JSONB AS recipients, NULL::JSONB AS attachments, 0 AS attachment_count, NULL::TEXT AS conversation_comments_text,
+        'craftdocs://open?blockId=' || cd.id AS craft_url, NULL::TEXT AS teamwork_url, NULL::TEXT AS missive_url,
+        NULL::TEXT AS storage_path, NULL::TEXT AS thumbnail_path,
+        COALESCE(cd.craft_last_modified_at, cd.db_updated_at, cd.db_created_at) AS sort_date,
+        -- Pre-computed search text (includes body for single-index search)
+        CONCAT_WS(' ', cd.title, cd.folder_path, twp.name, cd.markdown_content) AS search_text,
+        -- No assignees for craft docs
+        NULL::TEXT AS assignee_search_text,
+        -- No tags for craft docs
+        NULL::TEXT AS tag_names_text,
+        -- No locations for craft docs
+        NULL::UUID[] AS location_ids
+    FROM craft_documents cd
+    LEFT JOIN project_craft_documents pcd ON cd.id = pcd.craft_document_id
+    LEFT JOIN teamwork.projects twp ON pcd.tw_project_id = twp.id
+    WHERE cd.is_deleted = FALSE
+    ORDER BY cd.id
+) craft_docs
 
 UNION ALL
 
@@ -217,8 +230,8 @@ SELECT * FROM (
         NULL::TEXT AS craft_url, NULL::TEXT AS teamwork_url, NULL::TEXT AS missive_url,
         f.storage_path, f.thumbnail_path,
         COALESCE(f.file_modified_at, f.db_updated_at, f.db_created_at) AS sort_date,
-        -- Pre-computed search text
-        CONCAT_WS(' ', f.filename, f.folder_path, twp.name, f.file_created_by) AS search_text,
+        -- Pre-computed search text (includes body for single-index search)
+        CONCAT_WS(' ', f.filename, f.folder_path, twp.name, f.file_created_by, f.extracted_text) AS search_text,
         -- No assignees for files
         NULL::TEXT AS assignee_search_text,
         -- No tags for files
@@ -238,10 +251,8 @@ SELECT * FROM (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_unified_items_id_type ON mv_unified_items(id, type);
 
 -- Trigram indexes for fast ILIKE searches
--- Combined search text (name + description + project + customer + tasklist + creator)
+-- Combined search text (includes body, tags, assignees, recipients, attachments - single index for all text search)
 CREATE INDEX IF NOT EXISTS idx_mv_ui_search_text_trgm ON mv_unified_items USING gin (search_text gin_trgm_ops);
--- Body search (separate due to size)
-CREATE INDEX IF NOT EXISTS idx_mv_ui_body_trgm ON mv_unified_items USING gin (body gin_trgm_ops);
 -- Dedicated column trigram indexes for specific filters (faster than combined)
 CREATE INDEX IF NOT EXISTS idx_mv_ui_project_trgm ON mv_unified_items USING gin (project gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_mv_ui_customer_trgm ON mv_unified_items USING gin (customer gin_trgm_ops);
