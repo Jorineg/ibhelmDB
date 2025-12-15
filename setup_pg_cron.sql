@@ -18,6 +18,17 @@ SELECT cron.schedule(
     $$SELECT refresh_stale_unified_items_aggregates()$$
 );
 
+-- Remove existing cleanup job if present (idempotent)
+SELECT cron.unschedule('cleanup_eadir_files') 
+WHERE EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'cleanup_eadir_files');
+
+-- Hard-delete @eaDir files daily at 5 AM (Synology metadata, should not be synced)
+SELECT cron.schedule(
+    'cleanup_eadir_files',
+    '0 5 * * *',
+    $$DELETE FROM public.files WHERE folder_path LIKE '%@eaDir%' OR (auto_extracted_metadata->>'original_path') LIKE '%@eaDir%'$$
+);
+
 -- Verify
-SELECT jobid, jobname, schedule, command FROM cron.job WHERE jobname = 'refresh_unified_items_mvs';
+SELECT jobid, jobname, schedule, command FROM cron.job;
 
