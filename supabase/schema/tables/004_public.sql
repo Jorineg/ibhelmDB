@@ -112,6 +112,10 @@ CREATE TABLE craft_documents (
     title TEXT NOT NULL,
     markdown_content TEXT,
     is_deleted BOOLEAN DEFAULT FALSE,
+    folder_path TEXT,
+    folder_id TEXT,
+    location TEXT,
+    daily_note_date DATE,
     craft_created_at TIMESTAMP WITH TIME ZONE,
     craft_last_modified_at TIMESTAMP WITH TIME ZONE,
     db_created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -315,6 +319,9 @@ CREATE INDEX idx_craft_documents_title ON craft_documents(title);
 CREATE INDEX idx_craft_documents_is_deleted ON craft_documents(is_deleted);
 CREATE INDEX idx_craft_documents_craft_last_modified_at ON craft_documents(craft_last_modified_at);
 CREATE INDEX idx_craft_documents_db_updated_at ON craft_documents(db_updated_at);
+CREATE INDEX idx_craft_documents_folder_path ON craft_documents(folder_path);
+CREATE INDEX idx_craft_documents_location ON craft_documents(location);
+CREATE INDEX idx_craft_documents_daily_note_date ON craft_documents(daily_note_date) WHERE daily_note_date IS NOT NULL;
 CREATE INDEX idx_document_types_slug ON document_types(slug);
 CREATE INDEX idx_files_filename ON files(filename);
 CREATE INDEX idx_files_content_hash ON files(content_hash);
@@ -364,6 +371,10 @@ COMMENT ON TABLE project_extensions IS '1:1 extension to tw_projects - only ibhe
 COMMENT ON COLUMN project_extensions.nas_folder_path IS 'e.g. /projects/2024-001-Neubau-XY/ for auto-assignment';
 COMMENT ON TABLE task_extensions IS 'Decorator pattern: extends Teamwork tasks with ibhelm semantics';
 COMMENT ON TABLE craft_documents IS 'Stores Craft documents with their full markdown content';
+COMMENT ON COLUMN craft_documents.folder_path IS 'Full folder path e.g. /Projekte/Bauprojekt-A';
+COMMENT ON COLUMN craft_documents.folder_id IS 'Direct parent folder ID';
+COMMENT ON COLUMN craft_documents.location IS 'Built-in location: unsorted, templates, daily_notes (NULL if in folder)';
+COMMENT ON COLUMN craft_documents.daily_note_date IS 'Date for daily notes (NULL for regular documents)';
 COMMENT ON TABLE files IS 'File metadata. storage_path is UUID-based path in Supabase Storage (e.g. a1b2c3d4.pdf)';
 COMMENT ON COLUMN files.deleted_at IS 'Soft delete timestamp. Set when file no longer exists on filesystem.';
 COMMENT ON COLUMN files.last_seen_at IS 'Last time file was found during filesystem scan.';

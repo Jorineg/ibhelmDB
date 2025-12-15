@@ -189,6 +189,10 @@ Table craft_documents {
   title text [not null]
   markdown_content text
   is_deleted boolean [default: false]
+  folder_path text [note: "Full path e.g. /Projekte/Bauprojekt-A"]
+  folder_id text [note: "Direct parent folder ID"]
+  location text [note: "Built-in: unsorted, templates, daily_notes"]
+  daily_note_date date [note: "Date for daily notes, NULL otherwise"]
   craft_created_at timestamptz
   craft_last_modified_at timestamptz
   db_created_at timestamptz [default: `now()`]
