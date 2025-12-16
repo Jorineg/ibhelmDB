@@ -1675,8 +1675,9 @@ BEGIN
     IF p_task_types IS NOT NULL THEN
         v_where := array_append(v_where, format('(ui.type != ''task'' OR ui.task_type_id = ANY(%L::UUID[]))', p_task_types));
     END IF;
+    -- Text search uses consolidated search_text column (includes body, tags, assignees, recipients, attachments)
     IF p_text_search IS NOT NULL AND p_text_search != '' THEN
-        v_where := array_append(v_where, format('(ui.search_text ILIKE %L OR ui.body ILIKE %L)', '%' || p_text_search || '%', '%' || p_text_search || '%'));
+        v_where := array_append(v_where, format('ui.search_text ILIKE %L', '%' || p_text_search || '%'));
     END IF;
     IF v_person_ids IS NOT NULL THEN
         v_where := array_append(v_where, format('EXISTS (SELECT 1 FROM item_involved_persons iip WHERE iip.item_id = ui.id AND iip.item_type = ui.type AND iip.unified_person_id = ANY(%L::UUID[]))', v_person_ids));
