@@ -16,13 +16,13 @@ DB_NAME="postgres"
 SCHEMA_DIR="$SCRIPT_DIR/supabase/schema"
 
 # Flags
-SETUP_CRON=false
+SETUP_CRON=true
 AUTO_APPROVE=false
 SKIP_ATLAS=false
 
 for arg in "$@"; do
     case $arg in
-        --cron) SETUP_CRON=true ;;
+        --no-cron) SETUP_CRON=false ;;
         --yes|-y) AUTO_APPROVE=true ;;
         --skip-atlas) SKIP_ATLAS=true ;;
     esac
