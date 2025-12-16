@@ -96,6 +96,8 @@ SELECT * FROM (
         0 AS attachment_count, NULL::TEXT AS conversation_comments_text,
         NULL::TEXT AS craft_url, t.source_links->>'teamwork_url' AS teamwork_url, NULL::TEXT AS missive_url,
         NULL::TEXT AS storage_path, NULL::TEXT AS thumbnail_path,
+        NULL::TEXT AS file_extension,
+        t.accumulated_estimated_minutes,
         COALESCE(t.updated_at, t.created_at) AS sort_date,
         -- Pre-computed search text (includes tags + assignees for single-index search)
         CONCAT_WS(' ', t.name, t.description, p.name, c.name, tl.name, 
@@ -148,6 +150,9 @@ SELECT * FROM (
         COALESCE(maa.attachment_count, 0) AS attachment_count, cca.comments_text AS conversation_comments_text,
         NULL::TEXT AS craft_url, NULL::TEXT AS teamwork_url, conv.app_url AS missive_url,
         NULL::TEXT AS storage_path, NULL::TEXT AS thumbnail_path,
+        -- File extensions from all attachments (comma-separated, deduplicated)
+        (SELECT string_agg(DISTINCT LOWER(elem->>'extension'), ', ') FROM jsonb_array_elements(maa.attachments) elem WHERE elem->>'extension' IS NOT NULL) AS file_extension,
+        NULL::INTEGER AS accumulated_estimated_minutes,
         COALESCE(m.delivered_at, m.updated_at, m.created_at) AS sort_date,
         -- Pre-computed search text (includes body, recipients, attachments, labels for single-index search)
         CONCAT_WS(' ', m.subject, m.preview, m.body_plain_text, twp.name, from_contact.name, from_contact.email, conv.subject, cca.comments_text,
@@ -196,6 +201,8 @@ SELECT * FROM (
         NULL::JSONB AS recipients, NULL::JSONB AS attachments, 0 AS attachment_count, NULL::TEXT AS conversation_comments_text,
         'craftdocs://open?blockId=' || cd.id AS craft_url, NULL::TEXT AS teamwork_url, NULL::TEXT AS missive_url,
         NULL::TEXT AS storage_path, NULL::TEXT AS thumbnail_path,
+        NULL::TEXT AS file_extension,
+        NULL::INTEGER AS accumulated_estimated_minutes,
         COALESCE(cd.craft_last_modified_at, cd.db_updated_at, cd.db_created_at) AS sort_date,
         -- Pre-computed search text (includes body for single-index search)
         CONCAT_WS(' ', cd.title, cd.folder_path, twp.name, cd.markdown_content) AS search_text,
@@ -229,6 +236,9 @@ SELECT * FROM (
         NULL::JSONB AS recipients, NULL::JSONB AS attachments, 0 AS attachment_count, NULL::TEXT AS conversation_comments_text,
         NULL::TEXT AS craft_url, NULL::TEXT AS teamwork_url, NULL::TEXT AS missive_url,
         f.storage_path, f.thumbnail_path,
+        -- File extension: part after last dot, empty if no dot
+        CASE WHEN f.filename LIKE '%.%' THEN LOWER(SUBSTRING(f.filename FROM '\.([^.]+)$')) ELSE NULL END AS file_extension,
+        NULL::INTEGER AS accumulated_estimated_minutes,
         COALESCE(f.file_modified_at, f.db_updated_at, f.db_created_at) AS sort_date,
         -- Pre-computed search text (includes body for single-index search)
         CONCAT_WS(' ', f.filename, f.folder_path, twp.name, f.file_created_by, f.extracted_text) AS search_text,

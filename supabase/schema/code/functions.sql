@@ -1445,6 +1445,8 @@ CREATE OR REPLACE FUNCTION query_unified_items(
     p_updated_at_min TIMESTAMPTZ DEFAULT NULL, p_updated_at_max TIMESTAMPTZ DEFAULT NULL,
     p_progress_min INTEGER DEFAULT NULL, p_progress_max INTEGER DEFAULT NULL,
     p_attachment_count_min INTEGER DEFAULT NULL, p_attachment_count_max INTEGER DEFAULT NULL,
+    p_file_extension_contains TEXT DEFAULT NULL,
+    p_accumulated_estimated_minutes_min INTEGER DEFAULT NULL, p_accumulated_estimated_minutes_max INTEGER DEFAULT NULL,
     p_sort_field TEXT DEFAULT 'sort_date', p_sort_order TEXT DEFAULT 'desc',
     p_limit INTEGER DEFAULT 50, p_offset INTEGER DEFAULT 0
 )
@@ -1455,7 +1457,8 @@ RETURNS TABLE(
     task_type_id UUID, task_type_name TEXT, task_type_slug TEXT, task_type_color VARCHAR(50),
     assigned_to JSONB, tags JSONB, body TEXT, preview TEXT, creator TEXT,
     conversation_subject TEXT, recipients JSONB, attachments JSONB, attachment_count INTEGER,
-    conversation_comments_text TEXT, craft_url TEXT, teamwork_url TEXT, missive_url TEXT, storage_path TEXT, thumbnail_path TEXT, sort_date TIMESTAMPTZ
+    conversation_comments_text TEXT, craft_url TEXT, teamwork_url TEXT, missive_url TEXT, storage_path TEXT, thumbnail_path TEXT,
+    file_extension TEXT, accumulated_estimated_minutes INTEGER, sort_date TIMESTAMPTZ
 )
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
 DECLARE
@@ -1469,7 +1472,7 @@ DECLARE
     v_location_ids UUID[];
 BEGIN
     -- Validate and sanitize sort parameters
-    IF p_sort_field NOT IN ('name', 'status', 'project', 'customer', 'due_date', 'created_at', 'updated_at', 'priority', 'sort_date', 'progress', 'attachment_count', 'cost_group_code', 'creator', 'location', 'location_path', 'cost_group', 'tasklist', 'conversation_subject') THEN
+    IF p_sort_field NOT IN ('name', 'status', 'project', 'customer', 'due_date', 'created_at', 'updated_at', 'priority', 'sort_date', 'progress', 'attachment_count', 'cost_group_code', 'creator', 'location', 'location_path', 'cost_group', 'tasklist', 'conversation_subject', 'file_extension', 'accumulated_estimated_minutes') THEN
         p_sort_field := 'sort_date';
     END IF;
     IF p_sort_order NOT IN ('asc', 'desc') THEN p_sort_order := 'desc'; END IF;
@@ -1583,6 +1586,15 @@ BEGIN
     IF p_attachment_count_max IS NOT NULL THEN
         v_where := array_append(v_where, format('ui.attachment_count <= %s', p_attachment_count_max));
     END IF;
+    IF p_file_extension_contains IS NOT NULL AND p_file_extension_contains != '' THEN
+        v_where := array_append(v_where, format('ui.file_extension ILIKE %L', '%' || p_file_extension_contains || '%'));
+    END IF;
+    IF p_accumulated_estimated_minutes_min IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.accumulated_estimated_minutes >= %s', p_accumulated_estimated_minutes_min));
+    END IF;
+    IF p_accumulated_estimated_minutes_max IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.accumulated_estimated_minutes <= %s', p_accumulated_estimated_minutes_max));
+    END IF;
     
     -- Build ORDER BY expressions (for inner skinny query and outer full query)
     -- Always add id as secondary sort for deterministic ordering when primary sort values are equal
@@ -1612,9 +1624,10 @@ BEGIN
         full_ui.location, full_ui.location_path, full_ui.cost_group, full_ui.cost_group_code,
         full_ui.due_date, full_ui.created_at, full_ui.updated_at, full_ui.priority, full_ui.progress, full_ui.tasklist,
         full_ui.task_type_id, full_ui.task_type_name, full_ui.task_type_slug, full_ui.task_type_color,
-        full_ui.assigned_to, full_ui.tags, LEFT(full_ui.body, 200) AS body, full_ui.preview, full_ui.creator,
+        full_ui.assigned_to, full_ui.tags, LEFT(full_ui.body, 800) AS body, full_ui.preview, full_ui.creator,
         full_ui.conversation_subject, full_ui.recipients, full_ui.attachments, full_ui.attachment_count,
-        full_ui.conversation_comments_text, full_ui.craft_url, full_ui.teamwork_url, full_ui.missive_url, full_ui.storage_path, full_ui.thumbnail_path, full_ui.sort_date
+        full_ui.conversation_comments_text, full_ui.craft_url, full_ui.teamwork_url, full_ui.missive_url, full_ui.storage_path, full_ui.thumbnail_path,
+        full_ui.file_extension, full_ui.accumulated_estimated_minutes, full_ui.sort_date
     FROM skinny_ids s
     JOIN mv_unified_items full_ui ON s.id = full_ui.id AND s.type = full_ui.type
     ORDER BY ' || v_order_expr_outer;
@@ -1639,7 +1652,9 @@ CREATE OR REPLACE FUNCTION count_unified_items(
     p_created_at_min TIMESTAMPTZ DEFAULT NULL, p_created_at_max TIMESTAMPTZ DEFAULT NULL,
     p_updated_at_min TIMESTAMPTZ DEFAULT NULL, p_updated_at_max TIMESTAMPTZ DEFAULT NULL,
     p_progress_min INTEGER DEFAULT NULL, p_progress_max INTEGER DEFAULT NULL,
-    p_attachment_count_min INTEGER DEFAULT NULL, p_attachment_count_max INTEGER DEFAULT NULL
+    p_attachment_count_min INTEGER DEFAULT NULL, p_attachment_count_max INTEGER DEFAULT NULL,
+    p_file_extension_contains TEXT DEFAULT NULL,
+    p_accumulated_estimated_minutes_min INTEGER DEFAULT NULL, p_accumulated_estimated_minutes_max INTEGER DEFAULT NULL
 )
 RETURNS INTEGER
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
@@ -1761,6 +1776,15 @@ BEGIN
     END IF;
     IF p_attachment_count_max IS NOT NULL THEN
         v_where := array_append(v_where, format('ui.attachment_count <= %s', p_attachment_count_max));
+    END IF;
+    IF p_file_extension_contains IS NOT NULL AND p_file_extension_contains != '' THEN
+        v_where := array_append(v_where, format('ui.file_extension ILIKE %L', '%' || p_file_extension_contains || '%'));
+    END IF;
+    IF p_accumulated_estimated_minutes_min IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.accumulated_estimated_minutes >= %s', p_accumulated_estimated_minutes_min));
+    END IF;
+    IF p_accumulated_estimated_minutes_max IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.accumulated_estimated_minutes <= %s', p_accumulated_estimated_minutes_max));
     END IF;
     
     -- Build WHERE clause
