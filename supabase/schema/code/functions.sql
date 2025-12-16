@@ -1447,6 +1447,7 @@ CREATE OR REPLACE FUNCTION query_unified_items(
     p_attachment_count_min INTEGER DEFAULT NULL, p_attachment_count_max INTEGER DEFAULT NULL,
     p_file_extension_contains TEXT DEFAULT NULL,
     p_accumulated_estimated_minutes_min INTEGER DEFAULT NULL, p_accumulated_estimated_minutes_max INTEGER DEFAULT NULL,
+    p_hide_completed_tasks BOOLEAN DEFAULT NULL,
     p_sort_field TEXT DEFAULT 'sort_date', p_sort_order TEXT DEFAULT 'desc',
     p_limit INTEGER DEFAULT 50, p_offset INTEGER DEFAULT 0
 )
@@ -1544,6 +1545,9 @@ BEGIN
     END IF;
     IF p_status_not_in IS NOT NULL THEN
         v_where := array_append(v_where, format('(ui.status IS NULL OR NOT (ui.status = ANY(%L::TEXT[])))', p_status_not_in));
+    END IF;
+    IF p_hide_completed_tasks = TRUE THEN
+        v_where := array_append(v_where, '(ui.type != ''task'' OR ui.status != ''completed'')');
     END IF;
     IF p_priority_in IS NOT NULL THEN
         v_where := array_append(v_where, format('ui.priority = ANY(%L::TEXT[])', p_priority_in));
@@ -1654,7 +1658,8 @@ CREATE OR REPLACE FUNCTION count_unified_items(
     p_progress_min INTEGER DEFAULT NULL, p_progress_max INTEGER DEFAULT NULL,
     p_attachment_count_min INTEGER DEFAULT NULL, p_attachment_count_max INTEGER DEFAULT NULL,
     p_file_extension_contains TEXT DEFAULT NULL,
-    p_accumulated_estimated_minutes_min INTEGER DEFAULT NULL, p_accumulated_estimated_minutes_max INTEGER DEFAULT NULL
+    p_accumulated_estimated_minutes_min INTEGER DEFAULT NULL, p_accumulated_estimated_minutes_max INTEGER DEFAULT NULL,
+    p_hide_completed_tasks BOOLEAN DEFAULT NULL
 )
 RETURNS INTEGER
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
@@ -1735,6 +1740,9 @@ BEGIN
     END IF;
     IF p_status_not_in IS NOT NULL THEN
         v_where := array_append(v_where, format('(ui.status IS NULL OR NOT (ui.status = ANY(%L::TEXT[])))', p_status_not_in));
+    END IF;
+    IF p_hide_completed_tasks = TRUE THEN
+        v_where := array_append(v_where, '(ui.type != ''task'' OR ui.status != ''completed'')');
     END IF;
     IF p_priority_in IS NOT NULL THEN
         v_where := array_append(v_where, format('ui.priority = ANY(%L::TEXT[])', p_priority_in));
