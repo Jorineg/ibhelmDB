@@ -152,7 +152,8 @@ CREATE TABLE files (
     deleted_at TIMESTAMPTZ,
     last_seen_at TIMESTAMPTZ DEFAULT NOW(),
     db_created_at TIMESTAMP DEFAULT NOW(),
-    db_updated_at TIMESTAMP DEFAULT NOW()
+    db_updated_at TIMESTAMP DEFAULT NOW(),
+    CONSTRAINT unique_file_path UNIQUE (folder_path, filename)
 );
 
 -- =====================================
