@@ -1,8 +1,12 @@
--- =====================================
--- CAS ARCHITECTURE MIGRATION SCRIPT
--- =====================================
-
 BEGIN;
+
+-- 0. Drop blocking dependencies IMMEDIATELY to avoid deadlocks
+-- These will be recreated by the normal schema apply script
+DROP MATERIALIZED VIEW IF EXISTS mv_unified_items CASCADE;
+DROP VIEW IF EXISTS file_details CASCADE;
+DROP TRIGGER IF EXISTS extract_file_metadata_on_update ON files CASCADE;
+DROP TRIGGER IF EXISTS extract_file_metadata_on_insert ON files CASCADE;
+DROP TRIGGER IF EXISTS extract_file_metadata_on_delete ON files CASCADE;
 
 -- 1. Create temporary tables/columns if needed
 -- (Assuming the schema files are already updated, we might need to manually apply them or use this script to bridge the gap)
@@ -69,12 +73,6 @@ SET project_id = (
     ORDER BY assigned_at ASC 
     LIMIT 1
 );
-
--- 0. Drop blocking dependencies (will be recreated by normal schema apply)
-DROP MATERIALIZED VIEW IF EXISTS mv_unified_items CASCADE;
-DROP VIEW IF EXISTS file_details CASCADE;
-DROP TRIGGER IF EXISTS extract_file_metadata_on_update ON files;
-DROP TRIGGER IF EXISTS extract_file_metadata_on_insert ON files;
 
 -- 6. Cleanup redundant columns from files
 ALTER TABLE files DROP COLUMN IF EXISTS storage_path CASCADE;
