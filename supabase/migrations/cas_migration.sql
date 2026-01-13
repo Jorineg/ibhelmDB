@@ -61,9 +61,17 @@ BEGIN
     END IF;
 END $$;
 
--- 4. Populate full_path from old folder_path/filename
 UPDATE files 
 SET full_path = REPLACE(COALESCE(folder_path || '/', '') || filename, '//', '/');
+
+-- 4b. Deduplicate files (keep most recently updated)
+DELETE FROM files f1
+USING files f2
+WHERE f1.full_path = f2.full_path
+  AND (
+    f1.db_updated_at < f2.db_updated_at 
+    OR (f1.db_updated_at = f2.db_updated_at AND f1.id < f2.id)
+  );
 
 -- 5. Migrate project_id from project_files junction table
 -- We pick the first linked project (since we are simplifying to 1:1)
