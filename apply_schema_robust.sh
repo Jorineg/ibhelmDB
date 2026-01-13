@@ -63,13 +63,17 @@ else
 
     # Generate Diff
     echo -e "  Generating diff..."
-    atlas schema diff \
+    if ! atlas schema diff \
         --from "$DATABASE_URL" \
         --to "file://supabase/schema/tables" \
         --dev-url "$ATLAS_DEV_URL" \
         --schema public --schema teamwork --schema missive --schema teamworkmissiveconnector \
         --format '{{ sql . "  " }}' \
-        > "$MIGRATION_FILE" 2>&1 || true
+        > "$MIGRATION_FILE" 2>/tmp/atlas_error.log; then
+        echo -e "${RED}  ❌ Atlas failed to generate diff:${NC}"
+        cat /tmp/atlas_error.log
+        exit 1
+    fi
 
     # --- THE FIX: Filter out drops of manual indexes ---
     # We look for lines starting with DROP INDEX ... and containing specific keywords

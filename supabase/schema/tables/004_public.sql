@@ -334,7 +334,6 @@ CREATE INDEX idx_file_contents_last_status_change ON file_contents(last_status_c
 CREATE INDEX idx_project_conversations_m_conversation_id ON project_conversations(m_conversation_id);
 CREATE INDEX idx_project_conversations_tw_project_id ON project_conversations(tw_project_id);
 CREATE INDEX idx_project_conversations_source ON project_conversations(source);
-CREATE INDEX idx_project_conversations_source ON project_conversations(source);
 CREATE INDEX idx_project_craft_documents_craft_document_id ON project_craft_documents(craft_document_id);
 CREATE INDEX idx_project_craft_documents_tw_project_id ON project_craft_documents(tw_project_id);
 CREATE INDEX idx_object_locations_location_id ON object_locations(location_id);
@@ -348,7 +347,6 @@ CREATE INDEX idx_object_cost_groups_m_conversation_id ON object_cost_groups(m_co
 CREATE INDEX idx_object_cost_groups_file_id ON object_cost_groups(file_id);
 CREATE INDEX idx_object_cost_groups_source ON object_cost_groups(source);
 CREATE INDEX idx_iip_unified_person_id ON item_involved_persons(unified_person_id);
-CREATE INDEX idx_iip_item ON item_involved_persons(item_id, item_type);
 CREATE INDEX idx_iip_item ON item_involved_persons(item_id, item_type);
 CREATE INDEX idx_eaf_status ON email_attachment_files(status) WHERE status IN ('pending', 'downloading');
 CREATE INDEX idx_eaf_message_id ON email_attachment_files(missive_message_id);
