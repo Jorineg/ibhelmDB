@@ -2380,6 +2380,35 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- Processing queue for ThumbnailTextExtractor (atomic claim with FOR UPDATE SKIP LOCKED)
+CREATE OR REPLACE FUNCTION claim_pending_file_content(p_limit INTEGER DEFAULT 5)
+RETURNS TABLE (content_hash VARCHAR, storage_path TEXT, size_bytes BIGINT, try_count INTEGER, full_path TEXT) AS $$
+BEGIN
+    RETURN QUERY
+    WITH locked_batch AS (
+        SELECT fc.content_hash, fc.storage_path, fc.size_bytes, fc.try_count
+        FROM file_contents fc
+        WHERE fc.s3_status = 'uploaded'
+          AND fc.processing_status = 'pending'
+        ORDER BY fc.db_created_at ASC
+        LIMIT p_limit
+        FOR UPDATE SKIP LOCKED
+    ),
+    updated AS (
+        UPDATE file_contents fc
+        SET processing_status = 'indexing',
+            last_status_change = NOW(),
+            db_updated_at = NOW()
+        FROM locked_batch lb
+        WHERE fc.content_hash = lb.content_hash
+        RETURNING fc.content_hash, fc.storage_path, fc.size_bytes, fc.try_count
+    )
+    SELECT u.content_hash, u.storage_path, u.size_bytes, u.try_count,
+           (SELECT f.full_path FROM files f WHERE f.content_hash = u.content_hash LIMIT 1)
+    FROM updated u;
+END;
+$$ LANGUAGE plpgsql;
+
 -- Trigger for auto-extraction on file insert/update
 CREATE OR REPLACE FUNCTION trigger_extract_file_metadata()
 RETURNS TRIGGER SECURITY DEFINER SET search_path = public, teamwork, missive AS $$
