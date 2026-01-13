@@ -2228,10 +2228,10 @@ $$ LANGUAGE plpgsql;
 
 -- Link file to project if full_path contains project name
 CREATE OR REPLACE FUNCTION link_file_to_project(p_file_id UUID)
-RETURNS UUID SECURITY DEFINER SET search_path = public, teamwork, missive AS $$
+RETURNS INTEGER SECURITY DEFINER SET search_path = public, teamwork, missive AS $$
 DECLARE
     v_full_path TEXT;
-    v_project_id UUID;
+    v_project_id INTEGER;
 BEGIN
     SELECT full_path INTO v_full_path FROM files WHERE id = p_file_id;
     IF NOT FOUND OR v_full_path IS NULL THEN RETURN NULL; END IF;

@@ -151,7 +151,7 @@ CREATE TABLE files (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     full_path TEXT UNIQUE NOT NULL, -- Full path including filename
     content_hash TEXT NOT NULL REFERENCES file_contents(content_hash),
-    project_id UUID REFERENCES teamwork.projects(id) ON DELETE SET NULL,
+    project_id INTEGER REFERENCES teamwork.projects(id) ON DELETE SET NULL,
     document_type_id INTEGER REFERENCES document_types(id) ON DELETE SET NULL,
     source_missive_attachment_id UUID REFERENCES missive.attachments(id) ON DELETE SET NULL,
     file_created_at TIMESTAMP WITH TIME ZONE,

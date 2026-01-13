@@ -51,7 +51,7 @@ BEGIN
         ALTER TABLE files ADD COLUMN full_path TEXT;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='files' AND column_name='project_id') THEN
-        ALTER TABLE files ADD COLUMN project_id UUID REFERENCES teamwork.projects(id);
+        ALTER TABLE files ADD COLUMN project_id INTEGER REFERENCES teamwork.projects(id);
     END IF;
 END $$;
 
