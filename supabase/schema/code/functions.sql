@@ -2166,7 +2166,7 @@ BEGIN
     RETURN QUERY 
     SELECT 
         COUNT(*) FILTER (WHERE processing_status = 'pending' AND s3_status = 'uploaded'),
-        COUNT(*) FILTER (WHERE processing_status = 'processing'),
+        COUNT(*) FILTER (WHERE processing_status = 'indexing'),
         COUNT(*) FILTER (WHERE processing_status = 'done'),
         COUNT(*) FILTER (WHERE processing_status = 'error'),
         MAX(last_status_change) FILTER (WHERE processing_status = 'done')
