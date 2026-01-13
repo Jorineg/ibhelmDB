@@ -306,7 +306,7 @@ SELECT
     pe.nas_folder_path, pe.internal_notes,
     dl.name AS default_location_name, dl.search_text AS default_location_path,
     dcg.name AS default_cost_group_name, dcg.code::TEXT AS default_cost_group_code,
-    (SELECT COUNT(*) FROM project_files pf WHERE pf.tw_project_id = twp.id) AS file_count,
+    (SELECT COUNT(*) FROM files f WHERE f.project_id = twp.id AND f.deleted_at IS NULL) AS file_count,
     (SELECT COUNT(*) FROM project_contractors pc WHERE pc.tw_project_id = twp.id) AS contractor_count,
     (SELECT COUNT(*) FROM project_conversations pcon WHERE pcon.tw_project_id = twp.id) AS conversation_count,
     (SELECT COUNT(*) FROM teamwork.tasks t WHERE t.project_id = twp.id AND t.deleted_at IS NULL) AS task_count,

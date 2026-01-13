@@ -182,7 +182,7 @@ Table cost_groups {
   Note: "CHECK (code >= 100 AND code <= 999)"
 }
 
-// --- 6. FILES & CONTENT ---
+// --- 6. FILES & CONTENT (CAS Architecture) ---
 
 Table craft_documents {
   id text [pk]
@@ -211,22 +211,32 @@ Table document_types {
   db_created_at timestamp [default: `now()`]
 }
 
+Table file_contents {
+  content_hash text [pk, note: "SHA256 hash - Content-Addressable Storage key"]
+  size_bytes bigint [not null]
+  mime_type text
+  storage_path text [unique, note: "Format: files/{hash}"]
+  extracted_text text [note: "OCR/PDF text extraction result"]
+  thumbnail_path text [note: "Path in thumbnails bucket"]
+  thumbnail_generated_at timestamptz
+  s3_status varchar(20) [default: 'pending', note: "'pending', 'uploading', 'uploaded', 'error'"]
+  processing_status varchar(20) [default: 'pending', note: "'pending', 'processing', 'done', 'error'"]
+  try_count integer [default: 0]
+  last_status_change timestamptz [default: `now()`]
+  db_created_at timestamp [default: `now()`]
+  db_updated_at timestamp [default: `now()`]
+  
+  Note: "Content-Addressable Storage: stores unique file content, thumbnails, OCR results"
+}
+
 Table files {
   id uuid [pk, default: `gen_random_uuid()`]
   
-  storage_path text [unique, not null, note: "UUID-based path in Supabase Storage (e.g. a1b2c3d4.pdf)"]
+  full_path text [unique, not null, note: "Full filesystem path including filename"]
+  content_hash text [not null, ref: > file_contents.content_hash, note: "Links to CAS content"]
   
-  filename text [not null, note: "Original filename"]
-  folder_path text [note: "Original folder path"]
-  content_hash varchar(64) [not null, note: "SHA256 for change detection"]
-  
-  extracted_text text [note: "Für PDF-Volltextsuche"]
-  
-  thumbnail_path text [note: "Pfad zum Thumbnail in Storage"]
-  thumbnail_generated_at timestamp [note: "NULL = noch nicht generiert"]
-  
+  project_id integer [ref: > tw_projects.id, note: "Auto-linked via path matching"]
   document_type_id integer [ref: > document_types.id]
-  
   source_missive_attachment_id uuid [ref: - m_attachments.id]
   
   file_created_at timestamptz
@@ -235,7 +245,6 @@ Table files {
   filesystem_inode bigint
   filesystem_access_rights jsonb
   filesystem_attributes jsonb
-
   auto_extracted_metadata jsonb [note: "Information extracted from filename and path"]
   
   deleted_at timestamptz [note: "Soft delete timestamp. Set when file no longer exists on filesystem."]
@@ -243,6 +252,8 @@ Table files {
 
   db_created_at timestamp [default: `now()`]
   db_updated_at timestamp [default: `now()`]
+  
+  Note: "File references: Maps physical paths to content hashes and projects"
 }
 
 // --- 7. THE GLUE (Verbindungstabellen) ---
@@ -264,18 +275,7 @@ Table project_conversations {
 }
 
 
-Table project_files {
-  file_id uuid [ref: > files.id]
-  tw_project_id integer [ref: > tw_projects.id]
-  
-  assigned_at timestamp [default: `now()`]
-  
-  indexes {
-    (tw_project_id, file_id) [pk]
-  }
-  
-  Note: "n:m - Eine Datei kann in mehreren Projekten liegen"
-}
+// Note: project_files table removed in CAS migration - files now link directly via files.project_id
 
 Table project_craft_documents {
   craft_document_id text [ref: > craft_documents.id]
@@ -362,18 +362,8 @@ Table mv_refresh_status {
   refresh_interval_minutes integer [default: 5]
 }
 
-Table thumbnail_processing_queue {
-  id serial [pk]
-  file_id uuid [not null, ref: > files.id, unique]
-  status varchar(20) [default: 'pending']
-  attempts integer [default: 0]
-  last_error text
-  created_at timestamptz [default: `now()`]
-  updated_at timestamptz [default: `now()`]
-  processed_at timestamptz
-  
-  Note: "Queue for thumbnail generation and text extraction processing"
-}
+// Note: thumbnail_processing_queue table removed in CAS migration
+// Processing queue now managed via file_contents.processing_status
 
 Table email_attachment_files {
   missive_attachment_id uuid [pk]

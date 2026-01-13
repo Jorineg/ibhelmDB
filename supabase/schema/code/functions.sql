@@ -2149,46 +2149,28 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- =====================================
--- 16. THUMBNAIL PROCESSING QUEUE
+-- 16. PROCESSING QUEUE STATUS (CAS)
 -- =====================================
+-- Processing queue is now managed via file_contents.processing_status
+-- No separate thumbnail_processing_queue table needed
 
-CREATE OR REPLACE FUNCTION queue_file_for_processing()
-RETURNS TRIGGER AS $$
-BEGIN
-    INSERT INTO thumbnail_processing_queue (file_id)
-    VALUES (NEW.id)
-    ON CONFLICT (file_id) DO UPDATE SET 
-        status = 'pending', 
-        attempts = 0,
-        last_error = NULL,
-        updated_at = NOW();
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS trigger_queue_file_processing ON files;
-CREATE TRIGGER trigger_queue_file_processing
-    AFTER INSERT OR UPDATE OF content_hash ON files
-    FOR EACH ROW
-    EXECUTE FUNCTION queue_file_for_processing();
-
-CREATE OR REPLACE FUNCTION get_thumbnail_queue_status()
+CREATE OR REPLACE FUNCTION get_processing_queue_status()
 RETURNS TABLE (
     pending_count BIGINT,
     processing_count BIGINT,
-    completed_count BIGINT,
-    failed_count BIGINT,
+    done_count BIGINT,
+    error_count BIGINT,
     last_processed_at TIMESTAMPTZ
 ) AS $$
 BEGIN
     RETURN QUERY 
     SELECT 
-        COUNT(*) FILTER (WHERE status = 'pending'),
-        COUNT(*) FILTER (WHERE status = 'processing'),
-        COUNT(*) FILTER (WHERE status = 'completed'),
-        COUNT(*) FILTER (WHERE status = 'failed'),
-        MAX(processed_at) FILTER (WHERE status = 'completed')
-    FROM thumbnail_processing_queue;
+        COUNT(*) FILTER (WHERE processing_status = 'pending' AND s3_status = 'uploaded'),
+        COUNT(*) FILTER (WHERE processing_status = 'processing'),
+        COUNT(*) FILTER (WHERE processing_status = 'done'),
+        COUNT(*) FILTER (WHERE processing_status = 'error'),
+        MAX(last_status_change) FILTER (WHERE processing_status = 'done')
+    FROM file_contents;
 END;
 $$ LANGUAGE plpgsql STABLE;
 
@@ -2202,15 +2184,20 @@ $$ LANGUAGE plpgsql STABLE;
 -- 18. FILE METADATA EXTRACTION
 -- =====================================
 
--- Link file to email attachment by matching local_filename
+-- Link file to email attachment by matching local_filename against full_path's filename part
 CREATE OR REPLACE FUNCTION link_file_to_email_attachment(p_file_id UUID)
 RETURNS TEXT AS $$
 DECLARE
+    v_full_path TEXT;
     v_filename TEXT;
     v_attachment_id UUID;
 BEGIN
-    SELECT filename INTO v_filename FROM files WHERE id = p_file_id;
-    IF NOT FOUND OR v_filename IS NULL THEN RETURN 'skipped'; END IF;
+    SELECT full_path INTO v_full_path FROM files WHERE id = p_file_id;
+    IF NOT FOUND OR v_full_path IS NULL THEN RETURN 'skipped'; END IF;
+    
+    -- Extract filename from full_path (part after last /)
+    v_filename := SUBSTRING(v_full_path FROM '[^/]+$');
+    IF v_filename IS NULL OR v_filename = '' THEN RETURN 'skipped'; END IF;
     
     -- Look up by local_filename in email_attachment_files
     SELECT missive_attachment_id INTO v_attachment_id
@@ -2252,7 +2239,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Extract cost groups from file path (searches anywhere in filename/folder)
+-- Extract cost groups from file path (searches anywhere in full_path)
 CREATE OR REPLACE FUNCTION extract_cost_groups_for_file(p_file_id UUID)
 RETURNS void SECURITY DEFINER SET search_path = public AS $$
 DECLARE
@@ -2269,9 +2256,8 @@ BEGIN
         ARRAY['KGR']
     ) INTO v_prefixes;
     
-    SELECT COALESCE(folder_path || '/', '') || COALESCE(filename, '')
-    INTO v_full_path FROM files WHERE id = p_file_id;
-    IF NOT FOUND OR v_full_path = '' THEN RETURN; END IF;
+    SELECT full_path INTO v_full_path FROM files WHERE id = p_file_id;
+    IF NOT FOUND OR v_full_path IS NULL OR v_full_path = '' THEN RETURN; END IF;
     
     DELETE FROM object_cost_groups WHERE file_id = p_file_id AND source = 'auto_path';
     
@@ -2288,16 +2274,15 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Link file to document type if filename/folder contains document type name
+-- Link file to document type if full_path contains document type name
 CREATE OR REPLACE FUNCTION link_file_to_document_type(p_file_id UUID)
 RETURNS TEXT AS $$
 DECLARE
     v_full_path TEXT;
     v_matched_type_id INTEGER;
 BEGIN
-    SELECT COALESCE(folder_path || '/', '') || COALESCE(filename, '')
-    INTO v_full_path FROM files WHERE id = p_file_id;
-    IF NOT FOUND OR v_full_path = '' THEN RETURN 'skipped'; END IF;
+    SELECT full_path INTO v_full_path FROM files WHERE id = p_file_id;
+    IF NOT FOUND OR v_full_path IS NULL OR v_full_path = '' THEN RETURN 'skipped'; END IF;
     
     -- Find document type by name match in path (case-insensitive)
     -- Prefer longer matches (more specific document types)
@@ -2332,31 +2317,43 @@ CREATE OR REPLACE FUNCTION dequeue_upload_batch(p_batch_size INTEGER DEFAULT 10,
 RETURNS TABLE (content_hash TEXT, size_bytes BIGINT, full_path TEXT) AS $$
 BEGIN
     RETURN QUERY 
-    WITH locked_batch AS (
-        -- Join with files to ensure the requesting worker has local access to at least one instance of this content
-        SELECT DISTINCT ON (fc.content_hash) 
-            fc.content_hash,
-            f.full_path
+    WITH candidate_hashes AS (
+        -- First get distinct content_hashes that have matching files (no FOR UPDATE here)
+        SELECT DISTINCT fc.content_hash AS hash
         FROM file_contents fc
-        JOIN files f ON fc.content_hash = f.content_hash
         WHERE fc.s3_status = 'pending'
           AND (fc.try_count < 3 OR (NOW() - fc.last_status_change) > INTERVAL '2 hours')
-          -- Filter for files that start with any of the requested prefixes
           AND (
             p_path_prefixes = '{}' OR 
-            EXISTS (SELECT 1 FROM unnest(p_path_prefixes) p WHERE f.full_path LIKE p || '%')
+            EXISTS (
+                SELECT 1 FROM files f 
+                WHERE f.content_hash = fc.content_hash 
+                AND EXISTS (SELECT 1 FROM unnest(p_path_prefixes) p WHERE f.full_path LIKE p || '%')
+            )
           )
-        ORDER BY fc.content_hash, fc.db_created_at ASC
         LIMIT p_batch_size
-        FOR UPDATE OF fc SKIP LOCKED
+    ),
+    locked_batch AS (
+        -- Now lock the actual file_contents rows
+        SELECT fc.content_hash, fc.size_bytes
+        FROM file_contents fc
+        WHERE fc.content_hash IN (SELECT hash FROM candidate_hashes)
+          AND fc.s3_status = 'pending'
+        FOR UPDATE SKIP LOCKED
+    ),
+    updated AS (
+        UPDATE file_contents
+        SET s3_status = 'uploading',
+            last_status_change = NOW(),
+            try_count = try_count + 1
+        FROM locked_batch lb
+        WHERE file_contents.content_hash = lb.content_hash
+        RETURNING file_contents.content_hash, file_contents.size_bytes
     )
-    UPDATE file_contents
-    SET s3_status = 'uploading',
-        last_status_change = NOW(),
-        try_count = try_count + 1
-    FROM locked_batch
-    WHERE file_contents.content_hash = locked_batch.content_hash
-    RETURNING file_contents.content_hash, file_contents.size_bytes, locked_batch.full_path;
+    -- Join back to get a representative full_path for each content
+    SELECT u.content_hash, u.size_bytes, 
+           (SELECT f.full_path FROM files f WHERE f.content_hash = u.content_hash LIMIT 1)
+    FROM updated u;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -2405,9 +2402,9 @@ DECLARE
     v_result TEXT;
     v_project_links INTEGER;
     v_initial_cg_count INTEGER;
-    v_initial_pf_count INTEGER;
+    v_initial_project_count INTEGER;
     v_final_cg_count INTEGER;
-    v_final_pf_count INTEGER;
+    v_final_project_count INTEGER;
 BEGIN
     INSERT INTO operation_runs (run_type, status, started_at)
     VALUES ('file_linking', 'running', NOW())
@@ -2417,7 +2414,7 @@ BEGIN
     UPDATE operation_runs SET total_count = v_total_count WHERE id = v_run_id;
     
     SELECT COUNT(*) INTO v_initial_cg_count FROM object_cost_groups WHERE file_id IS NOT NULL;
-    SELECT COUNT(*) INTO v_initial_pf_count FROM project_files;
+    SELECT COUNT(*) INTO v_initial_project_count FROM files WHERE project_id IS NOT NULL;
 
     FOR v_record IN SELECT id FROM files ORDER BY db_created_at LOOP
         BEGIN
@@ -2444,8 +2441,8 @@ BEGIN
     END LOOP;
 
     SELECT COUNT(*) INTO v_final_cg_count FROM object_cost_groups WHERE file_id IS NOT NULL;
-    SELECT COUNT(*) INTO v_final_pf_count FROM project_files;
-    v_created := (v_final_cg_count - v_initial_cg_count) + (v_final_pf_count - v_initial_pf_count);
+    SELECT COUNT(*) INTO v_final_project_count FROM files WHERE project_id IS NOT NULL;
+    v_created := (v_final_cg_count - v_initial_cg_count) + (v_final_project_count - v_initial_project_count);
 
     UPDATE operation_runs SET status = 'completed', processed_count = v_processed,
         linked_count = v_linked, created_count = v_created, completed_at = NOW()
