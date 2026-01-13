@@ -70,13 +70,19 @@ SET project_id = (
     LIMIT 1
 );
 
+-- 0. Drop blocking dependencies (will be recreated by normal schema apply)
+DROP MATERIALIZED VIEW IF EXISTS mv_unified_items CASCADE;
+DROP VIEW IF EXISTS file_details CASCADE;
+DROP TRIGGER IF EXISTS extract_file_metadata_on_update ON files;
+DROP TRIGGER IF EXISTS extract_file_metadata_on_insert ON files;
+
 -- 6. Cleanup redundant columns from files
-ALTER TABLE files DROP COLUMN IF EXISTS storage_path;
-ALTER TABLE files DROP COLUMN IF EXISTS filename;
-ALTER TABLE files DROP COLUMN IF EXISTS folder_path;
-ALTER TABLE files DROP COLUMN IF EXISTS extracted_text;
-ALTER TABLE files DROP COLUMN IF EXISTS thumbnail_path;
-ALTER TABLE files DROP COLUMN IF EXISTS thumbnail_generated_at;
+ALTER TABLE files DROP COLUMN IF EXISTS storage_path CASCADE;
+ALTER TABLE files DROP COLUMN IF EXISTS filename CASCADE;
+ALTER TABLE files DROP COLUMN IF EXISTS folder_path CASCADE;
+ALTER TABLE files DROP COLUMN IF EXISTS extracted_text CASCADE;
+ALTER TABLE files DROP COLUMN IF EXISTS thumbnail_path CASCADE;
+ALTER TABLE files DROP COLUMN IF EXISTS thumbnail_generated_at CASCADE;
 
 -- 7. Drop redundant tables
 DROP TABLE IF EXISTS project_files CASCADE;
