@@ -386,3 +386,13 @@ COMMENT ON TABLE item_involved_persons IS 'Junction table for filtering items by
 COMMENT ON TABLE email_attachment_files IS 'Download tracking for Missive email attachments. Filename format: {name}_{attachment_id}.{ext}';
 COMMENT ON COLUMN email_attachment_files.local_filename IS 'Unique filename used for FileMetadataSync matching. Format: OriginalName_UUID.ext';
 
+-- =====================================
+-- MCP READONLY GRANTS
+-- =====================================
+GRANT USAGE ON SCHEMA public TO mcp_readonly;
+GRANT USAGE ON SCHEMA teamwork TO mcp_readonly;
+GRANT USAGE ON SCHEMA missive TO mcp_readonly;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO mcp_readonly;
+GRANT SELECT ON ALL TABLES IN SCHEMA teamwork TO mcp_readonly;
+GRANT SELECT ON ALL TABLES IN SCHEMA missive TO mcp_readonly;
+

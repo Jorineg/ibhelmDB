@@ -71,6 +71,15 @@ JOIN missive.users u ON ca.user_id = u.id
 GROUP BY ca.conversation_id;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_conversation_assignees_conv_id ON mv_conversation_assignees_agg(conversation_id);
 
+DROP MATERIALIZED VIEW IF EXISTS mv_task_timelogs_agg CASCADE;
+CREATE MATERIALIZED VIEW mv_task_timelogs_agg AS
+SELECT tl.task_id,
+    SUM(tl.minutes)::INTEGER AS logged_minutes
+FROM teamwork.timelogs tl
+WHERE tl.deleted = FALSE AND tl.task_id IS NOT NULL
+GROUP BY tl.task_id;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_task_timelogs_task_id ON mv_task_timelogs_agg(task_id);
+
 -- =====================================
 -- 2. UNIFIED ITEMS MATERIALIZED VIEW
 -- =====================================
@@ -98,6 +107,7 @@ SELECT * FROM (
         NULL::TEXT AS storage_path, NULL::TEXT AS thumbnail_path,
         NULL::TEXT AS file_extension,
         t.accumulated_estimated_minutes,
+        ttla.logged_minutes,
         COALESCE(t.updated_at, t.created_at) AS sort_date,
         -- Pre-computed search text (includes tags + assignees for single-index search)
         CONCAT_WS(' ', t.name, t.description, p.name, c.name, tl.name, 
@@ -125,6 +135,7 @@ SELECT * FROM (
     LEFT JOIN task_types tt ON te.task_type_id = tt.id
     LEFT JOIN mv_task_assignees_agg taa ON t.id = taa.task_id
     LEFT JOIN mv_task_tags_agg tta ON t.id = tta.task_id
+    LEFT JOIN mv_task_timelogs_agg ttla ON t.id = ttla.task_id
     WHERE t.deleted_at IS NULL
     ORDER BY t.id
 ) tasks
@@ -153,6 +164,7 @@ SELECT * FROM (
         -- File extensions from all attachments (comma-separated, deduplicated)
         (SELECT string_agg(DISTINCT LOWER(elem->>'extension'), ', ') FROM jsonb_array_elements(maa.attachments) elem WHERE elem->>'extension' IS NOT NULL) AS file_extension,
         NULL::INTEGER AS accumulated_estimated_minutes,
+        NULL::INTEGER AS logged_minutes,
         COALESCE(m.delivered_at, m.updated_at, m.created_at) AS sort_date,
         -- Pre-computed search text (includes body, recipients, attachments, labels for single-index search)
         CONCAT_WS(' ', m.subject, m.preview, m.body_plain_text, twp.name, from_contact.name, from_contact.email, conv.subject, cca.comments_text,
@@ -203,6 +215,7 @@ SELECT * FROM (
         NULL::TEXT AS storage_path, NULL::TEXT AS thumbnail_path,
         NULL::TEXT AS file_extension,
         NULL::INTEGER AS accumulated_estimated_minutes,
+        NULL::INTEGER AS logged_minutes,
         COALESCE(cd.craft_last_modified_at, cd.db_updated_at, cd.db_created_at) AS sort_date,
         -- Pre-computed search text (includes body for single-index search)
         CONCAT_WS(' ', cd.title, cd.folder_path, twp.name, cd.markdown_content) AS search_text,
@@ -239,6 +252,7 @@ SELECT * FROM (
         -- File extension: part after last dot, empty if no dot
         CASE WHEN f.full_path LIKE '%.%' THEN LOWER(SUBSTRING(f.full_path FROM '\.([^.]+)$')) ELSE NULL END AS file_extension,
         NULL::INTEGER AS accumulated_estimated_minutes,
+        NULL::INTEGER AS logged_minutes,
         COALESCE(f.file_modified_at, f.db_updated_at, f.db_created_at) AS sort_date,
         -- Pre-computed search text (includes body for single-index search)
         CONCAT_WS(' ', f.full_path, twp.name, f.file_created_by, fc.extracted_text) AS search_text,
@@ -389,6 +403,7 @@ ORDER BY updated_at DESC LIMIT 100;
 
 GRANT SELECT ON mv_task_assignees_agg TO authenticated;
 GRANT SELECT ON mv_task_tags_agg TO authenticated;
+GRANT SELECT ON mv_task_timelogs_agg TO authenticated;
 GRANT SELECT ON mv_message_recipients_agg TO authenticated;
 GRANT SELECT ON mv_message_attachments_agg TO authenticated;
 GRANT SELECT ON mv_conversation_labels_agg TO authenticated;
@@ -414,6 +429,7 @@ COMMENT ON MATERIALIZED VIEW mv_message_attachments_agg IS 'Pre-aggregated messa
 COMMENT ON MATERIALIZED VIEW mv_conversation_labels_agg IS 'Pre-aggregated conversation labels for unified_items performance';
 COMMENT ON MATERIALIZED VIEW mv_conversation_comments_agg IS 'Pre-aggregated conversation comments for unified_items search';
 COMMENT ON MATERIALIZED VIEW mv_conversation_assignees_agg IS 'Pre-aggregated conversation assignees for unified_items performance';
+COMMENT ON MATERIALIZED VIEW mv_task_timelogs_agg IS 'Pre-aggregated task timelogs (logged minutes) for unified_items performance';
 
 -- =====================================
 -- REGISTER MVS FOR CRON REFRESH
@@ -422,6 +438,7 @@ COMMENT ON MATERIALIZED VIEW mv_conversation_assignees_agg IS 'Pre-aggregated co
 INSERT INTO mv_refresh_status (view_name, needs_refresh, refresh_interval_minutes) VALUES
     ('mv_task_assignees_agg', FALSE, 5),
     ('mv_task_tags_agg', FALSE, 5),
+    ('mv_task_timelogs_agg', FALSE, 5),
     ('mv_message_recipients_agg', FALSE, 5),
     ('mv_message_attachments_agg', FALSE, 5),
     ('mv_conversation_labels_agg', FALSE, 5),
