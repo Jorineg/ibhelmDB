@@ -14,7 +14,10 @@ This file documents the JSON schema for the `app_settings.body` column. **Keep t
   "teamwork_base_url": "",
   "cost_group_prefixes": ["KGR"],
   "location_prefix": "O-",
-  "hide_completed_tasks": false
+  "hide_completed_tasks": false,
+  "file_ignore_patterns": [
+    { "pattern": "%~$%", "label": "Office Lock Files", "enabled": true, "builtin": true }
+  ]
 }
 ```
 
@@ -31,3 +34,4 @@ This file documents the JSON schema for the `app_settings.body` column. **Keep t
 | `cost_group_prefixes` | string[] | `["KGR"]` | Tag prefixes for cost group extraction. Tags matching `PREFIX CODE NAME` pattern (e.g., "KGR 456 demo kostengruppe") are auto-linked |
 | `location_prefix` | string | `"O-"` | Tag prefix for location extraction. Tags matching `PREFIX-Gebäude-Raum`, `PREFIX-Raum`, or `PREFIX-Gebäude-Level-Raum` patterns are auto-linked to locations |
 | `hide_completed_tasks` | boolean | `false` | When true, tasks with status 'completed' are hidden from default item views |
+| `file_ignore_patterns` | FileIgnorePattern[] | (see defaults) | LIKE patterns to hide files from Items view. Each pattern has `pattern`, `label`, `enabled`, `builtin` fields |

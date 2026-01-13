@@ -74,7 +74,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_conversation_assignees_conv_id ON mv_co
 DROP MATERIALIZED VIEW IF EXISTS mv_task_timelogs_agg CASCADE;
 CREATE MATERIALIZED VIEW mv_task_timelogs_agg AS
 SELECT tl.task_id,
-    SUM(tl.minutes)::INTEGER AS logged_minutes
+    SUM(tl.minutes)::INTEGER AS logged_minutes,
+    SUM(CASE WHEN tl.is_billable = TRUE THEN tl.minutes ELSE 0 END)::INTEGER AS billable_minutes
 FROM teamwork.timelogs tl
 WHERE tl.deleted = FALSE AND tl.task_id IS NOT NULL
 GROUP BY tl.task_id;
@@ -108,6 +109,7 @@ SELECT * FROM (
         NULL::TEXT AS file_extension,
         t.accumulated_estimated_minutes,
         ttla.logged_minutes,
+        ttla.billable_minutes,
         COALESCE(t.updated_at, t.created_at) AS sort_date,
         -- Pre-computed search text (includes tags + assignees for single-index search)
         CONCAT_WS(' ', t.name, t.description, p.name, c.name, tl.name, 
@@ -165,6 +167,7 @@ SELECT * FROM (
         (SELECT string_agg(DISTINCT LOWER(elem->>'extension'), ', ') FROM jsonb_array_elements(maa.attachments) elem WHERE elem->>'extension' IS NOT NULL) AS file_extension,
         NULL::INTEGER AS accumulated_estimated_minutes,
         NULL::INTEGER AS logged_minutes,
+        NULL::INTEGER AS billable_minutes,
         COALESCE(m.delivered_at, m.updated_at, m.created_at) AS sort_date,
         -- Pre-computed search text (includes body, recipients, attachments, labels for single-index search)
         CONCAT_WS(' ', m.subject, m.preview, m.body_plain_text, twp.name, from_contact.name, from_contact.email, conv.subject, cca.comments_text,
@@ -216,6 +219,7 @@ SELECT * FROM (
         NULL::TEXT AS file_extension,
         NULL::INTEGER AS accumulated_estimated_minutes,
         NULL::INTEGER AS logged_minutes,
+        NULL::INTEGER AS billable_minutes,
         COALESCE(cd.craft_last_modified_at, cd.db_updated_at, cd.db_created_at) AS sort_date,
         -- Pre-computed search text (includes body for single-index search)
         CONCAT_WS(' ', cd.title, cd.folder_path, twp.name, cd.markdown_content) AS search_text,
@@ -253,6 +257,7 @@ SELECT * FROM (
         CASE WHEN f.full_path LIKE '%.%' THEN LOWER(SUBSTRING(f.full_path FROM '\.([^.]+)$')) ELSE NULL END AS file_extension,
         NULL::INTEGER AS accumulated_estimated_minutes,
         NULL::INTEGER AS logged_minutes,
+        NULL::INTEGER AS billable_minutes,
         COALESCE(f.file_modified_at, f.db_updated_at, f.db_created_at) AS sort_date,
         -- Pre-computed search text (includes body for single-index search)
         CONCAT_WS(' ', f.full_path, twp.name, f.file_created_by, fc.extracted_text) AS search_text,
