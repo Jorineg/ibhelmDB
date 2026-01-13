@@ -7,6 +7,8 @@ DROP VIEW IF EXISTS file_details CASCADE;
 DROP TRIGGER IF EXISTS extract_file_metadata_on_update ON files CASCADE;
 DROP TRIGGER IF EXISTS extract_file_metadata_on_insert ON files CASCADE;
 DROP TRIGGER IF EXISTS extract_file_metadata_on_delete ON files CASCADE;
+DROP TRIGGER IF EXISTS update_files_updated_at ON files CASCADE;
+DROP TRIGGER IF EXISTS cleanup_file_content_on_delete ON files CASCADE;
 
 -- 1. Create temporary tables/columns if needed
 -- (Assuming the schema files are already updated, we might need to manually apply them or use this script to bridge the gap)
