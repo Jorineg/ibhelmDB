@@ -210,8 +210,13 @@ CREATE TRIGGER extract_file_metadata_on_insert AFTER INSERT ON files
     FOR EACH ROW EXECUTE FUNCTION trigger_extract_file_metadata();
 
 DROP TRIGGER IF EXISTS extract_file_metadata_on_update ON files;
-CREATE TRIGGER extract_file_metadata_on_update AFTER UPDATE OF storage_path, filename ON files
+CREATE TRIGGER extract_file_metadata_on_update AFTER UPDATE OF full_path ON files
     FOR EACH ROW EXECUTE FUNCTION trigger_extract_file_metadata();
+
+-- Garbage Collection for file_contents
+DROP TRIGGER IF EXISTS cleanup_file_content_on_delete ON files;
+CREATE TRIGGER cleanup_file_content_on_delete AFTER DELETE OR UPDATE OF content_hash ON files
+    FOR EACH ROW EXECUTE FUNCTION trigger_cleanup_unreferenced_content();
 
 -- =====================================
 -- 7b. CRAFT DOCUMENT METADATA EXTRACTION TRIGGERS
@@ -260,4 +265,9 @@ CREATE TRIGGER trg_conv_comments_mv_stale AFTER INSERT OR UPDATE OR DELETE ON mi
 DROP TRIGGER IF EXISTS trg_queue_attachment_download ON missive.attachments;
 CREATE TRIGGER trg_queue_attachment_download AFTER INSERT OR UPDATE ON missive.attachments
     FOR EACH ROW EXECUTE FUNCTION trigger_queue_attachment_download();
+
+-- Storage Cleanup for file_contents
+DROP TRIGGER IF EXISTS delete_s3_content_on_delete ON file_contents;
+CREATE TRIGGER delete_s3_content_on_delete AFTER DELETE ON file_contents
+    FOR EACH ROW EXECUTE FUNCTION trigger_delete_s3_content();
 

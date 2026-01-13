@@ -1971,28 +1971,27 @@ BEGIN
     ) q FULL OUTER JOIN teamworkmissiveconnector.checkpoints c ON c.source = q.source
     WHERE COALESCE(c.source, q.source) IN ('teamwork', 'missive', 'craft');
     
-    -- Return files checkpoint (no queue)
+    -- Return files sync status (S3 Queue)
     RETURN QUERY SELECT 
         'files'::VARCHAR(50) AS source,
-        fc.last_event_time,
-        fc.updated_at AS checkpoint_updated_at,
-        0::BIGINT AS pending_count,
-        0::BIGINT AS processing_count,
-        0::BIGINT AS failed_count,
-        NULL::TIMESTAMPTZ AS last_processed_at
-    FROM teamworkmissiveconnector.checkpoints fc
-    WHERE fc.source = 'files';
+        NULL::TIMESTAMPTZ AS last_event_time,
+        NULL::TIMESTAMPTZ AS checkpoint_updated_at,
+        COUNT(*) FILTER (WHERE s3_status = 'pending') AS pending_count,
+        COUNT(*) FILTER (WHERE s3_status = 'uploading') AS processing_count,
+        COUNT(*) FILTER (WHERE s3_status = 'error') AS failed_count,
+        MAX(last_status_change) FILTER (WHERE s3_status = 'uploaded') AS last_processed_at
+    FROM file_contents;
     
-    -- Return thumbnails queue status
+    -- Return thumbnails/OCR queue status (TTE)
     RETURN QUERY SELECT 
         'thumbnails'::VARCHAR(50) AS source,
         NULL::TIMESTAMPTZ AS last_event_time,
         NULL::TIMESTAMPTZ AS checkpoint_updated_at,
-        COUNT(*) FILTER (WHERE tq.status = 'pending') AS pending_count,
-        COUNT(*) FILTER (WHERE tq.status = 'processing') AS processing_count,
-        COUNT(*) FILTER (WHERE tq.status = 'failed') AS failed_count,
-        MAX(tq.processed_at) FILTER (WHERE tq.status = 'completed') AS last_processed_at
-    FROM thumbnail_processing_queue tq;
+        COUNT(*) FILTER (WHERE processing_status = 'pending' AND s3_status = 'uploaded') AS pending_count,
+        COUNT(*) FILTER (WHERE processing_status = 'indexing') AS processing_count,
+        COUNT(*) FILTER (WHERE processing_status = 'error') AS failed_count,
+        MAX(last_status_change) FILTER (WHERE processing_status = 'done') AS last_processed_at
+    FROM file_contents;
     
     -- Return attachments download queue status
     RETURN QUERY SELECT 
@@ -2197,24 +2196,7 @@ $$ LANGUAGE plpgsql STABLE;
 -- 17. FILES CHECKPOINT UPSERT
 -- =====================================
 
-CREATE OR REPLACE FUNCTION upsert_files_checkpoint(p_last_event_time TIMESTAMPTZ DEFAULT NULL)
-RETURNS VOID AS $$
-BEGIN
-    IF p_last_event_time IS NOT NULL THEN
-        -- New files uploaded, update both timestamps
-        INSERT INTO teamworkmissiveconnector.checkpoints (source, last_event_time, updated_at)
-        VALUES ('files', p_last_event_time, NOW())
-        ON CONFLICT (source) DO UPDATE SET
-            last_event_time = EXCLUDED.last_event_time,
-            updated_at = NOW();
-    ELSE
-        -- No new files, only update updated_at if record exists, otherwise create with epoch
-        INSERT INTO teamworkmissiveconnector.checkpoints (source, last_event_time, updated_at)
-        VALUES ('files', '1970-01-01T00:00:00Z', NOW())
-        ON CONFLICT (source) DO UPDATE SET updated_at = NOW();
-    END IF;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+
 
 -- =====================================
 -- 18. FILE METADATA EXTRACTION
@@ -2244,33 +2226,29 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Link file to project if filename/folder contains project name
+-- Link file to project if full_path contains project name
 CREATE OR REPLACE FUNCTION link_file_to_project(p_file_id UUID)
-RETURNS INTEGER SECURITY DEFINER SET search_path = public, teamwork, missive AS $$
+RETURNS UUID SECURITY DEFINER SET search_path = public, teamwork, missive AS $$
 DECLARE
     v_full_path TEXT;
-    v_project RECORD;
-    v_links_created INTEGER := 0;
+    v_project_id UUID;
 BEGIN
-    SELECT COALESCE(folder_path || '/', '') || COALESCE(filename, '')
-    INTO v_full_path FROM files WHERE id = p_file_id;
-    IF NOT FOUND OR v_full_path = '' THEN RETURN 0; END IF;
+    SELECT full_path INTO v_full_path FROM files WHERE id = p_file_id;
+    IF NOT FOUND OR v_full_path IS NULL THEN RETURN NULL; END IF;
     
     -- Check if path contains any project name (case-insensitive)
-    FOR v_project IN 
-        SELECT id, name FROM teamwork.projects 
-        WHERE v_full_path ILIKE '%' || name || '%'
-    LOOP
-        INSERT INTO project_files (file_id, tw_project_id, assigned_at)
-        VALUES (p_file_id, v_project.id, NOW())
-        ON CONFLICT (tw_project_id, file_id) DO NOTHING;
-        
-        IF FOUND THEN
-            v_links_created := v_links_created + 1;
-        END IF;
-    END LOOP;
+    -- Match the longest project name (most specific)
+    SELECT id INTO v_project_id
+    FROM teamwork.projects 
+    WHERE v_full_path ILIKE '%' || name || '%'
+    ORDER BY LENGTH(name) DESC
+    LIMIT 1;
     
-    RETURN v_links_created;
+    IF v_project_id IS NOT NULL THEN
+        UPDATE files SET project_id = v_project_id WHERE id = p_file_id;
+    END IF;
+    
+    RETURN v_project_id;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -2349,6 +2327,62 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- Upload queue management with Multi-Source support
+CREATE OR REPLACE FUNCTION dequeue_upload_batch(p_batch_size INTEGER DEFAULT 10, p_path_prefixes TEXT[] DEFAULT '{}')
+RETURNS TABLE (content_hash TEXT, size_bytes BIGINT, full_path TEXT) AS $$
+BEGIN
+    RETURN QUERY 
+    WITH locked_batch AS (
+        -- Join with files to ensure the requesting worker has local access to at least one instance of this content
+        SELECT DISTINCT ON (fc.content_hash) 
+            fc.content_hash,
+            f.full_path
+        FROM file_contents fc
+        JOIN files f ON fc.content_hash = f.content_hash
+        WHERE fc.s3_status = 'pending'
+          AND (fc.try_count < 3 OR (NOW() - fc.last_status_change) > INTERVAL '2 hours')
+          -- Filter for files that start with any of the requested prefixes
+          AND (
+            p_path_prefixes = '{}' OR 
+            EXISTS (SELECT 1 FROM unnest(p_path_prefixes) p WHERE f.full_path LIKE p || '%')
+          )
+        ORDER BY fc.content_hash, fc.db_created_at ASC
+        LIMIT p_batch_size
+        FOR UPDATE OF fc SKIP LOCKED
+    )
+    UPDATE file_contents
+    SET s3_status = 'uploading',
+        last_status_change = NOW(),
+        try_count = try_count + 1
+    FROM locked_batch
+    WHERE file_contents.content_hash = locked_batch.content_hash
+    RETURNING file_contents.content_hash, file_contents.size_bytes, locked_batch.full_path;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION mark_upload_complete(p_hash TEXT, p_storage_path TEXT, p_mime_type TEXT)
+RETURNS VOID AS $$
+BEGIN
+    UPDATE file_contents
+    SET s3_status = 'uploaded',
+        storage_path = p_storage_path,
+        mime_type = p_mime_type,
+        last_status_change = NOW(),
+        db_updated_at = NOW()
+    WHERE content_hash = p_hash;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION mark_upload_failed(p_hash TEXT, p_error TEXT)
+RETURNS VOID AS $$
+BEGIN
+    UPDATE file_contents
+    SET s3_status = 'error',
+        last_status_change = NOW()
+    WHERE content_hash = p_hash;
+END;
+$$ LANGUAGE plpgsql;
+
 -- Trigger for auto-extraction on file insert/update
 CREATE OR REPLACE FUNCTION trigger_extract_file_metadata()
 RETURNS TRIGGER SECURITY DEFINER SET search_path = public, teamwork, missive AS $$
@@ -2417,6 +2451,36 @@ BEGIN
         linked_count = v_linked, created_count = v_created, completed_at = NOW()
     WHERE id = v_run_id;
     RETURN v_run_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Garbage Collection
+CREATE OR REPLACE FUNCTION trigger_cleanup_unreferenced_content()
+RETURNS TRIGGER AS $$
+BEGIN
+    -- If content_hash is still used elsewhere, do nothing
+    IF EXISTS (SELECT 1 FROM files WHERE content_hash = OLD.content_hash AND id != OLD.id) THEN
+        RETURN OLD;
+    END IF;
+
+    -- Delete content (S3 deletion trigger will take it from here)
+    DELETE FROM file_contents WHERE content_hash = OLD.content_hash;
+    
+    RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Storage Deletion Placeholder
+CREATE OR REPLACE FUNCTION trigger_delete_s3_content()
+RETURNS TRIGGER SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+    -- Placeholder for S3 deletion via pg_net or webhook
+    -- Example for Supabase Storage:
+    -- PERFORM net.http_post(
+    --   url := 'http://kong:8000/storage/v1/object/' || OLD.storage_path,
+    --   headers := '{"Authorization": "Bearer SERVICE_ROLE_KEY"}'::jsonb
+    -- );
+    RETURN OLD;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -2566,18 +2630,19 @@ $$;
 CREATE OR REPLACE FUNCTION get_email_files(p_message_id UUID)
 RETURNS TABLE(
     file_id UUID,
-    filename TEXT,
+    full_path TEXT,
     storage_path TEXT,
     thumbnail_path TEXT
 )
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, missive AS $$
     SELECT 
         f.id AS file_id,
-        f.filename,
-        f.storage_path,
-        f.thumbnail_path
+        f.full_path,
+        fc.storage_path,
+        fc.thumbnail_path
     FROM missive.attachments ma
     JOIN files f ON f.source_missive_attachment_id = ma.id
+    JOIN file_contents fc ON f.content_hash = fc.content_hash
     WHERE ma.message_id = p_message_id
     AND f.deleted_at IS NULL;
 $$;
@@ -2632,10 +2697,9 @@ GRANT EXECUTE ON FUNCTION refresh_unified_items_aggregates(BOOLEAN) TO authentic
 GRANT EXECUTE ON FUNCTION refresh_stale_unified_items_aggregates() TO authenticated;
 GRANT EXECUTE ON FUNCTION compute_cost_group_range(TEXT) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_sync_status() TO authenticated;
-GRANT EXECUTE ON FUNCTION get_thumbnail_queue_status() TO authenticated;
 GRANT EXECUTE ON FUNCTION query_unified_persons(TEXT, TEXT, BOOLEAN, BOOLEAN, TEXT, TEXT, INTEGER, INTEGER) TO authenticated;
 GRANT EXECUTE ON FUNCTION count_unified_persons(TEXT, TEXT, BOOLEAN, BOOLEAN) TO authenticated;
-GRANT EXECUTE ON FUNCTION upsert_files_checkpoint(TIMESTAMPTZ) TO service_role;
+
 GRANT EXECUTE ON FUNCTION rerun_all_file_linking() TO authenticated;
 GRANT EXECUTE ON FUNCTION get_file_linking_run_status(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_latest_file_linking_run() TO authenticated;

@@ -224,24 +224,24 @@ UNION ALL
 -- Files (wrapped for DISTINCT ON)
 SELECT * FROM (
     SELECT DISTINCT ON (f.id)
-        f.id::TEXT AS id, 'file'::TEXT AS type, f.filename AS name, f.folder_path AS description, ''::VARCHAR AS status,
+        f.id::TEXT AS id, 'file'::TEXT AS type, f.full_path AS name, f.full_path AS description, ''::VARCHAR AS status,
         COALESCE(twp.name, '') AS project, ''::TEXT AS customer, l.name AS location, l.search_text AS location_path,
         cg.name AS cost_group, cg.code::TEXT AS cost_group_code, NULL::TIMESTAMP AS due_date,
         f.file_created_at AS created_at, f.file_modified_at AS updated_at,
         ''::VARCHAR AS priority, NULL::INTEGER AS progress, ''::TEXT AS tasklist,
         NULL::UUID AS task_type_id, NULL::TEXT AS task_type_name, NULL::TEXT AS task_type_slug, NULL::VARCHAR(50) AS task_type_color,
         NULL::JSONB AS assigned_to, NULL::JSONB AS tags,
-        f.extracted_text AS body, NULL::TEXT AS preview,
+        fc.extracted_text AS body, NULL::TEXT AS preview,
         f.file_created_by AS creator, NULL::TEXT AS conversation_subject,
         NULL::JSONB AS recipients, NULL::JSONB AS attachments, 0 AS attachment_count, NULL::TEXT AS conversation_comments_text,
         NULL::TEXT AS craft_url, NULL::TEXT AS teamwork_url, NULL::TEXT AS missive_url,
-        f.storage_path, f.thumbnail_path,
+        fc.storage_path, fc.thumbnail_path,
         -- File extension: part after last dot, empty if no dot
-        CASE WHEN f.filename LIKE '%.%' THEN LOWER(SUBSTRING(f.filename FROM '\.([^.]+)$')) ELSE NULL END AS file_extension,
+        CASE WHEN f.full_path LIKE '%.%' THEN LOWER(SUBSTRING(f.full_path FROM '\.([^.]+)$')) ELSE NULL END AS file_extension,
         NULL::INTEGER AS accumulated_estimated_minutes,
         COALESCE(f.file_modified_at, f.db_updated_at, f.db_created_at) AS sort_date,
         -- Pre-computed search text (includes body for single-index search)
-        CONCAT_WS(' ', f.filename, f.folder_path, twp.name, f.file_created_by, f.extracted_text) AS search_text,
+        CONCAT_WS(' ', f.full_path, twp.name, f.file_created_by, fc.extracted_text) AS search_text,
         -- No assignees for files
         NULL::TEXT AS assignee_search_text,
         -- No tags for files
@@ -249,12 +249,12 @@ SELECT * FROM (
         -- Pre-computed location IDs for fast array overlap filter (P1 optimization)
         (SELECT array_agg(ol2.location_id) FROM object_locations ol2 WHERE ol2.file_id = f.id) AS location_ids
     FROM files f
+    JOIN file_contents fc ON f.content_hash = fc.content_hash
     LEFT JOIN object_locations ol ON f.id = ol.file_id
     LEFT JOIN locations l ON ol.location_id = l.id
     LEFT JOIN object_cost_groups ocg ON f.id = ocg.file_id
     LEFT JOIN cost_groups cg ON ocg.cost_group_id = cg.id
-    LEFT JOIN project_files pf ON f.id = pf.file_id
-    LEFT JOIN teamwork.projects twp ON pf.tw_project_id = twp.id
+    LEFT JOIN teamwork.projects twp ON f.project_id = twp.id
     ORDER BY f.id
 ) files;
 
@@ -326,19 +326,21 @@ LEFT JOIN cost_groups dcg ON pe.default_cost_group_id = dcg.id;
 
 CREATE OR REPLACE VIEW file_details AS
 SELECT 
-    f.id, f.filename, f.folder_path, f.content_hash,
+    f.id, f.full_path, f.content_hash,
     dt.name AS document_type, dt.slug AS document_type_slug,
-    f.thumbnail_path, f.thumbnail_generated_at, f.thumbnail_generated_at IS NOT NULL AS has_thumbnail,
-    f.extracted_text IS NOT NULL AND LENGTH(f.extracted_text) > 0 AS has_extracted_text,
+    fc.thumbnail_path, fc.thumbnail_generated_at, fc.thumbnail_generated_at IS NOT NULL AS has_thumbnail,
+    fc.extracted_text IS NOT NULL AND LENGTH(fc.extracted_text) > 0 AS has_extracted_text,
     ma.filename AS source_attachment_filename, ma.size AS source_attachment_size,
-    (SELECT jsonb_agg(jsonb_build_object('id', twp.id, 'name', twp.name))
-     FROM project_files pf JOIN teamwork.projects twp ON pf.tw_project_id = twp.id WHERE pf.file_id = f.id) AS projects,
+    (SELECT jsonb_build_object('id', twp.id, 'name', twp.name)
+     FROM teamwork.projects twp WHERE twp.id = f.project_id) AS project,
     (SELECT jsonb_agg(jsonb_build_object('id', loc.id, 'name', loc.name, 'type', loc.type, 'path', loc.search_text))
      FROM object_locations ol JOIN locations loc ON ol.location_id = loc.id WHERE ol.file_id = f.id) AS locations,
     (SELECT jsonb_agg(jsonb_build_object('id', cg.id, 'code', cg.code::TEXT, 'name', cg.name))
      FROM object_cost_groups ocg JOIN cost_groups cg ON ocg.cost_group_id = cg.id WHERE ocg.file_id = f.id) AS cost_groups,
-    f.file_created_at, f.file_modified_at, f.db_created_at, f.db_updated_at
+    f.file_created_at, f.file_modified_at, f.db_created_at, f.db_updated_at,
+    fc.s3_status, fc.processing_status, fc.size_bytes
 FROM files f
+JOIN file_contents fc ON f.content_hash = fc.content_hash
 LEFT JOIN document_types dt ON f.document_type_id = dt.id
 LEFT JOIN missive.attachments ma ON f.source_missive_attachment_id = ma.id;
 

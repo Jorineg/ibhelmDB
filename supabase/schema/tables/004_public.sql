@@ -131,15 +131,27 @@ CREATE TABLE document_types (
     db_created_at TIMESTAMP DEFAULT NOW()
 );
 
-CREATE TABLE files (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    storage_path TEXT UNIQUE NOT NULL,
-    filename TEXT NOT NULL,
-    folder_path TEXT,
-    content_hash VARCHAR(64) NOT NULL,
+CREATE TABLE file_contents (
+    content_hash TEXT PRIMARY KEY,
+    size_bytes BIGINT NOT NULL,
+    mime_type TEXT,
+    storage_path TEXT UNIQUE, -- format: files/hash
     extracted_text TEXT,
     thumbnail_path TEXT,
-    thumbnail_generated_at TIMESTAMP,
+    thumbnail_generated_at TIMESTAMPTZ,
+    s3_status s3_status NOT NULL DEFAULT 'pending',
+    processing_status processing_status NOT NULL DEFAULT 'pending',
+    try_count INTEGER DEFAULT 0,
+    last_status_change TIMESTAMPTZ DEFAULT NOW(),
+    db_created_at TIMESTAMP DEFAULT NOW(),
+    db_updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE files (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    full_path TEXT UNIQUE NOT NULL, -- Full path including filename
+    content_hash TEXT NOT NULL REFERENCES file_contents(content_hash),
+    project_id UUID REFERENCES teamwork.projects(id) ON DELETE SET NULL,
     document_type_id INTEGER REFERENCES document_types(id) ON DELETE SET NULL,
     source_missive_attachment_id UUID REFERENCES missive.attachments(id) ON DELETE SET NULL,
     file_created_at TIMESTAMP WITH TIME ZONE,
@@ -152,8 +164,7 @@ CREATE TABLE files (
     deleted_at TIMESTAMPTZ,
     last_seen_at TIMESTAMPTZ DEFAULT NOW(),
     db_created_at TIMESTAMP DEFAULT NOW(),
-    db_updated_at TIMESTAMP DEFAULT NOW(),
-    CONSTRAINT unique_file_path UNIQUE (folder_path, filename)
+    db_updated_at TIMESTAMP DEFAULT NOW()
 );
 
 -- =====================================
@@ -167,13 +178,6 @@ CREATE TABLE project_conversations (
     source_label_name VARCHAR(255),
     assigned_at TIMESTAMP DEFAULT NOW(),
     PRIMARY KEY (tw_project_id, m_conversation_id)
-);
-
-CREATE TABLE project_files (
-    file_id UUID REFERENCES files(id) ON DELETE CASCADE,
-    tw_project_id INTEGER REFERENCES teamwork.projects(id) ON DELETE CASCADE,
-    assigned_at TIMESTAMP DEFAULT NOW(),
-    PRIMARY KEY (tw_project_id, file_id)
 );
 
 CREATE TABLE project_craft_documents (
@@ -247,21 +251,6 @@ CREATE TABLE mv_refresh_status (
 );
 
 -- =====================================
--- 9. THUMBNAIL PROCESSING QUEUE
--- =====================================
-
-CREATE TABLE thumbnail_processing_queue (
-    id SERIAL PRIMARY KEY,
-    file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-    status VARCHAR(20) DEFAULT 'pending',
-    attempts INTEGER DEFAULT 0,
-    last_error TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    processed_at TIMESTAMPTZ,
-    UNIQUE(file_id)
-);
-
 -- =====================================
 -- 10. EMAIL ATTACHMENT FILES
 -- =====================================
@@ -331,19 +320,21 @@ CREATE INDEX idx_craft_documents_folder_path ON craft_documents(folder_path);
 CREATE INDEX idx_craft_documents_location ON craft_documents(location);
 CREATE INDEX idx_craft_documents_daily_note_date ON craft_documents(daily_note_date) WHERE daily_note_date IS NOT NULL;
 CREATE INDEX idx_document_types_slug ON document_types(slug);
-CREATE INDEX idx_files_filename ON files(filename);
+CREATE INDEX idx_files_full_path ON files(full_path);
 CREATE INDEX idx_files_content_hash ON files(content_hash);
+CREATE INDEX idx_files_project_id ON files(project_id);
 CREATE INDEX idx_files_document_type_id ON files(document_type_id);
 CREATE INDEX idx_files_source_missive_attachment_id ON files(source_missive_attachment_id);
-CREATE INDEX idx_files_storage_path ON files(storage_path);
 CREATE INDEX idx_files_deleted_at ON files(deleted_at) WHERE deleted_at IS NOT NULL;
 CREATE INDEX idx_files_last_seen_at ON files(last_seen_at);
+
+CREATE INDEX idx_file_contents_s3_status ON file_contents(s3_status);
+CREATE INDEX idx_file_contents_processing_status ON file_contents(processing_status);
+CREATE INDEX idx_file_contents_last_status_change ON file_contents(last_status_change);
 CREATE INDEX idx_project_conversations_m_conversation_id ON project_conversations(m_conversation_id);
 CREATE INDEX idx_project_conversations_tw_project_id ON project_conversations(tw_project_id);
 CREATE INDEX idx_project_conversations_source ON project_conversations(source);
-CREATE INDEX idx_project_files_file_id ON project_files(file_id);
-CREATE INDEX idx_project_files_tw_project_id ON project_files(tw_project_id);
-CREATE INDEX idx_project_files_composite ON project_files(tw_project_id, file_id);
+CREATE INDEX idx_project_conversations_source ON project_conversations(source);
 CREATE INDEX idx_project_craft_documents_craft_document_id ON project_craft_documents(craft_document_id);
 CREATE INDEX idx_project_craft_documents_tw_project_id ON project_craft_documents(tw_project_id);
 CREATE INDEX idx_object_locations_location_id ON object_locations(location_id);
@@ -358,8 +349,7 @@ CREATE INDEX idx_object_cost_groups_file_id ON object_cost_groups(file_id);
 CREATE INDEX idx_object_cost_groups_source ON object_cost_groups(source);
 CREATE INDEX idx_iip_unified_person_id ON item_involved_persons(unified_person_id);
 CREATE INDEX idx_iip_item ON item_involved_persons(item_id, item_type);
-CREATE INDEX idx_thumb_queue_status ON thumbnail_processing_queue(status, created_at);
-CREATE INDEX idx_thumb_queue_file_id ON thumbnail_processing_queue(file_id);
+CREATE INDEX idx_iip_item ON item_involved_persons(item_id, item_type);
 CREATE INDEX idx_eaf_status ON email_attachment_files(status) WHERE status IN ('pending', 'downloading');
 CREATE INDEX idx_eaf_message_id ON email_attachment_files(missive_message_id);
 CREATE INDEX idx_eaf_local_filename ON email_attachment_files(local_filename) WHERE local_filename IS NOT NULL;
@@ -385,14 +375,16 @@ COMMENT ON COLUMN craft_documents.folder_path IS 'Full folder path e.g. /Projekt
 COMMENT ON COLUMN craft_documents.folder_id IS 'Direct parent folder ID';
 COMMENT ON COLUMN craft_documents.location IS 'Built-in location: unsorted, templates, daily_notes (NULL if in folder)';
 COMMENT ON COLUMN craft_documents.daily_note_date IS 'Date for daily notes (NULL for regular documents)';
-COMMENT ON TABLE files IS 'File metadata. storage_path is UUID-based path in Supabase Storage (e.g. a1b2c3d4.pdf)';
+COMMENT ON TABLE file_contents IS 'Content-Addressable Storage: Stores unique file content, OCR, and thumbnails.';
+COMMENT ON TABLE files IS 'File references: Maps physical paths to content hashes and projects.';
+COMMENT ON COLUMN files.full_path IS 'Full filesystem path including filename.';
 COMMENT ON COLUMN files.deleted_at IS 'Soft delete timestamp. Set when file no longer exists on filesystem.';
 COMMENT ON COLUMN files.last_seen_at IS 'Last time file was found during filesystem scan.';
 COMMENT ON TABLE project_conversations IS 'n:m - A conversation can belong to multiple projects';
 COMMENT ON TABLE object_locations IS 'Polymorphic table connecting objects to locations';
 COMMENT ON TABLE object_cost_groups IS 'Polymorphic table connecting objects to cost groups';
 COMMENT ON TABLE item_involved_persons IS 'Junction table for filtering items by involved person';
-COMMENT ON TABLE thumbnail_processing_queue IS 'Queue for thumbnail generation and text extraction processing';
+COMMENT ON TABLE item_involved_persons IS 'Junction table for filtering items by involved person';
 COMMENT ON TABLE email_attachment_files IS 'Download tracking for Missive email attachments. Filename format: {name}_{attachment_id}.{ext}';
 COMMENT ON COLUMN email_attachment_files.local_filename IS 'Unique filename used for FileMetadataSync matching. Format: OriginalName_UUID.ext';
 

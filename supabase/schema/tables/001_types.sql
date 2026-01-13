@@ -15,6 +15,12 @@ SET search_path TO public, extensions;
 CREATE TYPE location_type AS ENUM ('building', 'level', 'room');
 COMMENT ON TYPE location_type IS 'Hierarchical location types: building > level > room';
 
+CREATE TYPE s3_status AS ENUM ('pending', 'uploading', 'uploaded', 'error');
+COMMENT ON TYPE s3_status IS 'S3 upload status for content storage';
+
+CREATE TYPE processing_status AS ENUM ('pending', 'indexing', 'done', 'error');
+COMMENT ON TYPE processing_status IS 'OCR and thumbnail generation status';
+
 -- =====================================
 -- TASK TYPES (Configurable via UI)
 -- =====================================
