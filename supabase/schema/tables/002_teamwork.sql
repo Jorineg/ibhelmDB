@@ -202,6 +202,33 @@ CREATE TABLE teamwork.user_teams (
 );
 
 -- =====================================
+-- TIME TRACKING
+-- =====================================
+
+CREATE TABLE teamwork.timelogs (
+    id INTEGER PRIMARY KEY,
+    task_id INTEGER REFERENCES teamwork.tasks(id) ON DELETE SET NULL,
+    project_id INTEGER REFERENCES teamwork.projects(id) ON DELETE SET NULL,
+    user_id INTEGER REFERENCES teamwork.users(id) ON DELETE SET NULL,
+    logged_by_user_id INTEGER REFERENCES teamwork.users(id) ON DELETE SET NULL,
+    minutes INTEGER NOT NULL,
+    description TEXT,
+    time_logged TIMESTAMP,
+    has_start_time BOOLEAN,
+    is_billable BOOLEAN,
+    deleted BOOLEAN DEFAULT FALSE,
+    deleted_at TIMESTAMP,
+    deleted_by_user_id INTEGER REFERENCES teamwork.users(id) ON DELETE SET NULL,
+    edited_at TIMESTAMP,
+    edited_by_user_id INTEGER REFERENCES teamwork.users(id) ON DELETE SET NULL,
+    invoice_id INTEGER,
+    created_at TIMESTAMP,
+    raw_data JSONB,
+    db_created_at TIMESTAMP DEFAULT NOW(),
+    db_updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- =====================================
 -- INDEXES
 -- =====================================
 
@@ -238,6 +265,13 @@ CREATE INDEX idx_tw_tasks_created_by_id ON teamwork.tasks(created_by_id);
 CREATE INDEX idx_tw_tasks_updated_by_id ON teamwork.tasks(updated_by_id);
 CREATE INDEX idx_tw_users_first_name_lower ON teamwork.users(LOWER(first_name));
 CREATE INDEX idx_tw_users_last_name_lower ON teamwork.users(LOWER(last_name));
+
+-- Timelog indexes
+CREATE INDEX idx_tw_timelogs_task_id ON teamwork.timelogs(task_id);
+CREATE INDEX idx_tw_timelogs_project_id ON teamwork.timelogs(project_id);
+CREATE INDEX idx_tw_timelogs_user_id ON teamwork.timelogs(user_id);
+CREATE INDEX idx_tw_timelogs_time_logged ON teamwork.timelogs(time_logged);
+CREATE INDEX idx_tw_timelogs_deleted ON teamwork.timelogs(deleted);
 
 -- =====================================
 -- COMMENTS

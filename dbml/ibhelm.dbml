@@ -413,11 +413,13 @@ TableGroup teamwork_ghosts [color: #cccccc] {
   tw_projects
   tw_tasks
   tw_users
+  tw_timelogs
 }
 Table tw_companies { id integer [pk] }
 Table tw_projects { id integer [pk] }
 Table tw_tasks { id integer [pk] }
 Table tw_users { id integer [pk] }
+Table tw_timelogs { id integer [pk] }
 
 TableGroup missive_ghosts [color: #cccccc] {
   m_contacts

@@ -2382,7 +2382,7 @@ $$ LANGUAGE plpgsql;
 
 -- Processing queue for ThumbnailTextExtractor (atomic claim with FOR UPDATE SKIP LOCKED)
 CREATE OR REPLACE FUNCTION claim_pending_file_content(p_limit INTEGER DEFAULT 5)
-RETURNS TABLE (content_hash VARCHAR, storage_path TEXT, size_bytes BIGINT, try_count INTEGER, full_path TEXT) AS $$
+RETURNS TABLE (content_hash TEXT, storage_path TEXT, size_bytes BIGINT, try_count INTEGER, full_path TEXT) AS $$
 BEGIN
     RETURN QUERY
     WITH locked_batch AS (
