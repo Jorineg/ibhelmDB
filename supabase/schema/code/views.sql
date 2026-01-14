@@ -110,7 +110,6 @@ SELECT * FROM (
         t.accumulated_estimated_minutes,
         ttla.logged_minutes,
         ttla.billable_minutes,
-        COALESCE(t.updated_at, t.created_at) AS sort_date,
         -- Pre-computed search text (includes tags + assignees for single-index search)
         CONCAT_WS(' ', t.name, t.description, p.name, c.name, tl.name, 
             NULLIF(TRIM(CONCAT(creator_user.first_name, ' ', creator_user.last_name)), ''), creator_user.email,
@@ -150,7 +149,8 @@ SELECT * FROM (
         m.id::TEXT AS id, 'email'::TEXT AS type, m.subject AS name,
         COALESCE(m.preview, LEFT(m.body, 200)) AS description, ''::VARCHAR AS status,
         COALESCE(twp.name, '') AS project, ''::TEXT AS customer, l.name AS location, l.search_text AS location_path,
-        cg.name AS cost_group, cg.code::TEXT AS cost_group_code, NULL::TIMESTAMP AS due_date, m.created_at, m.updated_at,
+        cg.name AS cost_group, cg.code::TEXT AS cost_group_code, NULL::TIMESTAMP AS due_date,
+        m.delivered_at AS created_at, COALESCE(m.updated_at, m.delivered_at) AS updated_at,
         ''::VARCHAR AS priority, NULL::INTEGER AS progress, ''::TEXT AS tasklist,
         NULL::UUID AS task_type_id, NULL::TEXT AS task_type_name, NULL::TEXT AS task_type_slug, NULL::VARCHAR(50) AS task_type_color,
         caa.assignees AS assigned_to, cla.tags,
@@ -168,7 +168,6 @@ SELECT * FROM (
         NULL::INTEGER AS accumulated_estimated_minutes,
         NULL::INTEGER AS logged_minutes,
         NULL::INTEGER AS billable_minutes,
-        COALESCE(m.delivered_at, m.updated_at, m.created_at) AS sort_date,
         -- Pre-computed search text (includes body, recipients, attachments, labels for single-index search)
         CONCAT_WS(' ', m.subject, m.preview, m.body_plain_text, twp.name, from_contact.name, from_contact.email, conv.subject, cca.comments_text,
             (SELECT string_agg(CONCAT_WS(' ', elem->'contact'->>'name', elem->'contact'->>'email'), ' ') FROM jsonb_array_elements(mra.recipients) elem),
@@ -220,7 +219,6 @@ SELECT * FROM (
         NULL::INTEGER AS accumulated_estimated_minutes,
         NULL::INTEGER AS logged_minutes,
         NULL::INTEGER AS billable_minutes,
-        COALESCE(cd.craft_last_modified_at, cd.db_updated_at, cd.db_created_at) AS sort_date,
         -- Pre-computed search text (includes body for single-index search)
         CONCAT_WS(' ', cd.title, cd.folder_path, twp.name, cd.markdown_content) AS search_text,
         -- No assignees for craft docs
@@ -244,7 +242,7 @@ SELECT * FROM (
         f.id::TEXT AS id, 'file'::TEXT AS type, f.full_path AS name, f.full_path AS description, ''::VARCHAR AS status,
         COALESCE(twp.name, '') AS project, ''::TEXT AS customer, l.name AS location, l.search_text AS location_path,
         cg.name AS cost_group, cg.code::TEXT AS cost_group_code, NULL::TIMESTAMP AS due_date,
-        f.file_created_at AS created_at, f.file_modified_at AS updated_at,
+        f.fs_mtime AS created_at, f.fs_ctime AS updated_at,
         ''::VARCHAR AS priority, NULL::INTEGER AS progress, ''::TEXT AS tasklist,
         NULL::UUID AS task_type_id, NULL::TEXT AS task_type_name, NULL::TEXT AS task_type_slug, NULL::VARCHAR(50) AS task_type_color,
         NULL::JSONB AS assigned_to, NULL::JSONB AS tags,
@@ -258,7 +256,6 @@ SELECT * FROM (
         NULL::INTEGER AS accumulated_estimated_minutes,
         NULL::INTEGER AS logged_minutes,
         NULL::INTEGER AS billable_minutes,
-        COALESCE(f.file_modified_at, f.db_updated_at, f.db_created_at) AS sort_date,
         -- Pre-computed search text (includes body for single-index search)
         CONCAT_WS(' ', f.full_path, twp.name, f.file_created_by, fc.extracted_text) AS search_text,
         -- No assignees for files
@@ -356,7 +353,7 @@ SELECT
      FROM object_locations ol JOIN locations loc ON ol.location_id = loc.id WHERE ol.file_id = f.id) AS locations,
     (SELECT jsonb_agg(jsonb_build_object('id', cg.id, 'code', cg.code::TEXT, 'name', cg.name))
      FROM object_cost_groups ocg JOIN cost_groups cg ON ocg.cost_group_id = cg.id WHERE ocg.file_id = f.id) AS cost_groups,
-    f.file_created_at, f.file_modified_at, f.db_created_at, f.db_updated_at,
+    f.fs_mtime, f.fs_ctime, f.db_created_at, f.db_updated_at,
     fc.s3_status, fc.processing_status, fc.size_bytes
 FROM files f
 JOIN file_contents fc ON f.content_hash = fc.content_hash

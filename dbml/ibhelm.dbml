@@ -240,8 +240,8 @@ Table files {
   document_type_id integer [ref: > document_types.id]
   source_missive_attachment_id uuid [ref: - m_attachments.id]
   
-  file_created_at timestamptz
-  file_modified_at timestamptz
+  fs_mtime timestamptz [note: "st_mtime: content modification time"]
+  fs_ctime timestamptz [note: "st_ctime: inode change time (copy/move/chmod)"]
   file_created_by text
   filesystem_inode bigint
   filesystem_access_rights jsonb

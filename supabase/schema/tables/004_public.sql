@@ -155,8 +155,8 @@ CREATE TABLE files (
     project_id INTEGER REFERENCES teamwork.projects(id) ON DELETE SET NULL,
     document_type_id INTEGER REFERENCES document_types(id) ON DELETE SET NULL,
     source_missive_attachment_id UUID REFERENCES missive.attachments(id) ON DELETE SET NULL,
-    file_created_at TIMESTAMP WITH TIME ZONE,
-    file_modified_at TIMESTAMP WITH TIME ZONE,
+    fs_mtime TIMESTAMP WITH TIME ZONE, -- st_mtime: content modification time
+    fs_ctime TIMESTAMP WITH TIME ZONE, -- st_ctime: inode change time (copy/move/chmod)
     file_created_by TEXT,
     filesystem_inode BIGINT,
     filesystem_access_rights JSONB,

@@ -1451,7 +1451,7 @@ CREATE OR REPLACE FUNCTION query_unified_items(
     p_billable_minutes_min INTEGER DEFAULT NULL, p_billable_minutes_max INTEGER DEFAULT NULL,
     p_hide_completed_tasks BOOLEAN DEFAULT NULL,
     p_file_ignore_patterns TEXT[] DEFAULT NULL,
-    p_sort_field TEXT DEFAULT 'sort_date', p_sort_order TEXT DEFAULT 'desc',
+    p_sort_field TEXT DEFAULT 'updated_at', p_sort_order TEXT DEFAULT 'desc',
     p_limit INTEGER DEFAULT 50, p_offset INTEGER DEFAULT 0
 )
 RETURNS TABLE(
@@ -1462,7 +1462,7 @@ RETURNS TABLE(
     assigned_to JSONB, tags JSONB, body TEXT, preview TEXT, creator TEXT,
     conversation_subject TEXT, recipients JSONB, attachments JSONB, attachment_count INTEGER,
     conversation_comments_text TEXT, craft_url TEXT, teamwork_url TEXT, missive_url TEXT, storage_path TEXT, thumbnail_path TEXT,
-    file_extension TEXT, accumulated_estimated_minutes INTEGER, logged_minutes INTEGER, billable_minutes INTEGER, sort_date TIMESTAMPTZ
+    file_extension TEXT, accumulated_estimated_minutes INTEGER, logged_minutes INTEGER, billable_minutes INTEGER
 )
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
 DECLARE
@@ -1476,8 +1476,8 @@ DECLARE
     v_location_ids UUID[];
 BEGIN
     -- Validate and sanitize sort parameters
-    IF p_sort_field NOT IN ('name', 'status', 'project', 'customer', 'due_date', 'created_at', 'updated_at', 'priority', 'sort_date', 'progress', 'attachment_count', 'cost_group_code', 'creator', 'location', 'location_path', 'cost_group', 'tasklist', 'conversation_subject', 'file_extension', 'accumulated_estimated_minutes', 'logged_minutes', 'billable_minutes') THEN
-        p_sort_field := 'sort_date';
+    IF p_sort_field NOT IN ('name', 'status', 'project', 'customer', 'due_date', 'created_at', 'updated_at', 'priority', 'progress', 'attachment_count', 'cost_group_code', 'creator', 'location', 'location_path', 'cost_group', 'tasklist', 'conversation_subject', 'file_extension', 'accumulated_estimated_minutes', 'logged_minutes', 'billable_minutes') THEN
+        p_sort_field := 'updated_at';
     END IF;
     IF p_sort_order NOT IN ('asc', 'desc') THEN p_sort_order := 'desc'; END IF;
     
@@ -1648,9 +1648,9 @@ BEGIN
         full_ui.due_date, full_ui.created_at, full_ui.updated_at, full_ui.priority, full_ui.progress, full_ui.tasklist,
         full_ui.task_type_id, full_ui.task_type_name, full_ui.task_type_slug, full_ui.task_type_color,
         full_ui.assigned_to, full_ui.tags, LEFT(full_ui.body, 800) AS body, full_ui.preview, full_ui.creator,
-        full_ui.conversation_subject, full_ui.recipients, full_ui.attachments, full_ui.attachment_count,
+        full_ui.conversation_subject, (SELECT jsonb_agg(elem) FROM (SELECT elem FROM jsonb_array_elements(full_ui.recipients) AS elem LIMIT 5) sub) AS recipients, full_ui.attachments, full_ui.attachment_count,
         full_ui.conversation_comments_text, full_ui.craft_url, full_ui.teamwork_url, full_ui.missive_url, full_ui.storage_path, full_ui.thumbnail_path,
-        full_ui.file_extension, full_ui.accumulated_estimated_minutes, full_ui.logged_minutes, full_ui.billable_minutes, full_ui.sort_date
+        full_ui.file_extension, full_ui.accumulated_estimated_minutes, full_ui.logged_minutes, full_ui.billable_minutes
     FROM skinny_ids s
     JOIN mv_unified_items full_ui ON s.id = full_ui.id AND s.type = full_ui.type
     ORDER BY ' || v_order_expr_outer;

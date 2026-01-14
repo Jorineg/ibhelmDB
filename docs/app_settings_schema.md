@@ -47,7 +47,7 @@ One row per user. Personal preferences synced across devices.
 ```json
 {
   "hide_completed_tasks": false,
-  "default_sort_field": "sort_date",
+  "default_sort_field": "updated_at",
   "default_sort_order": "desc",
   "filter_configurations": { ... },
   "key_bindings": { ... }
@@ -57,7 +57,7 @@ One row per user. Personal preferences synced across devices.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `hide_completed_tasks` | boolean | `false` | Hide completed tasks from Items view |
-| `default_sort_field` | string | `"sort_date"` | Default sort field for new configs |
+| `default_sort_field` | string | `"updated_at"` | Default sort field for new configs |
 | `default_sort_order` | `"asc"` \| `"desc"` | `"desc"` | Default sort direction |
 | `filter_configurations` | object | `{}` | All filter configs (previously localStorage) |
 | `key_bindings` | object | `{}` | Custom keyboard shortcuts (previously localStorage) |
