@@ -2032,7 +2032,7 @@ BEGIN
         MAX(last_status_change) FILTER (WHERE processing_status = 'done') AS last_processed_at
     FROM file_contents;
     
-    -- Return attachments download queue status
+    -- Return attachments download queue status (only project-linked)
     RETURN QUERY SELECT 
         'attachments'::VARCHAR(50) AS source,
         NULL::TIMESTAMPTZ AS last_event_time,
@@ -2041,7 +2041,9 @@ BEGIN
         COUNT(*) FILTER (WHERE eaf.status = 'downloading') AS processing_count,
         COUNT(*) FILTER (WHERE eaf.status = 'failed') AS failed_count,
         MAX(eaf.downloaded_at) FILTER (WHERE eaf.status = 'completed') AS last_processed_at
-    FROM email_attachment_files eaf;
+    FROM email_attachment_files eaf
+    JOIN missive.messages msg ON eaf.missive_message_id = msg.id
+    WHERE EXISTS (SELECT 1 FROM project_conversations pc WHERE pc.m_conversation_id = msg.conversation_id);
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER STABLE;
 
