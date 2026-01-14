@@ -2671,6 +2671,44 @@ $$ LANGUAGE plpgsql;
 -- ATTACHMENT DOWNLOAD QUEUE
 -- =====================================
 
+-- Get pending attachments only for emails linked to a project
+CREATE OR REPLACE FUNCTION get_pending_project_attachments(
+    p_limit INTEGER DEFAULT 10,
+    p_max_retries INTEGER DEFAULT 3
+)
+RETURNS TABLE(
+    missive_attachment_id UUID,
+    missive_message_id UUID,
+    original_filename TEXT,
+    original_url TEXT,
+    file_size INTEGER,
+    width INTEGER,
+    height INTEGER,
+    media_type VARCHAR(100),
+    sub_type VARCHAR(100),
+    retry_count INTEGER
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, missive AS $$
+    SELECT DISTINCT ON (eaf.missive_attachment_id)
+        eaf.missive_attachment_id,
+        eaf.missive_message_id,
+        eaf.original_filename,
+        eaf.original_url,
+        eaf.file_size,
+        eaf.width,
+        eaf.height,
+        eaf.media_type,
+        eaf.sub_type,
+        eaf.retry_count
+    FROM email_attachment_files eaf
+    JOIN missive.messages msg ON eaf.missive_message_id = msg.id
+    JOIN project_conversations pc ON msg.conversation_id = pc.m_conversation_id
+    WHERE eaf.status = 'pending'
+      AND eaf.retry_count < p_max_retries
+    ORDER BY eaf.missive_attachment_id, eaf.created_at ASC
+    LIMIT p_limit;
+$$;
+
 CREATE OR REPLACE FUNCTION trigger_queue_attachment_download()
 RETURNS TRIGGER AS $$
 BEGIN
