@@ -2417,6 +2417,18 @@ RETURNS VOID AS $$
 BEGIN
     UPDATE file_contents
     SET s3_status = 'error',
+        status_message = p_error,
+        last_status_change = NOW()
+    WHERE content_hash = p_hash;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION mark_upload_skipped(p_hash TEXT, p_reason TEXT)
+RETURNS VOID AS $$
+BEGIN
+    UPDATE file_contents
+    SET s3_status = 'skipped',
+        status_message = p_reason,
         last_status_change = NOW()
     WHERE content_hash = p_hash;
 END;

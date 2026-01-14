@@ -135,11 +135,12 @@ CREATE TABLE file_contents (
     content_hash TEXT PRIMARY KEY,
     size_bytes BIGINT NOT NULL,
     mime_type TEXT,
-    storage_path TEXT UNIQUE, -- format: files/hash
+    storage_path TEXT UNIQUE, -- format: {hash} (content-addressable)
     extracted_text TEXT,
     thumbnail_path TEXT,
     thumbnail_generated_at TIMESTAMPTZ,
     s3_status s3_status NOT NULL DEFAULT 'pending',
+    status_message TEXT, -- reason for error/skipped status
     processing_status processing_status NOT NULL DEFAULT 'pending',
     try_count INTEGER DEFAULT 0,
     last_status_change TIMESTAMPTZ DEFAULT NOW(),

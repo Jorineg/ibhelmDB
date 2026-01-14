@@ -215,11 +215,12 @@ Table file_contents {
   content_hash text [pk, note: "SHA256 hash - Content-Addressable Storage key"]
   size_bytes bigint [not null]
   mime_type text
-  storage_path text [unique, note: "Format: files/{hash}"]
+  storage_path text [unique, note: "Format: {hash} (content-addressable)"]
   extracted_text text [note: "OCR/PDF text extraction result"]
   thumbnail_path text [note: "Path in thumbnails bucket"]
   thumbnail_generated_at timestamptz
-  s3_status varchar(20) [default: 'pending', note: "'pending', 'uploading', 'uploaded', 'error'"]
+  s3_status varchar(20) [default: 'pending', note: "'pending', 'uploading', 'uploaded', 'error', 'skipped'"]
+  status_message text [note: "Reason for error/skipped status"]
   processing_status varchar(20) [default: 'pending', note: "'pending', 'processing', 'done', 'error'"]
   try_count integer [default: 0]
   last_status_change timestamptz [default: `now()`]
