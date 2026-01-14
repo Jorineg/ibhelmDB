@@ -2010,6 +2010,7 @@ BEGIN
     WHERE COALESCE(c.source, q.source) IN ('teamwork', 'missive', 'craft');
     
     -- Return files sync status (S3 Queue)
+    -- Note: 'skipped' is treated as completed (intentional exclusion, not an error)
     RETURN QUERY SELECT 
         'files'::VARCHAR(50) AS source,
         NULL::TIMESTAMPTZ AS last_event_time,
@@ -2017,7 +2018,7 @@ BEGIN
         COUNT(*) FILTER (WHERE s3_status = 'pending') AS pending_count,
         COUNT(*) FILTER (WHERE s3_status = 'uploading') AS processing_count,
         COUNT(*) FILTER (WHERE s3_status = 'error') AS failed_count,
-        MAX(last_status_change) FILTER (WHERE s3_status = 'uploaded') AS last_processed_at
+        MAX(last_status_change) FILTER (WHERE s3_status IN ('uploaded', 'skipped')) AS last_processed_at
     FROM file_contents;
     
     -- Return thumbnails/OCR queue status (TTE)
