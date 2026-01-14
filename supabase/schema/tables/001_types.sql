@@ -81,7 +81,7 @@ INSERT INTO app_settings (body) VALUES ('{"email_color": "#3b82f6", "craft_color
 -- =====================================
 
 CREATE TABLE user_settings (
-    user_id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    user_id UUID PRIMARY KEY,  -- No FK to auth.users (separate schema in self-hosted)
     settings JSONB NOT NULL DEFAULT '{}'::jsonb,
     db_created_at TIMESTAMP DEFAULT NOW(),
     db_updated_at TIMESTAMP DEFAULT NOW()
