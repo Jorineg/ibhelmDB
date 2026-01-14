@@ -74,7 +74,18 @@ CREATE TABLE app_settings (
     body JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
-INSERT INTO app_settings (body) VALUES ('{"email_color": "#3b82f6", "craft_color": "#8b5cf6", "cost_group_prefixes": ["KGR"], "location_prefix": "O-"}'::jsonb);
+INSERT INTO app_settings (body) VALUES ('{"email_color": "#3b82f6", "craft_color": "#8b5cf6", "file_color": "#ef4444", "person_color": "#10b981", "project_color": "#f59e0b", "cost_group_prefixes": ["KGR"], "location_prefix": "O-"}'::jsonb);
+
+-- =====================================
+-- USER SETTINGS (Per-user preferences, synced to DB)
+-- =====================================
+
+CREATE TABLE user_settings (
+    user_id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    settings JSONB NOT NULL DEFAULT '{}'::jsonb,
+    db_created_at TIMESTAMP DEFAULT NOW(),
+    db_updated_at TIMESTAMP DEFAULT NOW()
+);
 
 -- =====================================
 -- INDEXES
@@ -108,5 +119,6 @@ COMMENT ON COLUMN task_types.is_default IS 'If true, this type catches all tasks
 COMMENT ON COLUMN task_types.slug IS 'URL-safe identifier, used for filtering';
 COMMENT ON TABLE task_type_rules IS 'Maps Teamwork tag names to task types (match any rule)';
 COMMENT ON TABLE operation_runs IS 'Tracks status of bulk operations (task_type_extraction, person_linking, project_linking)';
-COMMENT ON TABLE app_settings IS 'Single-row settings table. Schema in ibhelmDB/docs/app_settings_schema.md';
+COMMENT ON TABLE app_settings IS 'Admin settings (colors, prefixes, integration URLs). Schema in ibhelmDB/docs/app_settings_schema.md';
+COMMENT ON TABLE user_settings IS 'Per-user settings (display prefs, filter configs, key bindings). JSON schema: { hide_completed_tasks, default_sort_field, default_sort_order, filter_configurations, key_bindings }';
 

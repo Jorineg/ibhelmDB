@@ -1992,19 +1992,22 @@ $$;
 CREATE OR REPLACE FUNCTION get_sync_status()
 RETURNS TABLE (
     source VARCHAR(50), last_event_time TIMESTAMPTZ, checkpoint_updated_at TIMESTAMPTZ,
-    pending_count BIGINT, processing_count BIGINT, failed_count BIGINT, last_processed_at TIMESTAMPTZ
+    pending_count BIGINT, processing_count BIGINT, failed_count BIGINT, 
+    last_processed_at TIMESTAMPTZ, last_failed_at TIMESTAMPTZ, oldest_processing_started_at TIMESTAMPTZ
 ) AS $$
 BEGIN
     -- Return connector sources (teamwork, missive, craft)
     RETURN QUERY SELECT COALESCE(c.source, q.source) AS source, c.last_event_time, c.updated_at AS checkpoint_updated_at,
         COALESCE(q.pending_count, 0) AS pending_count, COALESCE(q.processing_count, 0) AS processing_count,
-        COALESCE(q.failed_count, 0) AS failed_count, q.last_processed_at
+        COALESCE(q.failed_count, 0) AS failed_count, q.last_processed_at, q.last_failed_at, q.oldest_processing_started_at
     FROM (
         SELECT qi.source,
             COUNT(*) FILTER (WHERE qi.status = 'pending') AS pending_count,
             COUNT(*) FILTER (WHERE qi.status = 'processing') AS processing_count,
             COUNT(*) FILTER (WHERE qi.status = 'failed') AS failed_count,
-            MAX(qi.processed_at) FILTER (WHERE qi.status = 'completed') AS last_processed_at
+            MAX(qi.processed_at) FILTER (WHERE qi.status = 'completed') AS last_processed_at,
+            MAX(qi.updated_at) FILTER (WHERE qi.status = 'failed') AS last_failed_at,
+            MIN(qi.processing_started_at) FILTER (WHERE qi.status = 'processing') AS oldest_processing_started_at
         FROM teamworkmissiveconnector.queue_items qi GROUP BY qi.source
     ) q FULL OUTER JOIN teamworkmissiveconnector.checkpoints c ON c.source = q.source
     WHERE COALESCE(c.source, q.source) IN ('teamwork', 'missive', 'craft');
@@ -2018,7 +2021,9 @@ BEGIN
         COUNT(*) FILTER (WHERE s3_status = 'pending') AS pending_count,
         COUNT(*) FILTER (WHERE s3_status = 'uploading') AS processing_count,
         COUNT(*) FILTER (WHERE s3_status = 'error') AS failed_count,
-        MAX(last_status_change) FILTER (WHERE s3_status IN ('uploaded', 'skipped')) AS last_processed_at
+        MAX(last_status_change) FILTER (WHERE s3_status IN ('uploaded', 'skipped')) AS last_processed_at,
+        MAX(last_status_change) FILTER (WHERE s3_status = 'error') AS last_failed_at,
+        MIN(last_status_change) FILTER (WHERE s3_status = 'uploading') AS oldest_processing_started_at
     FROM file_contents;
     
     -- Return thumbnails/OCR queue status (TTE)
@@ -2029,7 +2034,9 @@ BEGIN
         COUNT(*) FILTER (WHERE processing_status = 'pending' AND s3_status = 'uploaded') AS pending_count,
         COUNT(*) FILTER (WHERE processing_status = 'indexing') AS processing_count,
         COUNT(*) FILTER (WHERE processing_status = 'error') AS failed_count,
-        MAX(last_status_change) FILTER (WHERE processing_status = 'done') AS last_processed_at
+        MAX(last_status_change) FILTER (WHERE processing_status = 'done') AS last_processed_at,
+        MAX(last_status_change) FILTER (WHERE processing_status = 'error') AS last_failed_at,
+        MIN(last_status_change) FILTER (WHERE processing_status = 'indexing') AS oldest_processing_started_at
     FROM file_contents;
     
     -- Return attachments download queue status (only project-linked)
@@ -2040,7 +2047,9 @@ BEGIN
         COUNT(*) FILTER (WHERE eaf.status = 'pending') AS pending_count,
         COUNT(*) FILTER (WHERE eaf.status = 'downloading') AS processing_count,
         COUNT(*) FILTER (WHERE eaf.status = 'failed') AS failed_count,
-        MAX(eaf.downloaded_at) FILTER (WHERE eaf.status = 'completed') AS last_processed_at
+        MAX(eaf.downloaded_at) FILTER (WHERE eaf.status = 'completed') AS last_processed_at,
+        MAX(eaf.updated_at) FILTER (WHERE eaf.status = 'failed') AS last_failed_at,
+        MIN(eaf.updated_at) FILTER (WHERE eaf.status = 'downloading') AS oldest_processing_started_at
     FROM email_attachment_files eaf
     JOIN missive.messages msg ON eaf.missive_message_id = msg.id
     WHERE EXISTS (SELECT 1 FROM project_conversations pc WHERE pc.m_conversation_id = msg.conversation_id);

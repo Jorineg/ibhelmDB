@@ -13,7 +13,7 @@ CREATE TABLE teamworkmissiveconnector.checkpoints (
     last_event_time TIMESTAMPTZ NOT NULL,
     last_cursor TEXT,
     updated_at TIMESTAMPTZ DEFAULT NOW(),
-    CONSTRAINT checkpoints_valid_source CHECK (source IN ('teamwork', 'missive', 'craft', 'files'))
+    CONSTRAINT checkpoints_valid_source CHECK (source IN ('teamwork', 'teamwork_timelogs', 'missive', 'craft', 'files'))
 );
 
 CREATE INDEX idx_checkpoints_source ON teamworkmissiveconnector.checkpoints(source);
