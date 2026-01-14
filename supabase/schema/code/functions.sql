@@ -2686,9 +2686,12 @@ RETURNS TABLE(
     height INTEGER,
     media_type VARCHAR(100),
     sub_type VARCHAR(100),
-    retry_count INTEGER
+    retry_count INTEGER,
+    project_name TEXT,
+    delivered_at TIMESTAMP,
+    sender_email VARCHAR(500)
 )
-LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, missive AS $$
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, missive, teamwork AS $$
     SELECT DISTINCT ON (eaf.missive_attachment_id)
         eaf.missive_attachment_id,
         eaf.missive_message_id,
@@ -2699,10 +2702,15 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, missive AS $$
         eaf.height,
         eaf.media_type,
         eaf.sub_type,
-        eaf.retry_count
+        eaf.retry_count,
+        p.name AS project_name,
+        msg.delivered_at,
+        c.email AS sender_email
     FROM email_attachment_files eaf
     JOIN missive.messages msg ON eaf.missive_message_id = msg.id
     JOIN project_conversations pc ON msg.conversation_id = pc.m_conversation_id
+    JOIN teamwork.projects p ON pc.tw_project_id = p.id
+    LEFT JOIN missive.contacts c ON msg.from_contact_id = c.id
     WHERE eaf.status = 'pending'
       AND eaf.retry_count < p_max_retries
     ORDER BY eaf.missive_attachment_id, eaf.created_at ASC
