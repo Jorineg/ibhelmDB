@@ -1552,9 +1552,9 @@ BEGIN
     IF p_hide_completed_tasks = TRUE THEN
         v_where := array_append(v_where, '(ui.type != ''task'' OR ui.status != ''completed'')');
     END IF;
-    -- File ignore patterns: hide files matching any of the LIKE patterns
+    -- File ignore patterns: hide files matching any of the LIKE patterns (match against name which contains full path)
     IF p_file_ignore_patterns IS NOT NULL AND array_length(p_file_ignore_patterns, 1) > 0 THEN
-        v_where := array_append(v_where, format('(ui.type != ''file'' OR NOT (ui.storage_path LIKE ANY(%L::TEXT[])))', p_file_ignore_patterns));
+        v_where := array_append(v_where, format('(ui.type != ''file'' OR NOT (ui.name LIKE ANY(%L::TEXT[])))', p_file_ignore_patterns));
     END IF;
     IF p_priority_in IS NOT NULL THEN
         v_where := array_append(v_where, format('ui.priority = ANY(%L::TEXT[])', p_priority_in));
@@ -1766,9 +1766,9 @@ BEGIN
     IF p_hide_completed_tasks = TRUE THEN
         v_where := array_append(v_where, '(ui.type != ''task'' OR ui.status != ''completed'')');
     END IF;
-    -- File ignore patterns: hide files matching any of the LIKE patterns
+    -- File ignore patterns: hide files matching any of the LIKE patterns (match against name which contains full path)
     IF p_file_ignore_patterns IS NOT NULL AND array_length(p_file_ignore_patterns, 1) > 0 THEN
-        v_where := array_append(v_where, format('(ui.type != ''file'' OR NOT (ui.storage_path LIKE ANY(%L::TEXT[])))', p_file_ignore_patterns));
+        v_where := array_append(v_where, format('(ui.type != ''file'' OR NOT (ui.name LIKE ANY(%L::TEXT[])))', p_file_ignore_patterns));
     END IF;
     IF p_priority_in IS NOT NULL THEN
         v_where := array_append(v_where, format('ui.priority = ANY(%L::TEXT[])', p_priority_in));
@@ -2692,7 +2692,8 @@ RETURNS TABLE(
     retry_count INTEGER,
     project_name TEXT,
     delivered_at TIMESTAMP,
-    sender_email VARCHAR(500)
+    sender_email VARCHAR(500),
+    email_subject TEXT
 )
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, missive, teamwork AS $$
     SELECT DISTINCT ON (eaf.missive_attachment_id)
@@ -2708,9 +2709,11 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, missive, teamwork
         eaf.retry_count,
         p.name AS project_name,
         msg.delivered_at,
-        c.email AS sender_email
+        c.email AS sender_email,
+        COALESCE(msg.subject, conv.subject, conv.latest_message_subject) AS email_subject
     FROM email_attachment_files eaf
     JOIN missive.messages msg ON eaf.missive_message_id = msg.id
+    JOIN missive.conversations conv ON msg.conversation_id = conv.id
     JOIN project_conversations pc ON msg.conversation_id = pc.m_conversation_id
     JOIN teamwork.projects p ON pc.tw_project_id = p.id
     LEFT JOIN missive.contacts c ON msg.from_contact_id = c.id
