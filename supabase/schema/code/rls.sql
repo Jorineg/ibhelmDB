@@ -255,6 +255,37 @@ GRANT EXECUTE ON FUNCTION get_current_user_id() TO mcp_readonly;
 REVOKE SELECT ON mv_unified_items FROM mcp_readonly;
 GRANT SELECT ON unified_items_secure TO mcp_readonly;
 
+-- MCP: revoke ALL write functions (prevent calling via SELECT function())
+-- Admin batch operations
+REVOKE EXECUTE ON FUNCTION rerun_all_task_type_extractions() FROM mcp_readonly;
+REVOKE EXECUTE ON FUNCTION rerun_all_person_linking() FROM mcp_readonly;
+REVOKE EXECUTE ON FUNCTION rerun_all_project_conversation_linking() FROM mcp_readonly;
+REVOKE EXECUTE ON FUNCTION rerun_all_cost_group_linking() FROM mcp_readonly;
+REVOKE EXECUTE ON FUNCTION rerun_all_location_linking() FROM mcp_readonly;
+REVOKE EXECUTE ON FUNCTION rerun_all_file_linking() FROM mcp_readonly;
+REVOKE EXECUTE ON FUNCTION rerun_all_craft_linking() FROM mcp_readonly;
+-- CRITICAL: Data deletion
+REVOKE EXECUTE ON FUNCTION purge_excluded_teamwork_data() FROM mcp_readonly;
+-- Record creation/modification
+REVOKE EXECUTE ON FUNCTION get_or_create_location(TEXT, TEXT, TEXT) FROM mcp_readonly;
+REVOKE EXECUTE ON FUNCTION get_or_create_cost_group(INTEGER, TEXT) FROM mcp_readonly;
+REVOKE EXECUTE ON FUNCTION link_file_to_project(UUID) FROM mcp_readonly;
+REVOKE EXECUTE ON FUNCTION link_craft_document_to_project(TEXT) FROM mcp_readonly;
+-- Metadata extraction (writes to DB)
+REVOKE EXECUTE ON FUNCTION extract_locations_for_task(INTEGER) FROM mcp_readonly;
+REVOKE EXECUTE ON FUNCTION extract_locations_for_conversation(UUID) FROM mcp_readonly;
+REVOKE EXECUTE ON FUNCTION extract_cost_groups_for_task(INTEGER) FROM mcp_readonly;
+REVOKE EXECUTE ON FUNCTION extract_cost_groups_for_conversation(UUID) FROM mcp_readonly;
+REVOKE EXECUTE ON FUNCTION extract_cost_groups_for_file(UUID) FROM mcp_readonly;
+REVOKE EXECUTE ON FUNCTION extract_file_metadata(UUID) FROM mcp_readonly;
+REVOKE EXECUTE ON FUNCTION extract_craft_metadata(TEXT) FROM mcp_readonly;
+-- Trigger functions (should never be called directly anyway)
+REVOKE EXECUTE ON FUNCTION trigger_extract_file_metadata() FROM mcp_readonly;
+REVOKE EXECUTE ON FUNCTION trigger_extract_craft_metadata() FROM mcp_readonly;
+REVOKE EXECUTE ON FUNCTION trigger_delete_s3_content() FROM mcp_readonly;
+-- File operations
+REVOKE EXECUTE ON FUNCTION upsert_files_checkpoint(JSONB) FROM mcp_readonly;
+
 -- Authenticated users need access to missive schema for RLS-protected queries
 GRANT USAGE ON SCHEMA missive TO authenticated;
 GRANT SELECT ON ALL TABLES IN SCHEMA missive TO authenticated;
