@@ -122,7 +122,9 @@ SELECT * FROM (
         -- Flattened tag names for fast trigram search (P0 optimization)
         (SELECT string_agg(elem->>'name', ' ') FROM jsonb_array_elements(tta.tags) elem) AS tag_names_text,
         -- Pre-computed location IDs for fast array overlap filter (P1 optimization)
-        (SELECT array_agg(ol2.location_id) FROM object_locations ol2 WHERE ol2.tw_task_id = t.id) AS location_ids
+        (SELECT array_agg(ol2.location_id) FROM object_locations ol2 WHERE ol2.tw_task_id = t.id) AS location_ids,
+        -- RLS: No email restriction for tasks
+        NULL::TEXT[] AS involved_emails
     FROM teamwork.tasks t
     LEFT JOIN teamwork.projects p ON t.project_id = p.id
     LEFT JOIN teamwork.companies c ON p.company_id = c.id
@@ -180,7 +182,13 @@ SELECT * FROM (
         -- Flattened tag names for fast trigram search (P0 optimization)
         (SELECT string_agg(elem->>'name', ' ') FROM jsonb_array_elements(cla.tags) elem) AS tag_names_text,
         -- Pre-computed location IDs for fast array overlap filter (P1 optimization)
-        (SELECT array_agg(ol2.location_id) FROM object_locations ol2 WHERE ol2.m_conversation_id = conv.id) AS location_ids
+        (SELECT array_agg(ol2.location_id) FROM object_locations ol2 WHERE ol2.m_conversation_id = conv.id) AS location_ids,
+        -- RLS: All involved email addresses (sender + recipients) for email visibility
+        (SELECT array_agg(DISTINCT e) FROM (
+            SELECT from_contact.email AS e
+            UNION ALL
+            SELECT (elem->'contact'->>'email')::TEXT FROM jsonb_array_elements(mra.recipients) elem
+        ) sub WHERE e IS NOT NULL) AS involved_emails
     FROM missive.messages m
     LEFT JOIN missive.conversations conv ON m.conversation_id = conv.id
     LEFT JOIN missive.contacts from_contact ON m.from_contact_id = from_contact.id
@@ -226,7 +234,9 @@ SELECT * FROM (
         -- No tags for craft docs
         NULL::TEXT AS tag_names_text,
         -- No locations for craft docs
-        NULL::UUID[] AS location_ids
+        NULL::UUID[] AS location_ids,
+        -- RLS: No email restriction for craft docs
+        NULL::TEXT[] AS involved_emails
     FROM craft_documents cd
     LEFT JOIN project_craft_documents pcd ON cd.id = pcd.craft_document_id
     LEFT JOIN teamwork.projects twp ON pcd.tw_project_id = twp.id
@@ -263,7 +273,9 @@ SELECT * FROM (
         -- No tags for files
         NULL::TEXT AS tag_names_text,
         -- Pre-computed location IDs for fast array overlap filter (P1 optimization)
-        (SELECT array_agg(ol2.location_id) FROM object_locations ol2 WHERE ol2.file_id = f.id) AS location_ids
+        (SELECT array_agg(ol2.location_id) FROM object_locations ol2 WHERE ol2.file_id = f.id) AS location_ids,
+        -- RLS: No email restriction for files
+        NULL::TEXT[] AS involved_emails
     FROM files f
     JOIN file_contents fc ON f.content_hash = fc.content_hash
     LEFT JOIN object_locations ol ON f.id = ol.file_id
@@ -290,6 +302,8 @@ CREATE INDEX IF NOT EXISTS idx_mv_ui_assignee_trgm ON mv_unified_items USING gin
 CREATE INDEX IF NOT EXISTS idx_mv_ui_tags_trgm ON mv_unified_items USING gin (tag_names_text gin_trgm_ops);
 -- Pre-computed location IDs for fast array overlap filter (P1 optimization - replaces 3x EXISTS subqueries)
 CREATE INDEX IF NOT EXISTS idx_mv_ui_location_ids ON mv_unified_items USING GIN (location_ids);
+-- RLS: Involved email addresses for fast array overlap in email visibility policy
+CREATE INDEX IF NOT EXISTS idx_mv_ui_involved_emails ON mv_unified_items USING GIN (involved_emails);
 
 -- =====================================
 -- 3. UNIFIED PERSON DETAILS VIEW

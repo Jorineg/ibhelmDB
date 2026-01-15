@@ -21,7 +21,8 @@ Single-row table. Admin-only settings that affect all users.
   "location_prefix": "O-",
   "file_ignore_patterns": [
     { "pattern": "%~$%", "label": "Office Lock Files", "enabled": true, "builtin": true }
-  ]
+  ],
+  "public_email_addresses": []
 }
 ```
 
@@ -37,6 +38,7 @@ Single-row table. Admin-only settings that affect all users.
 | `cost_group_prefixes` | string[] | `["KGR"]` | Tag prefixes for cost group extraction |
 | `location_prefix` | string | `"O-"` | Tag prefix for location extraction |
 | `file_ignore_patterns` | FileIgnorePattern[] | (builtin) | LIKE patterns to hide files |
+| `public_email_addresses` | string[] | `[]` | Shared email addresses visible to all users (RLS) |
 
 ---
 

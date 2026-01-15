@@ -1487,7 +1487,8 @@ RETURNS TABLE(
     conversation_comments_text TEXT, craft_url TEXT, teamwork_url TEXT, missive_url TEXT, storage_path TEXT, thumbnail_path TEXT,
     file_extension TEXT, accumulated_estimated_minutes INTEGER, logged_minutes INTEGER, billable_minutes INTEGER
 )
-LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
+LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path = public AS $$
+-- SECURITY INVOKER: RLS policies on mv_unified_items are enforced
 DECLARE
     v_sql TEXT;
     v_where TEXT[] := ARRAY[]::TEXT[];
@@ -1707,7 +1708,8 @@ CREATE OR REPLACE FUNCTION count_unified_items(
     p_file_ignore_patterns TEXT[] DEFAULT NULL
 )
 RETURNS INTEGER
-LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
+LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path = public AS $$
+-- SECURITY INVOKER: RLS policies on mv_unified_items are enforced
 DECLARE
     v_sql TEXT;
     v_where TEXT[] := ARRAY[]::TEXT[];
