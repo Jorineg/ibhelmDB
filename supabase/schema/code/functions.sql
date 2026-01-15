@@ -1658,7 +1658,7 @@ BEGIN
     -- 2. Outer query joins to get full row data for only the needed rows
     v_sql := 'WITH skinny_ids AS MATERIALIZED (
         SELECT ui.id, ui.type
-        FROM mv_unified_items ui';
+        FROM unified_items_secure ui';
     
     IF array_length(v_where, 1) > 0 THEN
         v_sql := v_sql || ' WHERE ' || array_to_string(v_where, ' AND ');
@@ -1866,7 +1866,7 @@ BEGIN
     END IF;
     
     -- Simple COUNT(*)
-    v_sql := 'SELECT COUNT(*)::INTEGER FROM mv_unified_items ui' || v_where_clause;
+    v_sql := 'SELECT COUNT(*)::INTEGER FROM unified_items_secure ui' || v_where_clause;
     EXECUTE v_sql INTO v_count;
     RETURN v_count;
 END;
@@ -1909,7 +1909,7 @@ BEGIN
         -- Find persons involved in items that belong to matching projects
         SELECT ARRAY_AGG(DISTINCT iip.unified_person_id) INTO v_matching_person_ids
         FROM item_involved_persons iip
-        JOIN mv_unified_items ui ON ui.id = iip.item_id AND ui.type = iip.item_type
+        JOIN unified_items_secure ui ON ui.id = iip.item_id AND ui.type = iip.item_type
         WHERE ui.project ILIKE '%' || p_project_search || '%';
         
         IF v_matching_person_ids IS NULL OR array_length(v_matching_person_ids, 1) IS NULL THEN
@@ -1985,7 +1985,7 @@ BEGIN
     IF v_has_project_filter THEN
         SELECT ARRAY_AGG(DISTINCT iip.unified_person_id) INTO v_matching_person_ids
         FROM item_involved_persons iip
-        JOIN mv_unified_items ui ON ui.id = iip.item_id AND ui.type = iip.item_type
+        JOIN unified_items_secure ui ON ui.id = iip.item_id AND ui.type = iip.item_type
         WHERE ui.project ILIKE '%' || p_project_search || '%';
         
         IF v_matching_person_ids IS NULL OR array_length(v_matching_person_ids, 1) IS NULL THEN

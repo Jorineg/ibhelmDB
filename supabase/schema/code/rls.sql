@@ -108,24 +108,11 @@ CREATE POLICY "operation_runs_update_admin" ON operation_runs
 FOR UPDATE USING (is_admin());
 
 -- =====================================
--- 5. UNIFIED ITEMS MATERIALIZED VIEW RLS
+-- 5. UNIFIED ITEMS - Security via View (not RLS)
 -- =====================================
-
-ALTER MATERIALIZED VIEW mv_unified_items OWNER TO postgres;
-ALTER TABLE mv_unified_items ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS "mv_unified_items_email_visibility" ON mv_unified_items;
-
--- Email visibility: user's email or public email must be in involved_emails
--- Non-email items (tasks, craft, files) are visible to all
-CREATE POLICY "mv_unified_items_email_visibility" ON mv_unified_items 
-FOR SELECT USING (
-  type != 'email'
-  OR
-  involved_emails && (
-    ARRAY[get_current_user_email()] || get_public_emails()
-  )
-);
+-- NOTE: RLS does NOT work on materialized views in PostgreSQL.
+-- Email filtering is handled by unified_items_secure view in views.sql
+-- which wraps mv_unified_items with the email visibility filter.
 
 -- =====================================
 -- 6. MISSIVE MESSAGES RLS (for MCP direct access)
@@ -263,6 +250,10 @@ GRANT EXECUTE ON FUNCTION get_current_user_email() TO mcp_readonly;
 GRANT EXECUTE ON FUNCTION get_public_emails() TO mcp_readonly;
 GRANT EXECUTE ON FUNCTION is_admin() TO mcp_readonly;
 GRANT EXECUTE ON FUNCTION get_current_user_id() TO mcp_readonly;
+
+-- MCP: revoke direct MV access, grant secure view
+REVOKE SELECT ON mv_unified_items FROM mcp_readonly;
+GRANT SELECT ON unified_items_secure TO mcp_readonly;
 
 -- Authenticated users need access to missive schema for RLS-protected queries
 GRANT USAGE ON SCHEMA missive TO authenticated;

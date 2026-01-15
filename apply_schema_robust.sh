@@ -46,6 +46,21 @@ run_psql_file() {
 echo -e "${GREEN}=== IBHelm Robust Schema Apply ===${NC}"
 
 # ==============================================================================
+# STEP 0: DROP VIEWS (So Atlas can modify columns)
+# ==============================================================================
+echo -e "${CYAN}[Step 0] Dropping Views (will be recreated in Step 2)${NC}"
+run_psql -q <<EOF
+-- Drop regular views that might block column changes
+DROP VIEW IF EXISTS file_details CASCADE;
+DROP VIEW IF EXISTS location_hierarchy CASCADE;
+DROP VIEW IF EXISTS project_overview CASCADE;
+DROP VIEW IF EXISTS unified_person_details CASCADE;
+-- Drop materialized views
+DROP MATERIALIZED VIEW IF EXISTS mv_unified_items CASCADE;
+EOF
+echo -e "${GREEN}  ✓ Views dropped${NC}"
+
+# ==============================================================================
 # STEP 1: ATLAS DIFF (With Safe-Guards)
 # ==============================================================================
 if [ "$SKIP_ATLAS" = true ]; then

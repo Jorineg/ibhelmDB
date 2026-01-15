@@ -414,6 +414,19 @@ WHERE status IN ('failed', 'dead_letter') AND updated_at > NOW() - INTERVAL '24 
 ORDER BY updated_at DESC LIMIT 100;
 
 -- =====================================
+-- SECURE VIEW FOR EMAIL FILTERING
+-- =====================================
+-- Wraps mv_unified_items with email visibility filter
+-- RLS doesn't work on materialized views, so we use a view layer
+
+CREATE OR REPLACE VIEW unified_items_secure AS
+SELECT * FROM mv_unified_items
+WHERE type != 'email'
+   OR involved_emails && (
+      ARRAY[get_current_user_email()] || get_public_emails()
+   );
+
+-- =====================================
 -- GRANTS
 -- =====================================
 
@@ -425,13 +438,16 @@ GRANT SELECT ON mv_message_attachments_agg TO authenticated;
 GRANT SELECT ON mv_conversation_labels_agg TO authenticated;
 GRANT SELECT ON mv_conversation_comments_agg TO authenticated;
 GRANT SELECT ON mv_conversation_assignees_agg TO authenticated;
-GRANT SELECT ON mv_unified_items TO authenticated;
+-- MV not directly accessible - use unified_items_secure view instead
+REVOKE SELECT ON mv_unified_items FROM authenticated;
+GRANT SELECT ON unified_items_secure TO authenticated;
 
 -- =====================================
 -- COMMENTS
 -- =====================================
 
 COMMENT ON MATERIALIZED VIEW mv_unified_items IS 'Unified materialized view combining tasks, emails, and Craft documents for dashboard display';
+COMMENT ON VIEW unified_items_secure IS 'Security wrapper for mv_unified_items - filters emails by user visibility (use this, not the MV directly)';
 COMMENT ON VIEW unified_person_details IS 'Enriched unified person view with linked external system data';
 COMMENT ON VIEW project_overview IS 'Teamwork project overview with ibhelm extensions and aggregated counts';
 COMMENT ON VIEW file_details IS 'File details with all metadata and relationships';
