@@ -1229,6 +1229,29 @@ $$ LANGUAGE plpgsql STABLE;
 -- 10. AUTOCOMPLETE SEARCH FUNCTIONS
 -- =====================================
 
+CREATE OR REPLACE FUNCTION search_companies_autocomplete(p_search_text TEXT, p_limit INTEGER DEFAULT 10)
+RETURNS TABLE(id INTEGER, name TEXT, project_count BIGINT)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
+DECLARE v_search_pattern TEXT;
+BEGIN
+    IF p_search_text IS NULL OR TRIM(p_search_text) = '' THEN
+        RETURN QUERY SELECT c.id, c.name::TEXT, COUNT(p.id) AS project_count
+        FROM teamwork.companies c LEFT JOIN teamwork.projects p ON p.company_id = c.id
+        GROUP BY c.id, c.name
+        ORDER BY c.name ASC LIMIT p_limit;
+        RETURN;
+    END IF;
+    
+    v_search_pattern := '%' || p_search_text || '%';
+    RETURN QUERY SELECT c.id, c.name::TEXT, COUNT(p.id) AS project_count
+    FROM teamwork.companies c LEFT JOIN teamwork.projects p ON p.company_id = c.id
+    WHERE c.name ILIKE v_search_pattern
+    GROUP BY c.id, c.name
+    ORDER BY CASE WHEN c.name ILIKE p_search_text || '%' THEN 0 ELSE 1 END, c.name ASC
+    LIMIT p_limit;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION search_projects_autocomplete(p_search_text TEXT, p_limit INTEGER DEFAULT 10)
 RETURNS TABLE(id INTEGER, name TEXT, company_name TEXT, status VARCHAR)
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
@@ -2861,4 +2884,138 @@ GRANT EXECUTE ON FUNCTION rerun_all_file_linking() TO authenticated;
 GRANT EXECUTE ON FUNCTION get_file_linking_run_status(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_latest_file_linking_run() TO authenticated;
 GRANT EXECUTE ON FUNCTION rerun_all_craft_linking() TO authenticated;
+
+-- =====================================
+-- PURGE EXCLUDED TEAMWORK DATA
+-- =====================================
+
+CREATE OR REPLACE FUNCTION purge_excluded_teamwork_data()
+RETURNS TABLE(
+    projects_deleted INTEGER,
+    tasks_deleted INTEGER,
+    timelogs_deleted INTEGER,
+    tags_deleted INTEGER,
+    conversations_unlinked INTEGER,
+    craft_docs_unlinked INTEGER,
+    files_unlinked INTEGER
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, teamwork
+AS $$
+DECLARE
+    v_excluded_company_ids INTEGER[];
+    v_excluded_project_ids INTEGER[];
+    v_all_excluded_project_ids INTEGER[];
+    v_task_ids_to_delete INTEGER[];
+    v_projects_deleted INTEGER := 0;
+    v_tasks_deleted INTEGER := 0;
+    v_timelogs_deleted INTEGER := 0;
+    v_tags_deleted INTEGER := 0;
+    v_conversations_unlinked INTEGER := 0;
+    v_craft_docs_unlinked INTEGER := 0;
+    v_files_unlinked INTEGER := 0;
+BEGIN
+    -- Get exclusion lists from app_settings
+    SELECT 
+        COALESCE((body->>'excluded_tw_company_ids')::INTEGER[], ARRAY[]::INTEGER[]),
+        COALESCE((body->>'excluded_tw_project_ids')::INTEGER[], ARRAY[]::INTEGER[])
+    INTO v_excluded_company_ids, v_excluded_project_ids
+    FROM app_settings
+    WHERE lock = 'X';
+    
+    -- Combine: excluded projects + projects belonging to excluded companies
+    SELECT ARRAY_AGG(DISTINCT id)
+    INTO v_all_excluded_project_ids
+    FROM teamwork.projects
+    WHERE id = ANY(v_excluded_project_ids)
+       OR company_id = ANY(v_excluded_company_ids);
+    
+    IF v_all_excluded_project_ids IS NULL OR array_length(v_all_excluded_project_ids, 1) IS NULL THEN
+        RETURN QUERY SELECT 0, 0, 0, 0, 0, 0, 0;
+        RETURN;
+    END IF;
+    
+    -- Collect task IDs before deletion (for item_involved_persons cleanup)
+    SELECT ARRAY_AGG(id)
+    INTO v_task_ids_to_delete
+    FROM teamwork.tasks
+    WHERE project_id = ANY(v_all_excluded_project_ids);
+    
+    -- 1. Delete item_involved_persons for tasks (no FK, text-based item_id)
+    IF v_task_ids_to_delete IS NOT NULL THEN
+        DELETE FROM item_involved_persons
+        WHERE item_type = 'task' 
+          AND item_id = ANY(SELECT t::TEXT FROM UNNEST(v_task_ids_to_delete) t);
+    END IF;
+    
+    -- 2. Delete timelogs (FK SET NULL won't delete them)
+    DELETE FROM teamwork.timelogs
+    WHERE project_id = ANY(v_all_excluded_project_ids);
+    GET DIAGNOSTICS v_timelogs_deleted = ROW_COUNT;
+    
+    -- 3. Delete tasks (cascades: task_tags, task_assignees, object_locations, object_cost_groups, task_extensions)
+    DELETE FROM teamwork.tasks
+    WHERE project_id = ANY(v_all_excluded_project_ids);
+    GET DIAGNOSTICS v_tasks_deleted = ROW_COUNT;
+    
+    -- 4. Delete tags associated with excluded projects
+    DELETE FROM teamwork.tags
+    WHERE project_id = ANY(v_all_excluded_project_ids);
+    GET DIAGNOSTICS v_tags_deleted = ROW_COUNT;
+    
+    -- 5. Unlink conversations from excluded projects (don't delete the conversations themselves)
+    DELETE FROM project_conversations
+    WHERE tw_project_id = ANY(v_all_excluded_project_ids);
+    GET DIAGNOSTICS v_conversations_unlinked = ROW_COUNT;
+    
+    -- 6. Unlink craft documents from excluded projects
+    DELETE FROM project_craft_documents
+    WHERE tw_project_id = ANY(v_all_excluded_project_ids);
+    GET DIAGNOSTICS v_craft_docs_unlinked = ROW_COUNT;
+    
+    -- 7. Unlink files from excluded projects (set project_id to NULL)
+    UPDATE files SET project_id = NULL
+    WHERE project_id = ANY(v_all_excluded_project_ids);
+    GET DIAGNOSTICS v_files_unlinked = ROW_COUNT;
+    
+    -- 8. Delete projects (cascades: tasklists, project_extensions, project_contractors)
+    DELETE FROM teamwork.projects
+    WHERE id = ANY(v_all_excluded_project_ids);
+    GET DIAGNOSTICS v_projects_deleted = ROW_COUNT;
+    
+    RETURN QUERY SELECT 
+        v_projects_deleted,
+        v_tasks_deleted,
+        v_timelogs_deleted,
+        v_tags_deleted,
+        v_conversations_unlinked,
+        v_craft_docs_unlinked,
+        v_files_unlinked;
+END;
+$$;
+
+COMMENT ON FUNCTION purge_excluded_teamwork_data() IS 'Deletes all Teamwork data for excluded companies/projects and unlinks related items';
+
+GRANT EXECUTE ON FUNCTION purge_excluded_teamwork_data() TO authenticated;
+GRANT EXECUTE ON FUNCTION search_companies_autocomplete(TEXT, INTEGER) TO authenticated;
+
+-- =====================================
+-- GET COMPANIES/PROJECTS BY IDS
+-- =====================================
+
+CREATE OR REPLACE FUNCTION get_companies_by_ids(p_ids INTEGER[])
+RETURNS TABLE(id INTEGER, name TEXT)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT c.id, c.name::TEXT FROM teamwork.companies c WHERE c.id = ANY(p_ids) ORDER BY c.name;
+$$;
+
+CREATE OR REPLACE FUNCTION get_projects_by_ids(p_ids INTEGER[])
+RETURNS TABLE(id INTEGER, name TEXT)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT p.id, p.name::TEXT FROM teamwork.projects p WHERE p.id = ANY(p_ids) ORDER BY p.name;
+$$;
+
+GRANT EXECUTE ON FUNCTION get_companies_by_ids(INTEGER[]) TO authenticated;
+GRANT EXECUTE ON FUNCTION get_projects_by_ids(INTEGER[]) TO authenticated;
 
