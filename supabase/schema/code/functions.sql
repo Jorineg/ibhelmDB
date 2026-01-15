@@ -2918,10 +2918,10 @@ DECLARE
     v_craft_docs_unlinked INTEGER := 0;
     v_files_unlinked INTEGER := 0;
 BEGIN
-    -- Get exclusion lists from app_settings
+    -- Get exclusion lists from app_settings (JSONB arrays -> PostgreSQL arrays)
     SELECT 
-        COALESCE((body->>'excluded_tw_company_ids')::INTEGER[], ARRAY[]::INTEGER[]),
-        COALESCE((body->>'excluded_tw_project_ids')::INTEGER[], ARRAY[]::INTEGER[])
+        COALESCE(ARRAY(SELECT jsonb_array_elements_text(body->'excluded_tw_company_ids')::INTEGER), ARRAY[]::INTEGER[]),
+        COALESCE(ARRAY(SELECT jsonb_array_elements_text(body->'excluded_tw_project_ids')::INTEGER), ARRAY[]::INTEGER[])
     INTO v_excluded_company_ids, v_excluded_project_ids
     FROM app_settings
     WHERE lock = 'X';
