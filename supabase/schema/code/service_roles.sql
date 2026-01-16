@@ -95,7 +95,7 @@ GRANT USAGE ON SCHEMA public TO fms_service;
 GRANT SELECT ON public.files TO fms_service;
 GRANT INSERT ON public.files TO fms_service;
 GRANT UPDATE (
-    content_hash, last_seen_at, deleted_at, db_updated_at,
+    full_path, content_hash, last_seen_at, deleted_at, db_updated_at,
     filesystem_inode, filesystem_attributes, auto_extracted_metadata,
     fs_mtime, fs_ctime
 ) ON public.files TO fms_service;
@@ -139,12 +139,9 @@ GRANT USAGE ON SCHEMA public TO mad_downloader;
 -- Get pending attachments via SECURITY DEFINER function (reads across schemas)
 GRANT EXECUTE ON FUNCTION public.get_pending_project_attachments(INTEGER, INTEGER) TO mad_downloader;
 
--- Update email_attachment_files status
-GRANT SELECT (missive_attachment_id, retry_count) ON public.email_attachment_files TO mad_downloader;
-GRANT UPDATE (
-    status, local_filename, downloaded_at, updated_at, 
-    error_message, retry_count, skip_reason, original_url
-) ON public.email_attachment_files TO mad_downloader;
+-- Read and update email_attachment_files (PostgREST needs table-level access)
+GRANT SELECT ON public.email_attachment_files TO mad_downloader;
+GRANT UPDATE ON public.email_attachment_files TO mad_downloader;
 
 --------------------------------------------------------------------------------
 -- TeamworkMissiveConnector (TMC) Role

@@ -18,8 +18,8 @@ COMMENT ON TYPE location_type IS 'Hierarchical location types: building > level 
 CREATE TYPE s3_status AS ENUM ('pending', 'uploading', 'uploaded', 'error', 'skipped');
 COMMENT ON TYPE s3_status IS 'S3 upload status: pending→uploading→uploaded, or error (retryable), or skipped (permanent)';
 
-CREATE TYPE processing_status AS ENUM ('pending', 'indexing', 'done', 'error');
-COMMENT ON TYPE processing_status IS 'OCR and thumbnail generation status';
+CREATE TYPE processing_status AS ENUM ('pending', 'indexing', 'done', 'skipped', 'error');
+COMMENT ON TYPE processing_status IS 'OCR/thumbnail status: pending→indexing→done, or skipped (intentionally not processed), or error (failed after retries)';
 
 -- =====================================
 -- TASK TYPES (Configurable via UI)

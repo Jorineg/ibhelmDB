@@ -221,7 +221,7 @@ Table file_contents {
   thumbnail_generated_at timestamptz
   s3_status varchar(20) [default: 'pending', note: "'pending', 'uploading', 'uploaded', 'error', 'skipped'"]
   status_message text [note: "Reason for error/skipped status"]
-  processing_status varchar(20) [default: 'pending', note: "'pending', 'processing', 'done', 'error'"]
+  processing_status varchar(20) [default: 'pending', note: "'pending', 'indexing', 'done', 'skipped', 'error'"]
   try_count integer [default: 0]
   last_status_change timestamptz [default: `now()`]
   db_created_at timestamp [default: `now()`]

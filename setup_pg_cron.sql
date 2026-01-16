@@ -29,26 +29,21 @@ WHERE EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'cleanup_eadir_files');
 --     $$DELETE FROM public.files WHERE folder_path LIKE '%@eaDir%' OR (auto_extracted_metadata->>'original_path') LIKE '%@eaDir%'$$
 -- );
 
--- Remove existing stuck indexing cleanup job if present (idempotent)
+-- Remove old stuck indexing cleanup job (replaced by unified job)
 SELECT cron.unschedule('cleanup_stuck_indexing') 
 WHERE EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'cleanup_stuck_indexing');
 
--- Reset stuck "indexing" items every 5 minutes
--- Items stuck > 30 minutes: reset to pending (or error if max retries reached)
+-- Remove existing unified stuck items job if present (idempotent)
+SELECT cron.unschedule('reset_all_stuck_items') 
+WHERE EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'reset_all_stuck_items');
+
+-- Reset ALL stuck items every 5 minutes (30 min threshold)
+-- Handles: email_attachment_files (downloading), file_contents (uploading, indexing),
+--          teamworkmissiveconnector.queue_items (processing)
 SELECT cron.schedule(
-    'cleanup_stuck_indexing',
+    'reset_all_stuck_items',
     '*/5 * * * *',
-    $$
-    UPDATE public.file_contents
-    SET 
-        processing_status = CASE WHEN try_count >= 2 THEN 'error' ELSE 'pending' END,
-        try_count = try_count + 1,
-        status_message = CASE WHEN try_count >= 2 THEN 'stuck in indexing' ELSE status_message END,
-        last_status_change = NOW(),
-        db_updated_at = NOW()
-    WHERE processing_status = 'indexing'
-      AND last_status_change < NOW() - INTERVAL '30 minutes'
-    $$
+    $$SELECT reset_all_stuck_items(30)$$
 );
 
 -- Verify

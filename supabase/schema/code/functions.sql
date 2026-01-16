@@ -2475,11 +2475,13 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- SECURITY DEFINER: Runs as owner so fms_uploader role (with only EXECUTE permission) can use it
+-- Sets both s3_status and processing_status to 'skipped' (file won't be uploaded or processed)
 CREATE OR REPLACE FUNCTION mark_upload_skipped(p_hash TEXT, p_reason TEXT)
 RETURNS VOID SECURITY DEFINER SET search_path = public AS $$
 BEGIN
     UPDATE file_contents
     SET s3_status = 'skipped',
+        processing_status = 'skipped',
         status_message = p_reason,
         last_status_change = NOW()
     WHERE content_hash = p_hash;
@@ -2488,6 +2490,7 @@ $$ LANGUAGE plpgsql;
 
 -- Reset stuck uploads on service startup (called by FileMetadataSync)
 -- SECURITY DEFINER: Runs as owner so fms_uploader role (with only EXECUTE permission) can use it
+-- NOTE: Also handled by pg_cron reset_all_stuck_items() - this is for immediate startup reset
 CREATE OR REPLACE FUNCTION reset_stuck_uploads()
 RETURNS INTEGER SECURITY DEFINER SET search_path = public AS $$
 DECLARE
@@ -2609,8 +2612,13 @@ $$ LANGUAGE plpgsql;
 
 -- Garbage Collection
 CREATE OR REPLACE FUNCTION trigger_cleanup_unreferenced_content()
-RETURNS TRIGGER AS $$
+RETURNS TRIGGER SECURITY DEFINER SET search_path = public AS $$
 BEGIN
+    -- For UPDATE: skip if content_hash didn't actually change
+    IF TG_OP = 'UPDATE' AND OLD.content_hash = NEW.content_hash THEN
+        RETURN OLD;
+    END IF;
+
     -- If content_hash is still used elsewhere, do nothing
     IF EXISTS (SELECT 1 FROM files WHERE content_hash = OLD.content_hash AND id != OLD.id) THEN
         RETURN OLD;
@@ -3040,4 +3048,62 @@ $$;
 
 GRANT EXECUTE ON FUNCTION get_companies_by_ids(INTEGER[]) TO authenticated;
 GRANT EXECUTE ON FUNCTION get_projects_by_ids(INTEGER[]) TO authenticated;
+
+-- =====================================
+-- 22. UNIFIED STUCK ITEM RESET (pg_cron)
+-- =====================================
+-- Resets items stuck in intermediate states across all components.
+-- Called by pg_cron every 5 minutes. Threshold: 30 minutes.
+
+CREATE OR REPLACE FUNCTION reset_all_stuck_items(p_threshold_minutes INTEGER DEFAULT 30)
+RETURNS JSONB AS $$
+DECLARE
+    v_downloads INTEGER := 0;
+    v_uploads INTEGER := 0;
+    v_queue INTEGER := 0;
+    v_indexing INTEGER := 0;
+    v_cutoff TIMESTAMPTZ := NOW() - (p_threshold_minutes || ' minutes')::INTERVAL;
+BEGIN
+    -- 1. email_attachment_files: 'downloading' → 'pending'
+    UPDATE email_attachment_files
+    SET status = 'pending', updated_at = NOW()
+    WHERE status = 'downloading' AND updated_at < v_cutoff;
+    GET DIAGNOSTICS v_downloads = ROW_COUNT;
+
+    -- 2. file_contents s3_status: 'uploading' → 'pending'
+    UPDATE file_contents
+    SET s3_status = 'pending', last_status_change = NOW(), db_updated_at = NOW()
+    WHERE s3_status = 'uploading' AND last_status_change < v_cutoff;
+    GET DIAGNOSTICS v_uploads = ROW_COUNT;
+
+    -- 3. teamworkmissiveconnector.queue_items: 'processing' → 'pending'
+    UPDATE teamworkmissiveconnector.queue_items
+    SET status = 'pending', processing_started_at = NULL, worker_id = NULL, updated_at = NOW()
+    WHERE status = 'processing' AND processing_started_at < v_cutoff;
+    GET DIAGNOSTICS v_queue = ROW_COUNT;
+
+    -- 4. file_contents processing_status: 'indexing' → 'pending' or 'error' (max 2 retries)
+    UPDATE file_contents
+    SET processing_status = CASE WHEN try_count >= 2 THEN 'error' ELSE 'pending' END,
+        try_count = try_count + 1,
+        status_message = CASE WHEN try_count >= 2 THEN 'stuck in indexing' ELSE status_message END,
+        last_status_change = NOW(),
+        db_updated_at = NOW()
+    WHERE processing_status = 'indexing' AND last_status_change < v_cutoff;
+    GET DIAGNOSTICS v_indexing = ROW_COUNT;
+
+    -- Log if any resets occurred
+    IF v_downloads + v_uploads + v_queue + v_indexing > 0 THEN
+        RAISE NOTICE 'reset_all_stuck_items: downloads=%, uploads=%, queue=%, indexing=%',
+            v_downloads, v_uploads, v_queue, v_indexing;
+    END IF;
+
+    RETURN jsonb_build_object(
+        'downloads', v_downloads,
+        'uploads', v_uploads,
+        'queue', v_queue,
+        'indexing', v_indexing
+    );
+END;
+$$ LANGUAGE plpgsql;
 
