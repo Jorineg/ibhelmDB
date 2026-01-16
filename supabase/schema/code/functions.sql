@@ -2399,8 +2399,10 @@ $$ LANGUAGE plpgsql;
 
 -- Upload queue management with Multi-Source support
 -- Retries: pending (unlimited), error (up to 5 tries), uploading stuck >30min (auto-reset)
+-- SECURITY DEFINER: Runs as owner so fms_uploader role (with only EXECUTE permission) can use it
 CREATE OR REPLACE FUNCTION dequeue_upload_batch(p_batch_size INTEGER DEFAULT 10, p_path_prefixes TEXT[] DEFAULT '{}')
-RETURNS TABLE (content_hash TEXT, size_bytes BIGINT, full_path TEXT) AS $$
+RETURNS TABLE (content_hash TEXT, size_bytes BIGINT, full_path TEXT)
+SECURITY DEFINER SET search_path = public AS $$
 BEGIN
     RETURN QUERY 
     WITH candidate_hashes AS (
@@ -2446,8 +2448,9 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- SECURITY DEFINER: Runs as owner so fms_uploader role (with only EXECUTE permission) can use it
 CREATE OR REPLACE FUNCTION mark_upload_complete(p_hash TEXT, p_storage_path TEXT, p_mime_type TEXT)
-RETURNS VOID AS $$
+RETURNS VOID SECURITY DEFINER SET search_path = public AS $$
 BEGIN
     UPDATE file_contents
     SET s3_status = 'uploaded',
@@ -2459,8 +2462,9 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- SECURITY DEFINER: Runs as owner so fms_uploader role (with only EXECUTE permission) can use it
 CREATE OR REPLACE FUNCTION mark_upload_failed(p_hash TEXT, p_error TEXT)
-RETURNS VOID AS $$
+RETURNS VOID SECURITY DEFINER SET search_path = public AS $$
 BEGIN
     UPDATE file_contents
     SET s3_status = 'error',
@@ -2470,8 +2474,9 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- SECURITY DEFINER: Runs as owner so fms_uploader role (with only EXECUTE permission) can use it
 CREATE OR REPLACE FUNCTION mark_upload_skipped(p_hash TEXT, p_reason TEXT)
-RETURNS VOID AS $$
+RETURNS VOID SECURITY DEFINER SET search_path = public AS $$
 BEGIN
     UPDATE file_contents
     SET s3_status = 'skipped',
@@ -2482,8 +2487,9 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Reset stuck uploads on service startup (called by FileMetadataSync)
+-- SECURITY DEFINER: Runs as owner so fms_uploader role (with only EXECUTE permission) can use it
 CREATE OR REPLACE FUNCTION reset_stuck_uploads()
-RETURNS INTEGER AS $$
+RETURNS INTEGER SECURITY DEFINER SET search_path = public AS $$
 DECLARE
     affected INTEGER;
 BEGIN
