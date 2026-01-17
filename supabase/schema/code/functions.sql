@@ -155,13 +155,11 @@ $$ LANGUAGE plpgsql IMMUTABLE;
 -- 4. LOCATION EXTRACTION
 -- =====================================
 
--- Parse location tag: O-Gebäude-Raum, O-Raum, O-Gebäude-Level-Raum
+-- Parse location tag: simplified - everything after prefix becomes room name
+-- (Tags don't follow consistent building-level-room structure)
 CREATE OR REPLACE FUNCTION parse_location_tag(p_tag_name TEXT, p_prefix TEXT)
 RETURNS TABLE(building TEXT, level TEXT, room TEXT) AS $$
 DECLARE
-    v_pattern TEXT;
-    v_match TEXT[];
-    v_parts TEXT[];
     v_remainder TEXT;
 BEGIN
     IF p_prefix IS NULL OR p_prefix = '' THEN
@@ -173,83 +171,63 @@ BEGIN
         RETURN;
     END IF;
     
-    -- Get remainder after prefix
-    v_remainder := SUBSTRING(p_tag_name FROM LENGTH(p_prefix) + 1);
+    -- Get remainder after prefix - this becomes the room name
+    v_remainder := TRIM(SUBSTRING(p_tag_name FROM LENGTH(p_prefix) + 1));
     IF v_remainder IS NULL OR v_remainder = '' THEN
         RETURN;
     END IF;
     
-    -- Split by hyphen
-    v_parts := string_to_array(v_remainder, '-');
+    -- Simple: everything after prefix is the room name
+    room := v_remainder;
+    building := NULL;
+    level := NULL;
+    RETURN NEXT;
     
-    IF array_length(v_parts, 1) = 1 THEN
-        -- O-Raum: just room, no building or level
-        room := TRIM(v_parts[1]);
-        building := NULL;
-        level := NULL;
-        RETURN NEXT;
-    ELSIF array_length(v_parts, 1) = 2 THEN
-        -- O-Gebäude-Raum: building + room, use default level
-        building := TRIM(v_parts[1]);
-        level := 'Standard';
-        room := TRIM(v_parts[2]);
-        RETURN NEXT;
-    ELSIF array_length(v_parts, 1) >= 3 THEN
-        -- O-Gebäude-Level-Raum: full hierarchy
-        building := TRIM(v_parts[1]);
-        level := TRIM(v_parts[2]);
-        room := TRIM(v_parts[3]);
-        RETURN NEXT;
-    END IF;
+    -- FUTURE: If tags become structured (O-Building-Level-Room), enable this:
+    -- v_parts := string_to_array(v_remainder, '-');
+    -- IF array_length(v_parts, 1) = 1 THEN
+    --     room := TRIM(v_parts[1]); building := NULL; level := NULL;
+    -- ELSIF array_length(v_parts, 1) = 2 THEN
+    --     building := TRIM(v_parts[1]); level := 'Standard'; room := TRIM(v_parts[2]);
+    -- ELSIF array_length(v_parts, 1) >= 3 THEN
+    --     building := TRIM(v_parts[1]); level := TRIM(v_parts[2]); room := TRIM(v_parts[3]);
+    -- END IF;
     RETURN;
 END;
 $$ LANGUAGE plpgsql IMMUTABLE;
 
--- Get or create location hierarchy, returns room ID
+-- Get or create location - simplified to room-only (no hierarchy)
+-- Signature kept for compatibility, building/level params ignored
 CREATE OR REPLACE FUNCTION get_or_create_location(p_building TEXT, p_level TEXT, p_room TEXT)
 RETURNS UUID SECURITY DEFINER SET search_path = public AS $$
 DECLARE
-    v_building_id UUID;
-    v_level_id UUID;
     v_room_id UUID;
 BEGIN
-    -- Case 1: Room only (no building/level)
-    IF p_building IS NULL THEN
-        SELECT id INTO v_room_id FROM locations WHERE name = p_room AND type = 'room' AND parent_id IS NULL;
-        IF NOT FOUND THEN
-            INSERT INTO locations (name, type, parent_id)
-            VALUES (p_room, 'room', NULL)
-            RETURNING id INTO v_room_id;
-        END IF;
-        RETURN v_room_id;
-    END IF;
-    
-    -- Case 2: Building + Level + Room
-    -- Get or create building
-    SELECT id INTO v_building_id FROM locations WHERE name = p_building AND type = 'building';
+    -- Simple: all locations are rooms without hierarchy
+    SELECT id INTO v_room_id FROM locations WHERE name = p_room AND type = 'room' AND parent_id IS NULL;
     IF NOT FOUND THEN
         INSERT INTO locations (name, type, parent_id)
-        VALUES (p_building, 'building', NULL)
-        RETURNING id INTO v_building_id;
-    END IF;
-    
-    -- Get or create level under building
-    SELECT id INTO v_level_id FROM locations WHERE name = p_level AND type = 'level' AND parent_id = v_building_id;
-    IF NOT FOUND THEN
-        INSERT INTO locations (name, type, parent_id)
-        VALUES (p_level, 'level', v_building_id)
-        RETURNING id INTO v_level_id;
-    END IF;
-    
-    -- Get or create room under level
-    SELECT id INTO v_room_id FROM locations WHERE name = p_room AND type = 'room' AND parent_id = v_level_id;
-    IF NOT FOUND THEN
-        INSERT INTO locations (name, type, parent_id)
-        VALUES (p_room, 'room', v_level_id)
+        VALUES (p_room, 'room', NULL)
         RETURNING id INTO v_room_id;
     END IF;
-    
     RETURN v_room_id;
+    
+    -- FUTURE: If hierarchy needed, enable this and update parse_location_tag:
+    -- IF p_building IS NULL THEN
+    --     SELECT id INTO v_room_id FROM locations WHERE name = p_room AND type = 'room' AND parent_id IS NULL;
+    --     IF NOT FOUND THEN
+    --         INSERT INTO locations (name, type, parent_id) VALUES (p_room, 'room', NULL) RETURNING id INTO v_room_id;
+    --     END IF;
+    --     RETURN v_room_id;
+    -- END IF;
+    -- DECLARE v_building_id UUID; v_level_id UUID;
+    -- SELECT id INTO v_building_id FROM locations WHERE name = p_building AND type = 'building';
+    -- IF NOT FOUND THEN INSERT INTO locations (name, type, parent_id) VALUES (p_building, 'building', NULL) RETURNING id INTO v_building_id; END IF;
+    -- SELECT id INTO v_level_id FROM locations WHERE name = p_level AND type = 'level' AND parent_id = v_building_id;
+    -- IF NOT FOUND THEN INSERT INTO locations (name, type, parent_id) VALUES (p_level, 'level', v_building_id) RETURNING id INTO v_level_id; END IF;
+    -- SELECT id INTO v_room_id FROM locations WHERE name = p_room AND type = 'room' AND parent_id = v_level_id;
+    -- IF NOT FOUND THEN INSERT INTO locations (name, type, parent_id) VALUES (p_room, 'room', v_level_id) RETURNING id INTO v_room_id; END IF;
+    -- RETURN v_room_id;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -1470,6 +1448,7 @@ CREATE OR REPLACE FUNCTION query_unified_items(
     p_creator_contains TEXT DEFAULT NULL, p_assigned_to_contains TEXT DEFAULT NULL,
     p_status_in TEXT[] DEFAULT NULL, p_status_not_in TEXT[] DEFAULT NULL,
     p_priority_in TEXT[] DEFAULT NULL, p_priority_not_in TEXT[] DEFAULT NULL,
+    p_project_status_in TEXT[] DEFAULT NULL, p_project_status_not_in TEXT[] DEFAULT NULL,
     p_due_date_min TIMESTAMP DEFAULT NULL, p_due_date_max TIMESTAMP DEFAULT NULL,
     p_due_date_is_null BOOLEAN DEFAULT NULL,
     p_created_at_min TIMESTAMPTZ DEFAULT NULL, p_created_at_max TIMESTAMPTZ DEFAULT NULL,
@@ -1484,6 +1463,7 @@ CREATE OR REPLACE FUNCTION query_unified_items(
     p_hide_inactive_projects BOOLEAN DEFAULT NULL,
     p_file_ignore_patterns TEXT[] DEFAULT NULL,
     p_sort_field TEXT DEFAULT 'updated_at', p_sort_order TEXT DEFAULT 'desc',
+    p_group_by TEXT DEFAULT NULL, p_group_order TEXT DEFAULT 'asc',
     p_limit INTEGER DEFAULT 50, p_offset INTEGER DEFAULT 0
 )
 RETURNS TABLE(
@@ -1494,7 +1474,8 @@ RETURNS TABLE(
     assigned_to JSONB, tags JSONB, body TEXT, preview TEXT, creator TEXT,
     conversation_subject TEXT, recipients JSONB, attachments JSONB, attachment_count INTEGER,
     conversation_comments_text TEXT, craft_url TEXT, teamwork_url TEXT, missive_url TEXT, storage_path TEXT, thumbnail_path TEXT,
-    file_extension TEXT, accumulated_estimated_minutes INTEGER, logged_minutes INTEGER, billable_minutes INTEGER
+    file_extension TEXT, accumulated_estimated_minutes INTEGER, logged_minutes INTEGER, billable_minutes INTEGER,
+    group_value TEXT
 )
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
 -- SECURITY DEFINER: Runs with owner privileges to access mv_unified_items
@@ -1504,16 +1485,27 @@ DECLARE
     v_where TEXT[] := ARRAY[]::TEXT[];
     v_order_expr TEXT;
     v_order_expr_outer TEXT;
+    v_group_expr TEXT := '';
+    v_group_expr_outer TEXT := '';
+    v_group_select TEXT := 'NULL::TEXT';
+    v_group_select_outer TEXT := 'NULL::TEXT';
     v_person_ids UUID[];
     v_cost_min INTEGER;
     v_cost_max INTEGER;
     v_location_ids UUID[];
+    v_valid_group_fields TEXT[] := ARRAY['project', 'status', 'type', 'priority', 'location', 'cost_group', 'task_type_name', 'customer', 'creator', 'tasklist'];
 BEGIN
     -- Validate and sanitize sort parameters
     IF p_sort_field NOT IN ('name', 'status', 'project', 'customer', 'due_date', 'created_at', 'updated_at', 'priority', 'progress', 'attachment_count', 'cost_group_code', 'creator', 'location', 'location_path', 'cost_group', 'tasklist', 'conversation_subject', 'file_extension', 'accumulated_estimated_minutes', 'logged_minutes', 'billable_minutes') THEN
         p_sort_field := 'updated_at';
     END IF;
     IF p_sort_order NOT IN ('asc', 'desc') THEN p_sort_order := 'desc'; END IF;
+    
+    -- Validate group parameters
+    IF p_group_by IS NOT NULL AND NOT (p_group_by = ANY(v_valid_group_fields)) THEN
+        p_group_by := NULL;
+    END IF;
+    IF p_group_order NOT IN ('asc', 'desc') THEN p_group_order := 'asc'; END IF;
     
     -- Pre-compute lookup filters
     IF p_involved_person IS NOT NULL AND TRIM(p_involved_person) != '' THEN
@@ -1590,6 +1582,13 @@ BEGIN
     IF p_hide_inactive_projects = TRUE THEN
         v_where := array_append(v_where, '(ui.project_status IS NULL OR ui.project_status = ''active'')');
     END IF;
+    -- Project status filter (items without project are included unless explicitly excluded)
+    IF p_project_status_in IS NOT NULL THEN
+        v_where := array_append(v_where, format('(ui.project_status IS NULL OR ui.project_status = ANY(%L::TEXT[]))', p_project_status_in));
+    END IF;
+    IF p_project_status_not_in IS NOT NULL THEN
+        v_where := array_append(v_where, format('(ui.project_status IS NULL OR NOT (ui.project_status = ANY(%L::TEXT[])))', p_project_status_not_in));
+    END IF;
     -- File ignore patterns: hide files matching any of the LIKE patterns (match against name which contains full path)
     IF p_file_ignore_patterns IS NOT NULL AND array_length(p_file_ignore_patterns, 1) > 0 THEN
         v_where := array_append(v_where, format('(ui.type != ''file'' OR NOT (ui.name LIKE ANY(%L::TEXT[])))', p_file_ignore_patterns));
@@ -1657,21 +1656,29 @@ BEGIN
         v_where := array_append(v_where, format('ui.billable_minutes <= %s', p_billable_minutes_max));
     END IF;
     
+    -- Build GROUP BY ordering (if grouping is enabled)
+    IF p_group_by IS NOT NULL THEN
+        v_group_expr := format('ui.%I %s NULLS LAST, ', p_group_by, p_group_order);
+        v_group_expr_outer := format('full_ui.%I %s NULLS LAST, ', p_group_by, p_group_order);
+        v_group_select := format('ui.%I::TEXT', p_group_by);
+        v_group_select_outer := format('full_ui.%I::TEXT', p_group_by);
+    END IF;
+    
     -- Build ORDER BY expressions (for inner skinny query and outer full query)
-    -- Always add id as secondary sort for deterministic ordering when primary sort values are equal
+    -- Group ordering comes first, then sort field, then id for deterministic ordering
     IF p_sort_field = 'cost_group_code' THEN
-        v_order_expr := format('NULLIF(ui.cost_group_code, '''')::INTEGER %s NULLS LAST, ui.id', p_sort_order);
-        v_order_expr_outer := format('NULLIF(full_ui.cost_group_code, '''')::INTEGER %s NULLS LAST, full_ui.id', p_sort_order);
+        v_order_expr := v_group_expr || format('NULLIF(ui.cost_group_code, '''')::INTEGER %s NULLS LAST, ui.id', p_sort_order);
+        v_order_expr_outer := v_group_expr_outer || format('NULLIF(full_ui.cost_group_code, '''')::INTEGER %s NULLS LAST, full_ui.id', p_sort_order);
     ELSE
-        v_order_expr := format('ui.%I %s NULLS LAST, ui.id', p_sort_field, p_sort_order);
-        v_order_expr_outer := format('full_ui.%I %s NULLS LAST, full_ui.id', p_sort_field, p_sort_order);
+        v_order_expr := v_group_expr || format('ui.%I %s NULLS LAST, ui.id', p_sort_field, p_sort_order);
+        v_order_expr_outer := v_group_expr_outer || format('full_ui.%I %s NULLS LAST, full_ui.id', p_sort_field, p_sort_order);
     END IF;
     
     -- Build dynamic SQL using DEFERRED JOIN pattern:
-    -- 1. Inner CTE fetches only IDs (skinny) with sort/limit
+    -- 1. Inner CTE fetches only IDs (skinny) with sort/limit plus group_value for ordering
     -- 2. Outer query joins to get full row data for only the needed rows
     v_sql := 'WITH skinny_ids AS MATERIALIZED (
-        SELECT ui.id, ui.type
+        SELECT ui.id, ui.type, ' || v_group_select || ' AS group_value
         FROM unified_items_secure ui';
     
     IF array_length(v_where, 1) > 0 THEN
@@ -1688,7 +1695,8 @@ BEGIN
         full_ui.assigned_to, full_ui.tags, LEFT(full_ui.body, 800) AS body, full_ui.preview, full_ui.creator,
         full_ui.conversation_subject, (SELECT jsonb_agg(elem) FROM (SELECT elem FROM jsonb_array_elements(full_ui.recipients) AS elem LIMIT 5) sub) AS recipients, full_ui.attachments, full_ui.attachment_count,
         full_ui.conversation_comments_text, full_ui.craft_url, full_ui.teamwork_url, full_ui.missive_url, full_ui.storage_path, full_ui.thumbnail_path,
-        full_ui.file_extension, full_ui.accumulated_estimated_minutes, full_ui.logged_minutes, full_ui.billable_minutes
+        full_ui.file_extension, full_ui.accumulated_estimated_minutes, full_ui.logged_minutes, full_ui.billable_minutes,
+        s.group_value
     FROM skinny_ids s
     JOIN mv_unified_items full_ui ON s.id = full_ui.id AND s.type = full_ui.type
     ORDER BY ' || v_order_expr_outer;
@@ -1708,6 +1716,7 @@ CREATE OR REPLACE FUNCTION count_unified_items(
     p_creator_contains TEXT DEFAULT NULL, p_assigned_to_contains TEXT DEFAULT NULL,
     p_status_in TEXT[] DEFAULT NULL, p_status_not_in TEXT[] DEFAULT NULL,
     p_priority_in TEXT[] DEFAULT NULL, p_priority_not_in TEXT[] DEFAULT NULL,
+    p_project_status_in TEXT[] DEFAULT NULL, p_project_status_not_in TEXT[] DEFAULT NULL,
     p_due_date_min TIMESTAMP DEFAULT NULL, p_due_date_max TIMESTAMP DEFAULT NULL,
     p_due_date_is_null BOOLEAN DEFAULT NULL,
     p_created_at_min TIMESTAMPTZ DEFAULT NULL, p_created_at_max TIMESTAMPTZ DEFAULT NULL,
@@ -1810,6 +1819,13 @@ BEGIN
     -- Hide items from inactive projects (items without project are still shown)
     IF p_hide_inactive_projects = TRUE THEN
         v_where := array_append(v_where, '(ui.project_status IS NULL OR ui.project_status = ''active'')');
+    END IF;
+    -- Project status filter (items without project are included unless explicitly excluded)
+    IF p_project_status_in IS NOT NULL THEN
+        v_where := array_append(v_where, format('(ui.project_status IS NULL OR ui.project_status = ANY(%L::TEXT[]))', p_project_status_in));
+    END IF;
+    IF p_project_status_not_in IS NOT NULL THEN
+        v_where := array_append(v_where, format('(ui.project_status IS NULL OR NOT (ui.project_status = ANY(%L::TEXT[])))', p_project_status_not_in));
     END IF;
     -- File ignore patterns: hide files matching any of the LIKE patterns (match against name which contains full path)
     IF p_file_ignore_patterns IS NOT NULL AND array_length(p_file_ignore_patterns, 1) > 0 THEN
@@ -3094,7 +3110,7 @@ BEGIN
 
     -- 4. file_contents processing_status: 'indexing' → 'pending' or 'error' (max 2 retries)
     UPDATE file_contents
-    SET processing_status = CASE WHEN try_count >= 2 THEN 'error' ELSE 'pending' END,
+    SET processing_status = CASE WHEN try_count >= 2 THEN 'error'::processing_status ELSE 'pending'::processing_status END,
         try_count = try_count + 1,
         status_message = CASE WHEN try_count >= 2 THEN 'stuck in indexing' ELSE status_message END,
         last_status_change = NOW(),
