@@ -1481,6 +1481,7 @@ CREATE OR REPLACE FUNCTION query_unified_items(
     p_logged_minutes_min INTEGER DEFAULT NULL, p_logged_minutes_max INTEGER DEFAULT NULL,
     p_billable_minutes_min INTEGER DEFAULT NULL, p_billable_minutes_max INTEGER DEFAULT NULL,
     p_hide_completed_tasks BOOLEAN DEFAULT NULL,
+    p_hide_inactive_projects BOOLEAN DEFAULT NULL,
     p_file_ignore_patterns TEXT[] DEFAULT NULL,
     p_sort_field TEXT DEFAULT 'updated_at', p_sort_order TEXT DEFAULT 'desc',
     p_limit INTEGER DEFAULT 50, p_offset INTEGER DEFAULT 0
@@ -1584,6 +1585,10 @@ BEGIN
     END IF;
     IF p_hide_completed_tasks = TRUE THEN
         v_where := array_append(v_where, '(ui.type != ''task'' OR ui.status != ''completed'')');
+    END IF;
+    -- Hide items from inactive projects (items without project are still shown)
+    IF p_hide_inactive_projects = TRUE THEN
+        v_where := array_append(v_where, '(ui.project_status IS NULL OR ui.project_status = ''active'')');
     END IF;
     -- File ignore patterns: hide files matching any of the LIKE patterns (match against name which contains full path)
     IF p_file_ignore_patterns IS NOT NULL AND array_length(p_file_ignore_patterns, 1) > 0 THEN
@@ -1714,6 +1719,7 @@ CREATE OR REPLACE FUNCTION count_unified_items(
     p_logged_minutes_min INTEGER DEFAULT NULL, p_logged_minutes_max INTEGER DEFAULT NULL,
     p_billable_minutes_min INTEGER DEFAULT NULL, p_billable_minutes_max INTEGER DEFAULT NULL,
     p_hide_completed_tasks BOOLEAN DEFAULT NULL,
+    p_hide_inactive_projects BOOLEAN DEFAULT NULL,
     p_file_ignore_patterns TEXT[] DEFAULT NULL
 )
 RETURNS INTEGER
@@ -1800,6 +1806,10 @@ BEGIN
     END IF;
     IF p_hide_completed_tasks = TRUE THEN
         v_where := array_append(v_where, '(ui.type != ''task'' OR ui.status != ''completed'')');
+    END IF;
+    -- Hide items from inactive projects (items without project are still shown)
+    IF p_hide_inactive_projects = TRUE THEN
+        v_where := array_append(v_where, '(ui.project_status IS NULL OR ui.project_status = ''active'')');
     END IF;
     -- File ignore patterns: hide files matching any of the LIKE patterns (match against name which contains full path)
     IF p_file_ignore_patterns IS NOT NULL AND array_length(p_file_ignore_patterns, 1) > 0 THEN

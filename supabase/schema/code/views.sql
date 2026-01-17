@@ -92,7 +92,7 @@ CREATE MATERIALIZED VIEW mv_unified_items AS
 SELECT * FROM (
     SELECT DISTINCT ON (t.id)
         t.id::TEXT AS id, 'task'::TEXT AS type, t.name, t.description, t.status,
-        p.name AS project, c.name AS customer, l.name AS location, l.search_text AS location_path,
+        p.name AS project, p.status AS project_status, c.name AS customer, l.name AS location, l.search_text AS location_path,
         cg.name AS cost_group, cg.code::TEXT AS cost_group_code, t.due_date, t.created_at, t.updated_at,
         t.priority, t.progress, tl.name AS tasklist,
         tt.id AS task_type_id, tt.name AS task_type_name, tt.slug AS task_type_slug, tt.color AS task_type_color,
@@ -150,7 +150,7 @@ SELECT * FROM (
     SELECT DISTINCT ON (m.id)
         m.id::TEXT AS id, 'email'::TEXT AS type, m.subject AS name,
         COALESCE(m.preview, LEFT(m.body, 200)) AS description, ''::VARCHAR AS status,
-        COALESCE(twp.name, '') AS project, ''::TEXT AS customer, l.name AS location, l.search_text AS location_path,
+        COALESCE(twp.name, '') AS project, twp.status AS project_status, ''::TEXT AS customer, l.name AS location, l.search_text AS location_path,
         cg.name AS cost_group, cg.code::TEXT AS cost_group_code, NULL::TIMESTAMP AS due_date,
         m.delivered_at AS created_at, COALESCE(m.updated_at, m.delivered_at) AS updated_at,
         ''::VARCHAR AS priority, NULL::INTEGER AS progress, ''::TEXT AS tasklist,
@@ -212,7 +212,7 @@ UNION ALL
 SELECT * FROM (
     SELECT DISTINCT ON (cd.id)
         cd.id::TEXT AS id, 'craft'::TEXT AS type, cd.title AS name, cd.folder_path AS description, ''::VARCHAR AS status,
-        COALESCE(twp.name, '') AS project, ''::TEXT AS customer, NULL::TEXT AS location, NULL::TEXT AS location_path,
+        COALESCE(twp.name, '') AS project, twp.status AS project_status, ''::TEXT AS customer, NULL::TEXT AS location, NULL::TEXT AS location_path,
         NULL::TEXT AS cost_group, NULL::TEXT AS cost_group_code, NULL::TIMESTAMP AS due_date,
         cd.craft_created_at AS created_at, cd.craft_last_modified_at AS updated_at,
         ''::VARCHAR AS priority, NULL::INTEGER AS progress, ''::TEXT AS tasklist,
@@ -250,7 +250,7 @@ UNION ALL
 SELECT * FROM (
     SELECT DISTINCT ON (f.id)
         f.id::TEXT AS id, 'file'::TEXT AS type, f.full_path AS name, f.full_path AS description, ''::VARCHAR AS status,
-        COALESCE(twp.name, '') AS project, ''::TEXT AS customer, l.name AS location, l.search_text AS location_path,
+        COALESCE(twp.name, '') AS project, twp.status AS project_status, ''::TEXT AS customer, l.name AS location, l.search_text AS location_path,
         cg.name AS cost_group, cg.code::TEXT AS cost_group_code, NULL::TIMESTAMP AS due_date,
         f.fs_mtime AS created_at, f.fs_ctime AS updated_at,
         ''::VARCHAR AS priority, NULL::INTEGER AS progress, ''::TEXT AS tasklist,
@@ -287,6 +287,8 @@ SELECT * FROM (
 ) files;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_unified_items_id_type ON mv_unified_items(id, type);
+-- Project status for fast filtering (hide inactive projects)
+CREATE INDEX IF NOT EXISTS idx_mv_ui_project_status ON mv_unified_items(project_status);
 
 -- Trigram indexes for fast ILIKE searches
 -- Combined search text (includes body, tags, assignees, recipients, attachments - single index for all text search)

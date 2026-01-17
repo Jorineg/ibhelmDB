@@ -102,7 +102,7 @@ GRANT UPDATE (
 
 GRANT SELECT ON public.file_contents TO fms_service;
 GRANT INSERT ON public.file_contents TO fms_service;
-GRANT UPDATE (size_bytes, mime_type, db_updated_at) ON public.file_contents TO fms_service;
+GRANT UPDATE (content_hash, size_bytes, mime_type, db_updated_at) ON public.file_contents TO fms_service;
 
 -- Uploader operations: process S3 upload queue via SECURITY DEFINER functions
 GRANT EXECUTE ON FUNCTION public.dequeue_upload_batch(INTEGER, TEXT[]) TO fms_service;
