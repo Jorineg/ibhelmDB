@@ -1212,8 +1212,11 @@ BEGIN RETURN QUERY SELECT * FROM get_latest_operation_run('cost_group_linking');
 $$ LANGUAGE plpgsql STABLE;
 
 -- =====================================
--- 10. AUTOCOMPLETE SEARCH FUNCTIONS
+-- 10. AUTOCOMPLETE SEARCH FUNCTIONS (Context-Aware)
 -- =====================================
+-- All autocomplete functions accept optional context filters to show only options
+-- where items exist matching the current filter state.
+-- Context filters: p_ctx_* parameters match query_unified_items filters.
 
 CREATE OR REPLACE FUNCTION search_companies_autocomplete(p_search_text TEXT, p_limit INTEGER DEFAULT 10)
 RETURNS TABLE(id INTEGER, name TEXT, project_count BIGINT)
@@ -1238,147 +1241,397 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION search_projects_autocomplete(p_search_text TEXT, p_limit INTEGER DEFAULT 10)
+-- Helper: Build context WHERE clause for autocomplete functions
+CREATE OR REPLACE FUNCTION _build_autocomplete_context_where(
+    p_ctx_types TEXT[],
+    p_ctx_project TEXT,
+    p_ctx_person TEXT,
+    p_ctx_location TEXT,
+    p_ctx_cost_group TEXT,
+    p_ctx_tags TEXT
+) RETURNS TEXT
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_where TEXT[] := ARRAY[]::TEXT[];
+    v_cost_min INTEGER;
+    v_cost_max INTEGER;
+    v_location_ids UUID[];
+BEGIN
+    IF p_ctx_types IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.type = ANY(%L::TEXT[])', p_ctx_types));
+    END IF;
+    IF p_ctx_project IS NOT NULL AND TRIM(p_ctx_project) != '' THEN
+        v_where := array_append(v_where, format('ui.project ILIKE %L', '%' || p_ctx_project || '%'));
+    END IF;
+    IF p_ctx_person IS NOT NULL AND TRIM(p_ctx_person) != '' THEN
+        v_where := array_append(v_where, format('ui.search_text ILIKE %L', '%' || p_ctx_person || '%'));
+    END IF;
+    IF p_ctx_location IS NOT NULL AND TRIM(p_ctx_location) != '' THEN
+        SELECT ARRAY_AGG(l.id) INTO v_location_ids FROM locations l 
+        WHERE l.name ILIKE '%' || p_ctx_location || '%' OR l.search_text ILIKE '%' || p_ctx_location || '%';
+        IF v_location_ids IS NOT NULL AND array_length(v_location_ids, 1) > 0 THEN
+            v_where := array_append(v_where, format('ui.location_ids && %L::UUID[]', v_location_ids));
+        ELSE
+            v_where := array_append(v_where, 'FALSE'); -- No matching locations
+        END IF;
+    END IF;
+    IF p_ctx_cost_group IS NOT NULL AND TRIM(p_ctx_cost_group) != '' THEN
+        SELECT cgr.min_code, cgr.max_code INTO v_cost_min, v_cost_max FROM compute_cost_group_range(p_ctx_cost_group) cgr;
+        IF v_cost_min IS NOT NULL THEN
+            v_where := array_append(v_where, format(
+                '(ui.cost_group_code IS NOT NULL AND ui.cost_group_code ~ ''^\d+$'' AND ui.cost_group_code::INTEGER >= %s AND ui.cost_group_code::INTEGER <= %s)',
+                v_cost_min, v_cost_max));
+        END IF;
+    END IF;
+    IF p_ctx_tags IS NOT NULL AND TRIM(p_ctx_tags) != '' THEN
+        v_where := array_append(v_where, format('ui.tag_names_text ILIKE %L', '%' || p_ctx_tags || '%'));
+    END IF;
+    
+    IF array_length(v_where, 1) > 0 THEN
+        RETURN array_to_string(v_where, ' AND ');
+    ELSE
+        RETURN NULL;
+    END IF;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION search_projects_autocomplete(
+    p_search_text TEXT, 
+    p_limit INTEGER DEFAULT 10,
+    -- Context filters (NULL = no filter)
+    p_ctx_types TEXT[] DEFAULT NULL,
+    p_ctx_person TEXT DEFAULT NULL,
+    p_ctx_location TEXT DEFAULT NULL,
+    p_ctx_cost_group TEXT DEFAULT NULL,
+    p_ctx_tags TEXT DEFAULT NULL
+)
 RETURNS TABLE(id INTEGER, name TEXT, company_name TEXT, status VARCHAR)
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
-DECLARE v_search_pattern TEXT;
+DECLARE 
+    v_search_pattern TEXT;
+    v_has_context BOOLEAN;
+    v_ctx_where TEXT;
+    v_sql TEXT;
 BEGIN
-    IF p_search_text IS NULL OR TRIM(p_search_text) = '' THEN
+    v_has_context := p_ctx_types IS NOT NULL OR p_ctx_person IS NOT NULL OR p_ctx_location IS NOT NULL 
+                     OR p_ctx_cost_group IS NOT NULL OR p_ctx_tags IS NOT NULL;
+    
+    IF NOT v_has_context THEN
+        -- No context: use simple query
+        IF p_search_text IS NULL OR TRIM(p_search_text) = '' THEN
+            RETURN QUERY SELECT p.id, p.name::TEXT, c.name::TEXT AS company_name, p.status
+            FROM teamwork.projects p LEFT JOIN teamwork.companies c ON p.company_id = c.id
+            ORDER BY p.updated_at DESC NULLS LAST, p.name ASC LIMIT p_limit;
+            RETURN;
+        END IF;
+        v_search_pattern := '%' || p_search_text || '%';
         RETURN QUERY SELECT p.id, p.name::TEXT, c.name::TEXT AS company_name, p.status
         FROM teamwork.projects p LEFT JOIN teamwork.companies c ON p.company_id = c.id
-        ORDER BY p.updated_at DESC NULLS LAST, p.name ASC LIMIT p_limit;
+        WHERE p.name ILIKE v_search_pattern OR c.name ILIKE v_search_pattern OR p.description ILIKE v_search_pattern
+        ORDER BY CASE WHEN p.name ILIKE p_search_text || '%' THEN 0 ELSE 1 END,
+            CASE p.status WHEN 'active' THEN 0 ELSE 1 END, p.name ASC
+        LIMIT p_limit;
         RETURN;
     END IF;
     
-    v_search_pattern := '%' || p_search_text || '%';
-    RETURN QUERY SELECT p.id, p.name::TEXT, c.name::TEXT AS company_name, p.status
-    FROM teamwork.projects p LEFT JOIN teamwork.companies c ON p.company_id = c.id
-    WHERE p.name ILIKE v_search_pattern OR c.name ILIKE v_search_pattern OR p.description ILIKE v_search_pattern
-    ORDER BY CASE WHEN p.name ILIKE p_search_text || '%' THEN 0 ELSE 1 END,
+    -- With context: filter by existence in unified_items
+    v_ctx_where := _build_autocomplete_context_where(p_ctx_types, NULL, p_ctx_person, p_ctx_location, p_ctx_cost_group, p_ctx_tags);
+    v_search_pattern := CASE WHEN p_search_text IS NULL OR TRIM(p_search_text) = '' THEN NULL ELSE '%' || p_search_text || '%' END;
+    
+    RETURN QUERY
+    SELECT p.id, p.name::TEXT, c.name::TEXT AS company_name, p.status
+    FROM teamwork.projects p
+    LEFT JOIN teamwork.companies c ON p.company_id = c.id
+    WHERE (v_search_pattern IS NULL OR p.name ILIKE v_search_pattern OR c.name ILIKE v_search_pattern)
+      AND EXISTS (
+        SELECT 1 FROM mv_unified_items ui
+        WHERE ui.project = p.name
+          AND (v_ctx_where IS NULL OR (
+            (p_ctx_types IS NULL OR ui.type = ANY(p_ctx_types))
+            AND (p_ctx_person IS NULL OR ui.search_text ILIKE '%' || p_ctx_person || '%')
+            AND (p_ctx_location IS NULL OR ui.location_ids && (SELECT ARRAY_AGG(l.id) FROM locations l WHERE l.name ILIKE '%' || p_ctx_location || '%' OR l.search_text ILIKE '%' || p_ctx_location || '%'))
+            AND (p_ctx_cost_group IS NULL OR (ui.cost_group_code IS NOT NULL AND ui.cost_group_code ~ '^\d+$' AND ui.cost_group_code::INTEGER >= (SELECT min_code FROM compute_cost_group_range(p_ctx_cost_group)) AND ui.cost_group_code::INTEGER <= (SELECT max_code FROM compute_cost_group_range(p_ctx_cost_group))))
+            AND (p_ctx_tags IS NULL OR ui.tag_names_text ILIKE '%' || p_ctx_tags || '%')
+          ))
+        LIMIT 1
+      )
+    ORDER BY CASE WHEN p_search_text IS NOT NULL AND p.name ILIKE p_search_text || '%' THEN 0 ELSE 1 END,
         CASE p.status WHEN 'active' THEN 0 ELSE 1 END, p.name ASC
     LIMIT p_limit;
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION search_persons_autocomplete(p_search_text TEXT, p_limit INTEGER DEFAULT 10)
+CREATE OR REPLACE FUNCTION search_persons_autocomplete(
+    p_search_text TEXT, 
+    p_limit INTEGER DEFAULT 10,
+    p_ctx_types TEXT[] DEFAULT NULL,
+    p_ctx_project TEXT DEFAULT NULL,
+    p_ctx_location TEXT DEFAULT NULL,
+    p_ctx_cost_group TEXT DEFAULT NULL,
+    p_ctx_tags TEXT DEFAULT NULL
+)
 RETURNS TABLE(id UUID, display_name TEXT, primary_email TEXT, source_type TEXT, is_internal BOOLEAN)
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
-DECLARE v_search_pattern TEXT;
+DECLARE 
+    v_search_pattern TEXT;
+    v_has_context BOOLEAN;
 BEGIN
-    IF p_search_text IS NULL OR TRIM(p_search_text) = '' THEN
-        RETURN QUERY SELECT up.id, up.display_name::TEXT, up.primary_email::TEXT, 'unified'::TEXT AS source_type, up.is_internal
-        FROM unified_persons up ORDER BY up.db_updated_at DESC NULLS LAST, up.display_name ASC LIMIT p_limit;
+    v_has_context := p_ctx_types IS NOT NULL OR p_ctx_project IS NOT NULL OR p_ctx_location IS NOT NULL 
+                     OR p_ctx_cost_group IS NOT NULL OR p_ctx_tags IS NOT NULL;
+    
+    IF NOT v_has_context THEN
+        -- No context: use simple query
+        IF p_search_text IS NULL OR TRIM(p_search_text) = '' THEN
+            RETURN QUERY SELECT up.id, up.display_name::TEXT, up.primary_email::TEXT, 'unified'::TEXT AS source_type, up.is_internal
+            FROM unified_persons up ORDER BY up.db_updated_at DESC NULLS LAST, up.display_name ASC LIMIT p_limit;
+            RETURN;
+        END IF;
+        v_search_pattern := '%' || p_search_text || '%';
+        RETURN QUERY SELECT DISTINCT ON (up.id) up.id, up.display_name::TEXT, up.primary_email::TEXT,
+            CASE WHEN upl.tw_user_id IS NOT NULL THEN 'teamwork_user'
+                 WHEN upl.tw_company_id IS NOT NULL THEN 'teamwork_company'
+                 WHEN upl.m_contact_id IS NOT NULL THEN 'missive_contact'
+                 ELSE 'unified' END::TEXT AS source_type, up.is_internal
+        FROM unified_persons up
+        LEFT JOIN unified_person_links upl ON up.id = upl.unified_person_id
+        LEFT JOIN teamwork.users twu ON upl.tw_user_id = twu.id
+        LEFT JOIN teamwork.companies twc ON upl.tw_company_id = twc.id
+        LEFT JOIN missive.contacts mc ON upl.m_contact_id = mc.id
+        WHERE up.display_name ILIKE v_search_pattern OR up.primary_email ILIKE v_search_pattern
+            OR twu.first_name ILIKE v_search_pattern OR twu.last_name ILIKE v_search_pattern
+            OR twu.email ILIKE v_search_pattern
+            OR (COALESCE(twu.first_name, '') || ' ' || COALESCE(twu.last_name, '')) ILIKE v_search_pattern
+            OR twc.name ILIKE v_search_pattern OR twc.email_one ILIKE v_search_pattern
+            OR mc.name ILIKE v_search_pattern OR mc.email ILIKE v_search_pattern
+        ORDER BY up.id, CASE WHEN up.display_name ILIKE p_search_text || '%' THEN 0 ELSE 1 END,
+            CASE WHEN up.is_internal THEN 0 ELSE 1 END, up.display_name ASC
+        LIMIT p_limit;
         RETURN;
     END IF;
     
-    v_search_pattern := '%' || p_search_text || '%';
-    RETURN QUERY SELECT DISTINCT ON (up.id) up.id, up.display_name::TEXT, up.primary_email::TEXT,
-        CASE WHEN upl.tw_user_id IS NOT NULL THEN 'teamwork_user'
-             WHEN upl.tw_company_id IS NOT NULL THEN 'teamwork_company'
-             WHEN upl.m_contact_id IS NOT NULL THEN 'missive_contact'
-             ELSE 'unified' END::TEXT AS source_type, up.is_internal
-    FROM unified_persons up
-    LEFT JOIN unified_person_links upl ON up.id = upl.unified_person_id
-    LEFT JOIN teamwork.users twu ON upl.tw_user_id = twu.id
-    LEFT JOIN teamwork.companies twc ON upl.tw_company_id = twc.id
-    LEFT JOIN missive.contacts mc ON upl.m_contact_id = mc.id
-    WHERE up.display_name ILIKE v_search_pattern OR up.primary_email ILIKE v_search_pattern
-        OR twu.first_name ILIKE v_search_pattern OR twu.last_name ILIKE v_search_pattern
-        OR twu.email ILIKE v_search_pattern
-        OR (COALESCE(twu.first_name, '') || ' ' || COALESCE(twu.last_name, '')) ILIKE v_search_pattern
-        OR twc.name ILIKE v_search_pattern OR twc.email_one ILIKE v_search_pattern
-        OR mc.name ILIKE v_search_pattern OR mc.email ILIKE v_search_pattern
-    ORDER BY up.id, CASE WHEN up.display_name ILIKE p_search_text || '%' THEN 0 ELSE 1 END,
+    -- With context: query via item_involved_persons JOIN
+    v_search_pattern := CASE WHEN p_search_text IS NULL OR TRIM(p_search_text) = '' THEN NULL ELSE '%' || p_search_text || '%' END;
+    
+    RETURN QUERY
+    SELECT DISTINCT up.id, up.display_name::TEXT, up.primary_email::TEXT, 'unified'::TEXT AS source_type, up.is_internal
+    FROM item_involved_persons iip
+    JOIN unified_persons up ON up.id = iip.unified_person_id
+    JOIN mv_unified_items ui ON ui.id = iip.item_id AND ui.type = iip.item_type
+    WHERE (v_search_pattern IS NULL OR up.display_name ILIKE v_search_pattern OR up.primary_email ILIKE v_search_pattern)
+      AND (p_ctx_types IS NULL OR ui.type = ANY(p_ctx_types))
+      AND (p_ctx_project IS NULL OR ui.project ILIKE '%' || p_ctx_project || '%')
+      AND (p_ctx_location IS NULL OR ui.location_ids && (SELECT ARRAY_AGG(l.id) FROM locations l WHERE l.name ILIKE '%' || p_ctx_location || '%' OR l.search_text ILIKE '%' || p_ctx_location || '%'))
+      AND (p_ctx_cost_group IS NULL OR (ui.cost_group_code IS NOT NULL AND ui.cost_group_code ~ '^\d+$' AND ui.cost_group_code::INTEGER >= (SELECT min_code FROM compute_cost_group_range(p_ctx_cost_group)) AND ui.cost_group_code::INTEGER <= (SELECT max_code FROM compute_cost_group_range(p_ctx_cost_group))))
+      AND (p_ctx_tags IS NULL OR ui.tag_names_text ILIKE '%' || p_ctx_tags || '%')
+    ORDER BY CASE WHEN p_search_text IS NOT NULL AND up.display_name ILIKE p_search_text || '%' THEN 0 ELSE 1 END,
         CASE WHEN up.is_internal THEN 0 ELSE 1 END, up.display_name ASC
     LIMIT p_limit;
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION search_cost_groups_autocomplete(p_search_text TEXT, p_limit INTEGER DEFAULT 10)
+CREATE OR REPLACE FUNCTION search_cost_groups_autocomplete(
+    p_search_text TEXT, 
+    p_limit INTEGER DEFAULT 10,
+    p_ctx_types TEXT[] DEFAULT NULL,
+    p_ctx_project TEXT DEFAULT NULL,
+    p_ctx_person TEXT DEFAULT NULL,
+    p_ctx_location TEXT DEFAULT NULL,
+    p_ctx_tags TEXT DEFAULT NULL
+)
 RETURNS TABLE(id UUID, code INTEGER, name TEXT, path TEXT)
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
-DECLARE v_search_code INTEGER; v_code_min INTEGER; v_code_max INTEGER;
+DECLARE 
+    v_search_code INTEGER; 
+    v_code_min INTEGER; 
+    v_code_max INTEGER;
+    v_has_context BOOLEAN;
 BEGIN
-    IF p_search_text IS NULL OR TRIM(p_search_text) = '' THEN
-        RETURN QUERY SELECT cg.id, cg.code, cg.name::TEXT, cg.path::TEXT FROM cost_groups cg ORDER BY cg.code ASC LIMIT p_limit;
+    v_has_context := p_ctx_types IS NOT NULL OR p_ctx_project IS NOT NULL OR p_ctx_person IS NOT NULL 
+                     OR p_ctx_location IS NOT NULL OR p_ctx_tags IS NOT NULL;
+    
+    -- Parse search text for code range
+    IF p_search_text IS NOT NULL AND TRIM(p_search_text) != '' THEN
+        BEGIN
+            v_search_code := TRIM(p_search_text)::INTEGER;
+            IF v_search_code >= 100 AND v_search_code <= 999 THEN v_code_min := v_search_code; v_code_max := v_search_code;
+            ELSIF v_search_code >= 10 AND v_search_code <= 99 THEN v_code_min := v_search_code * 10; v_code_max := v_search_code * 10 + 9;
+            ELSIF v_search_code >= 1 AND v_search_code <= 9 THEN v_code_min := v_search_code * 100; v_code_max := v_search_code * 100 + 99;
+            ELSE v_search_code := NULL; END IF;
+        EXCEPTION WHEN OTHERS THEN v_search_code := NULL;
+        END;
+    END IF;
+    
+    IF NOT v_has_context THEN
+        -- No context: use simple query
+        IF p_search_text IS NULL OR TRIM(p_search_text) = '' THEN
+            RETURN QUERY SELECT cg.id, cg.code, cg.name::TEXT, cg.path::TEXT FROM cost_groups cg ORDER BY cg.code ASC LIMIT p_limit;
+            RETURN;
+        END IF;
+        IF v_search_code IS NOT NULL THEN
+            RETURN QUERY SELECT cg.id, cg.code, cg.name::TEXT, cg.path::TEXT FROM cost_groups cg
+            WHERE cg.code >= v_code_min AND cg.code <= v_code_max ORDER BY cg.code ASC LIMIT p_limit;
+        ELSE
+            RETURN QUERY SELECT cg.id, cg.code, cg.name::TEXT, cg.path::TEXT FROM cost_groups cg
+            WHERE cg.name ILIKE '%' || p_search_text || '%'
+            ORDER BY CASE WHEN cg.name ILIKE p_search_text || '%' THEN 0 ELSE 1 END, cg.code ASC
+            LIMIT p_limit;
+        END IF;
         RETURN;
     END IF;
     
-    BEGIN
-        v_search_code := TRIM(p_search_text)::INTEGER;
-        IF v_search_code >= 100 AND v_search_code <= 999 THEN v_code_min := v_search_code; v_code_max := v_search_code;
-        ELSIF v_search_code >= 10 AND v_search_code <= 99 THEN v_code_min := v_search_code * 10; v_code_max := v_search_code * 10 + 9;
-        ELSIF v_search_code >= 1 AND v_search_code <= 9 THEN v_code_min := v_search_code * 100; v_code_max := v_search_code * 100 + 99;
-        ELSE v_search_code := NULL; END IF;
-    EXCEPTION WHEN OTHERS THEN v_search_code := NULL;
-    END;
-    
-    IF v_search_code IS NOT NULL THEN
-        RETURN QUERY SELECT cg.id, cg.code, cg.name::TEXT, cg.path::TEXT FROM cost_groups cg
-        WHERE cg.code >= v_code_min AND cg.code <= v_code_max ORDER BY cg.code ASC LIMIT p_limit;
-    ELSE
-        RETURN QUERY SELECT cg.id, cg.code, cg.name::TEXT, cg.path::TEXT FROM cost_groups cg
-        WHERE cg.name ILIKE '%' || p_search_text || '%'
-        ORDER BY CASE WHEN cg.name ILIKE p_search_text || '%' THEN 0 ELSE 1 END, cg.code ASC
-        LIMIT p_limit;
-    END IF;
+    -- With context: filter by existence in unified_items
+    RETURN QUERY
+    SELECT cg.id, cg.code, cg.name::TEXT, cg.path::TEXT
+    FROM cost_groups cg
+    WHERE (
+        (p_search_text IS NULL OR TRIM(p_search_text) = '') 
+        OR (v_search_code IS NOT NULL AND cg.code >= v_code_min AND cg.code <= v_code_max)
+        OR (v_search_code IS NULL AND cg.name ILIKE '%' || p_search_text || '%')
+    )
+    AND EXISTS (
+        SELECT 1 FROM mv_unified_items ui
+        WHERE ui.cost_group_code = cg.code::TEXT
+          AND (p_ctx_types IS NULL OR ui.type = ANY(p_ctx_types))
+          AND (p_ctx_project IS NULL OR ui.project ILIKE '%' || p_ctx_project || '%')
+          AND (p_ctx_person IS NULL OR ui.search_text ILIKE '%' || p_ctx_person || '%')
+          AND (p_ctx_location IS NULL OR ui.location_ids && (SELECT ARRAY_AGG(l.id) FROM locations l WHERE l.name ILIKE '%' || p_ctx_location || '%' OR l.search_text ILIKE '%' || p_ctx_location || '%'))
+          AND (p_ctx_tags IS NULL OR ui.tag_names_text ILIKE '%' || p_ctx_tags || '%')
+        LIMIT 1
+    )
+    ORDER BY cg.code ASC
+    LIMIT p_limit;
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION search_locations_autocomplete(p_search_text TEXT, p_limit INTEGER DEFAULT 10)
+CREATE OR REPLACE FUNCTION search_locations_autocomplete(
+    p_search_text TEXT, 
+    p_limit INTEGER DEFAULT 10,
+    p_ctx_types TEXT[] DEFAULT NULL,
+    p_ctx_project TEXT DEFAULT NULL,
+    p_ctx_person TEXT DEFAULT NULL,
+    p_ctx_cost_group TEXT DEFAULT NULL,
+    p_ctx_tags TEXT DEFAULT NULL
+)
 RETURNS TABLE(id UUID, name TEXT, type location_type, path TEXT, depth INTEGER)
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
-DECLARE v_search_pattern TEXT;
+DECLARE 
+    v_search_pattern TEXT;
+    v_has_context BOOLEAN;
 BEGIN
-    IF p_search_text IS NULL OR TRIM(p_search_text) = '' THEN
+    v_has_context := p_ctx_types IS NOT NULL OR p_ctx_project IS NOT NULL OR p_ctx_person IS NOT NULL 
+                     OR p_ctx_cost_group IS NOT NULL OR p_ctx_tags IS NOT NULL;
+    
+    IF NOT v_has_context THEN
+        -- No context: use simple query
+        IF p_search_text IS NULL OR TRIM(p_search_text) = '' THEN
+            RETURN QUERY SELECT l.id, l.name::TEXT, l.type, l.search_text::TEXT AS path, l.depth
+            FROM locations l ORDER BY l.type, l.name ASC LIMIT p_limit;
+            RETURN;
+        END IF;
+        v_search_pattern := '%' || p_search_text || '%';
         RETURN QUERY SELECT l.id, l.name::TEXT, l.type, l.search_text::TEXT AS path, l.depth
         FROM locations l
-        ORDER BY l.type, l.name ASC LIMIT p_limit;
+        WHERE l.name ILIKE v_search_pattern OR l.search_text ILIKE v_search_pattern
+        ORDER BY CASE WHEN l.name ILIKE p_search_text THEN 0 WHEN l.name ILIKE p_search_text || '%' THEN 1 ELSE 2 END,
+            l.type, l.name ASC
+        LIMIT p_limit;
         RETURN;
     END IF;
     
-    v_search_pattern := '%' || p_search_text || '%';
+    -- With context: filter by existence in unified_items
+    v_search_pattern := CASE WHEN p_search_text IS NULL OR TRIM(p_search_text) = '' THEN NULL ELSE '%' || p_search_text || '%' END;
     
-    RETURN QUERY SELECT l.id, l.name::TEXT, l.type, l.search_text::TEXT AS path, l.depth
+    RETURN QUERY
+    SELECT l.id, l.name::TEXT, l.type, l.search_text::TEXT AS path, l.depth
     FROM locations l
-    WHERE l.name ILIKE v_search_pattern OR l.search_text ILIKE v_search_pattern
-    ORDER BY 
-        CASE WHEN l.name ILIKE p_search_text THEN 0
-             WHEN l.name ILIKE p_search_text || '%' THEN 1
-             ELSE 2 END,
+    WHERE (v_search_pattern IS NULL OR l.name ILIKE v_search_pattern OR l.search_text ILIKE v_search_pattern)
+      AND EXISTS (
+        SELECT 1 FROM mv_unified_items ui
+        WHERE ui.location_ids @> ARRAY[l.id]
+          AND (p_ctx_types IS NULL OR ui.type = ANY(p_ctx_types))
+          AND (p_ctx_project IS NULL OR ui.project ILIKE '%' || p_ctx_project || '%')
+          AND (p_ctx_person IS NULL OR ui.search_text ILIKE '%' || p_ctx_person || '%')
+          AND (p_ctx_cost_group IS NULL OR (ui.cost_group_code IS NOT NULL AND ui.cost_group_code ~ '^\d+$' AND ui.cost_group_code::INTEGER >= (SELECT min_code FROM compute_cost_group_range(p_ctx_cost_group)) AND ui.cost_group_code::INTEGER <= (SELECT max_code FROM compute_cost_group_range(p_ctx_cost_group))))
+          AND (p_ctx_tags IS NULL OR ui.tag_names_text ILIKE '%' || p_ctx_tags || '%')
+        LIMIT 1
+      )
+    ORDER BY CASE WHEN p_search_text IS NOT NULL AND l.name ILIKE p_search_text THEN 0 
+                  WHEN p_search_text IS NOT NULL AND l.name ILIKE p_search_text || '%' THEN 1 ELSE 2 END,
         l.type, l.name ASC
     LIMIT p_limit;
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION search_tags_autocomplete(p_search_text TEXT, p_limit INTEGER DEFAULT 10)
+CREATE OR REPLACE FUNCTION search_tags_autocomplete(
+    p_search_text TEXT, 
+    p_limit INTEGER DEFAULT 10,
+    p_ctx_types TEXT[] DEFAULT NULL,
+    p_ctx_project TEXT DEFAULT NULL,
+    p_ctx_person TEXT DEFAULT NULL,
+    p_ctx_location TEXT DEFAULT NULL,
+    p_ctx_cost_group TEXT DEFAULT NULL
+)
 RETURNS TABLE(id TEXT, name TEXT, color TEXT, source TEXT)
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
-DECLARE v_search_pattern TEXT;
+DECLARE 
+    v_search_pattern TEXT;
+    v_has_context BOOLEAN;
 BEGIN
-    IF p_search_text IS NULL OR TRIM(p_search_text) = '' THEN
+    v_has_context := p_ctx_types IS NOT NULL OR p_ctx_project IS NOT NULL OR p_ctx_person IS NOT NULL 
+                     OR p_ctx_location IS NOT NULL OR p_ctx_cost_group IS NOT NULL;
+    
+    IF NOT v_has_context THEN
+        -- No context: use simple query
+        IF p_search_text IS NULL OR TRIM(p_search_text) = '' THEN
+            RETURN QUERY WITH combined_tags AS (
+                SELECT 'tw_' || t.id::TEXT AS id, t.name::TEXT AS name, t.color::TEXT AS color, 'teamwork'::TEXT AS source,
+                    (SELECT COUNT(*) FROM teamwork.task_tags tt WHERE tt.tag_id = t.id) AS usage_count
+                FROM teamwork.tags t
+                UNION ALL
+                SELECT 'm_' || sl.id::TEXT AS id, sl.name::TEXT AS name, NULL::TEXT AS color, 'missive'::TEXT AS source,
+                    (SELECT COUNT(*) FROM missive.conversation_labels cl WHERE cl.label_id = sl.id) AS usage_count
+                FROM missive.shared_labels sl
+            ) SELECT DISTINCT ON (LOWER(ct.name)) ct.id, ct.name, ct.color, ct.source
+            FROM combined_tags ct ORDER BY LOWER(ct.name), ct.usage_count DESC LIMIT p_limit;
+            RETURN;
+        END IF;
+        v_search_pattern := '%' || p_search_text || '%';
         RETURN QUERY WITH combined_tags AS (
-            SELECT 'tw_' || t.id::TEXT AS id, t.name::TEXT AS name, t.color::TEXT AS color, 'teamwork'::TEXT AS source,
-                (SELECT COUNT(*) FROM teamwork.task_tags tt WHERE tt.tag_id = t.id) AS usage_count
-            FROM teamwork.tags t
+            SELECT 'tw_' || t.id::TEXT AS id, t.name::TEXT AS name, t.color::TEXT AS color, 'teamwork'::TEXT AS source
+            FROM teamwork.tags t WHERE t.name ILIKE v_search_pattern
             UNION ALL
-            SELECT 'm_' || sl.id::TEXT AS id, sl.name::TEXT AS name, NULL::TEXT AS color, 'missive'::TEXT AS source,
-                (SELECT COUNT(*) FROM missive.conversation_labels cl WHERE cl.label_id = sl.id) AS usage_count
-            FROM missive.shared_labels sl
+            SELECT 'm_' || sl.id::TEXT AS id, sl.name::TEXT AS name, NULL::TEXT AS color, 'missive'::TEXT AS source
+            FROM missive.shared_labels sl WHERE sl.name ILIKE v_search_pattern
         ) SELECT DISTINCT ON (LOWER(ct.name)) ct.id, ct.name, ct.color, ct.source
-        FROM combined_tags ct ORDER BY LOWER(ct.name), ct.usage_count DESC LIMIT p_limit;
+        FROM combined_tags ct ORDER BY LOWER(ct.name), CASE WHEN ct.name ILIKE p_search_text || '%' THEN 0 ELSE 1 END
+        LIMIT p_limit;
         RETURN;
     END IF;
     
-    v_search_pattern := '%' || p_search_text || '%';
-    RETURN QUERY WITH combined_tags AS (
+    -- With context: filter by existence in unified_items
+    v_search_pattern := CASE WHEN p_search_text IS NULL OR TRIM(p_search_text) = '' THEN NULL ELSE '%' || p_search_text || '%' END;
+    
+    RETURN QUERY
+    WITH combined_tags AS (
         SELECT 'tw_' || t.id::TEXT AS id, t.name::TEXT AS name, t.color::TEXT AS color, 'teamwork'::TEXT AS source
-        FROM teamwork.tags t WHERE t.name ILIKE v_search_pattern
+        FROM teamwork.tags t WHERE v_search_pattern IS NULL OR t.name ILIKE v_search_pattern
         UNION ALL
         SELECT 'm_' || sl.id::TEXT AS id, sl.name::TEXT AS name, NULL::TEXT AS color, 'missive'::TEXT AS source
-        FROM missive.shared_labels sl WHERE sl.name ILIKE v_search_pattern
-    ) SELECT DISTINCT ON (LOWER(ct.name)) ct.id, ct.name, ct.color, ct.source
-    FROM combined_tags ct ORDER BY LOWER(ct.name), CASE WHEN ct.name ILIKE p_search_text || '%' THEN 0 ELSE 1 END
+        FROM missive.shared_labels sl WHERE v_search_pattern IS NULL OR sl.name ILIKE v_search_pattern
+    )
+    SELECT DISTINCT ON (LOWER(ct.name)) ct.id, ct.name, ct.color, ct.source
+    FROM combined_tags ct
+    WHERE EXISTS (
+        SELECT 1 FROM mv_unified_items ui
+        WHERE ui.tag_names_text ILIKE '%' || ct.name || '%'
+          AND (p_ctx_types IS NULL OR ui.type = ANY(p_ctx_types))
+          AND (p_ctx_project IS NULL OR ui.project ILIKE '%' || p_ctx_project || '%')
+          AND (p_ctx_person IS NULL OR ui.search_text ILIKE '%' || p_ctx_person || '%')
+          AND (p_ctx_location IS NULL OR ui.location_ids && (SELECT ARRAY_AGG(l.id) FROM locations l WHERE l.name ILIKE '%' || p_ctx_location || '%' OR l.search_text ILIKE '%' || p_ctx_location || '%'))
+          AND (p_ctx_cost_group IS NULL OR (ui.cost_group_code IS NOT NULL AND ui.cost_group_code ~ '^\d+$' AND ui.cost_group_code::INTEGER >= (SELECT min_code FROM compute_cost_group_range(p_ctx_cost_group)) AND ui.cost_group_code::INTEGER <= (SELECT max_code FROM compute_cost_group_range(p_ctx_cost_group))))
+        LIMIT 1
+    )
+    ORDER BY LOWER(ct.name), CASE WHEN p_search_text IS NOT NULL AND ct.name ILIKE p_search_text || '%' THEN 0 ELSE 1 END
     LIMIT p_limit;
 END;
 $$;
@@ -3055,6 +3308,11 @@ COMMENT ON FUNCTION purge_excluded_teamwork_data() IS 'Deletes all Teamwork data
 
 GRANT EXECUTE ON FUNCTION purge_excluded_teamwork_data() TO authenticated;
 GRANT EXECUTE ON FUNCTION search_companies_autocomplete(TEXT, INTEGER) TO authenticated;
+GRANT EXECUTE ON FUNCTION search_projects_autocomplete(TEXT, INTEGER, TEXT[], TEXT, TEXT, TEXT, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION search_persons_autocomplete(TEXT, INTEGER, TEXT[], TEXT, TEXT, TEXT, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION search_cost_groups_autocomplete(TEXT, INTEGER, TEXT[], TEXT, TEXT, TEXT, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION search_locations_autocomplete(TEXT, INTEGER, TEXT[], TEXT, TEXT, TEXT, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION search_tags_autocomplete(TEXT, INTEGER, TEXT[], TEXT, TEXT, TEXT, TEXT) TO authenticated;
 
 -- =====================================
 -- GET COMPANIES/PROJECTS BY IDS
