@@ -1413,18 +1413,22 @@ BEGIN
     v_search_pattern := CASE WHEN p_search_text IS NULL OR TRIM(p_search_text) = '' THEN NULL ELSE '%' || p_search_text || '%' END;
     
     RETURN QUERY
-    SELECT DISTINCT up.id, up.display_name::TEXT, up.primary_email::TEXT, 'unified'::TEXT AS source_type, up.is_internal
-    FROM item_involved_persons iip
-    JOIN unified_persons up ON up.id = iip.unified_person_id
-    JOIN mv_unified_items ui ON ui.id = iip.item_id AND ui.type = iip.item_type
-    WHERE (v_search_pattern IS NULL OR up.display_name ILIKE v_search_pattern OR up.primary_email ILIKE v_search_pattern)
-      AND (p_ctx_types IS NULL OR ui.type = ANY(p_ctx_types))
-      AND (p_ctx_project IS NULL OR ui.project ILIKE '%' || p_ctx_project || '%')
-      AND (p_ctx_location IS NULL OR ui.location_ids && (SELECT ARRAY_AGG(l.id) FROM locations l WHERE l.name ILIKE '%' || p_ctx_location || '%' OR l.search_text ILIKE '%' || p_ctx_location || '%'))
-      AND (p_ctx_cost_group IS NULL OR (ui.cost_group_code IS NOT NULL AND ui.cost_group_code ~ '^\d+$' AND ui.cost_group_code::INTEGER >= (SELECT min_code FROM compute_cost_group_range(p_ctx_cost_group)) AND ui.cost_group_code::INTEGER <= (SELECT max_code FROM compute_cost_group_range(p_ctx_cost_group))))
-      AND (p_ctx_tags IS NULL OR ui.tag_names_text ILIKE '%' || p_ctx_tags || '%')
-    ORDER BY CASE WHEN p_search_text IS NOT NULL AND up.display_name ILIKE p_search_text || '%' THEN 0 ELSE 1 END,
-        CASE WHEN up.is_internal THEN 0 ELSE 1 END, up.display_name ASC
+    SELECT sub.id, sub.display_name, sub.primary_email, sub.source_type, sub.is_internal
+    FROM (
+        SELECT DISTINCT ON (up.id) up.id, up.display_name::TEXT, up.primary_email::TEXT, 'unified'::TEXT AS source_type, up.is_internal
+        FROM item_involved_persons iip
+        JOIN unified_persons up ON up.id = iip.unified_person_id
+        JOIN mv_unified_items ui ON ui.id = iip.item_id AND ui.type = iip.item_type
+        WHERE (v_search_pattern IS NULL OR up.display_name ILIKE v_search_pattern OR up.primary_email ILIKE v_search_pattern)
+          AND (p_ctx_types IS NULL OR ui.type = ANY(p_ctx_types))
+          AND (p_ctx_project IS NULL OR ui.project ILIKE '%' || p_ctx_project || '%')
+          AND (p_ctx_location IS NULL OR ui.location_ids && (SELECT ARRAY_AGG(l.id) FROM locations l WHERE l.name ILIKE '%' || p_ctx_location || '%' OR l.search_text ILIKE '%' || p_ctx_location || '%'))
+          AND (p_ctx_cost_group IS NULL OR (ui.cost_group_code IS NOT NULL AND ui.cost_group_code ~ '^\d+$' AND ui.cost_group_code::INTEGER >= (SELECT min_code FROM compute_cost_group_range(p_ctx_cost_group)) AND ui.cost_group_code::INTEGER <= (SELECT max_code FROM compute_cost_group_range(p_ctx_cost_group))))
+          AND (p_ctx_tags IS NULL OR ui.tag_names_text ILIKE '%' || p_ctx_tags || '%')
+        ORDER BY up.id
+    ) sub
+    ORDER BY CASE WHEN p_search_text IS NOT NULL AND sub.display_name ILIKE p_search_text || '%' THEN 0 ELSE 1 END,
+        CASE WHEN sub.is_internal THEN 0 ELSE 1 END, sub.display_name ASC
     LIMIT p_limit;
 END;
 $$;
@@ -3388,6 +3392,33 @@ BEGIN
         'queue', v_queue,
         'indexing', v_indexing
     );
+END;
+$$ LANGUAGE plpgsql;
+
+-- =====================================
+-- AI AGENT FUNCTIONS
+-- =====================================
+
+-- Trigger function: detect @ai mentions in conversation comments
+CREATE OR REPLACE FUNCTION trigger_check_ai_mention()
+RETURNS TRIGGER AS $$
+BEGIN
+    -- Check if comment body contains @ai (case-insensitive)
+    IF NEW.body ~* '@ai\b' THEN
+        INSERT INTO public.ai_triggers (
+            conversation_id, 
+            comment_id, 
+            comment_body,
+            author_id
+        ) VALUES (
+            NEW.conversation_id,
+            NEW.id,
+            NEW.body,
+            NEW.author_id
+        )
+        ON CONFLICT (comment_id) DO NOTHING;
+    END IF;
+    RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 

@@ -39,6 +39,30 @@ Single-row table. Admin-only settings that affect all users.
 | `location_prefix` | string | `"O-"` | Tag prefix for location extraction |
 | `file_ignore_patterns` | FileIgnorePattern[] | (builtin) | LIKE patterns to hide files |
 | `public_email_addresses` | string[] | `[]` | Shared email addresses visible to all users (RLS) |
+| `ai_agent_system_prompt` | string | (default template) | System prompt template for AI Email Agent with {variable} placeholders |
+
+### AI Agent System Prompt Template Variables
+
+The `ai_agent_system_prompt` field supports these placeholder variables:
+
+| Variable | Description |
+|----------|-------------|
+| `{current_datetime}` | Current date/time in Europe/Berlin (e.g., "Monday, 19 January 2026, 14:35") |
+| `{trigger_author}` | Name of user who triggered @ai |
+| `{trigger_instruction}` | Text after @ai (or "(no specific instruction)") |
+| `{conversation_subject}` | Email subject line |
+| `{conversation_url}` | Missive web URL |
+| `{project_name}` | Project name (or "Not assigned") |
+| `{project_id}` | Teamwork project ID |
+| `{emails_summary}` | Last 3 emails with ID, from, subject, date, body (truncated 2000 chars) |
+| `{emails_metadata}` | All email IDs in conversation with subject, from, date |
+| `{emails_count}` | Total email count |
+| `{comments}` | All conversation comments with author and date |
+| `{tasks}` | Last 10 tasks: name, status, assigned_to, updated_at, tasklist |
+| `{anforderungen}` | Last 10 Anforderungen (same fields) |
+| `{hinweise}` | Last 10 Hinweise (same fields) |
+| `{files}` | Last 10 files: name, path, updated_at |
+| `{craft_docs}` | Last 10 Craft documents: title, modified_at |
 
 ---
 

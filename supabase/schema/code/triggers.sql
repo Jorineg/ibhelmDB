@@ -271,3 +271,12 @@ DROP TRIGGER IF EXISTS delete_s3_content_on_delete ON file_contents;
 CREATE TRIGGER delete_s3_content_on_delete AFTER DELETE ON file_contents
     FOR EACH ROW EXECUTE FUNCTION trigger_delete_s3_content();
 
+-- =====================================
+-- 10. AI AGENT TRIGGER
+-- =====================================
+-- Detects @ai mentions in conversation comments and queues them for processing
+
+DROP TRIGGER IF EXISTS check_ai_mention_on_comment ON missive.conversation_comments;
+CREATE TRIGGER check_ai_mention_on_comment AFTER INSERT ON missive.conversation_comments
+    FOR EACH ROW EXECUTE FUNCTION trigger_check_ai_mention();
+

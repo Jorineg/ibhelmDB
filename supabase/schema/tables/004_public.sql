@@ -288,6 +288,27 @@ CREATE TABLE email_attachment_files (
 );
 
 -- =====================================
+-- 11. AI TRIGGERS
+-- =====================================
+-- Queue of AI requests triggered by @ai mentions in Missive comments.
+
+CREATE TABLE ai_triggers (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    conversation_id UUID NOT NULL REFERENCES missive.conversations(id) ON DELETE CASCADE,
+    comment_id UUID NOT NULL REFERENCES missive.conversation_comments(id) ON DELETE CASCADE,
+    comment_body TEXT,
+    author_id UUID,
+    status VARCHAR(20) DEFAULT 'pending',
+    placeholder_post_id TEXT,
+    result_post_id TEXT,
+    result_markdown TEXT,
+    error_message TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    processed_at TIMESTAMPTZ,
+    CONSTRAINT ai_triggers_status_check CHECK (status IN ('pending', 'processing', 'done', 'error'))
+);
+
+-- =====================================
 -- INDEXES
 -- =====================================
 
@@ -352,6 +373,11 @@ CREATE INDEX idx_iip_item ON item_involved_persons(item_id, item_type);
 CREATE INDEX idx_eaf_status ON email_attachment_files(status) WHERE status IN ('pending', 'downloading');
 CREATE INDEX idx_eaf_message_id ON email_attachment_files(missive_message_id);
 CREATE INDEX idx_eaf_local_filename ON email_attachment_files(local_filename) WHERE local_filename IS NOT NULL;
+CREATE INDEX idx_ai_triggers_status ON ai_triggers(status);
+CREATE INDEX idx_ai_triggers_status_created ON ai_triggers(status, created_at) WHERE status = 'pending';
+CREATE INDEX idx_ai_triggers_conversation_id ON ai_triggers(conversation_id);
+CREATE INDEX idx_ai_triggers_created_at ON ai_triggers(created_at DESC);
+CREATE UNIQUE INDEX idx_ai_triggers_comment_id ON ai_triggers(comment_id);
 
 -- =====================================
 -- COMMENTS
@@ -386,6 +412,11 @@ COMMENT ON TABLE item_involved_persons IS 'Junction table for filtering items by
 COMMENT ON TABLE item_involved_persons IS 'Junction table for filtering items by involved person';
 COMMENT ON TABLE email_attachment_files IS 'Download tracking for Missive email attachments. Filename format: {name}_{attachment_id}.{ext}';
 COMMENT ON COLUMN email_attachment_files.local_filename IS 'Unique filename used for FileMetadataSync matching. Format: OriginalName_UUID.ext';
+COMMENT ON TABLE ai_triggers IS 'Queue of AI requests triggered by @ai mentions in Missive comments';
+COMMENT ON COLUMN ai_triggers.status IS 'pending=waiting, processing=claimed, done=completed, error=failed';
+COMMENT ON COLUMN ai_triggers.placeholder_post_id IS 'Missive post ID of "thinking..." placeholder for deletion';
+COMMENT ON COLUMN ai_triggers.result_post_id IS 'Missive post ID of final AI response';
+COMMENT ON COLUMN ai_triggers.result_markdown IS 'Stored AI response for debugging/audit';
 
 -- =====================================
 -- MCP READONLY GRANTS
