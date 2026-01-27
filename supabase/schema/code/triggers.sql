@@ -279,4 +279,3 @@ CREATE TRIGGER delete_s3_content_on_delete AFTER DELETE ON file_contents
 DROP TRIGGER IF EXISTS check_ai_mention_on_comment ON missive.conversation_comments;
 CREATE TRIGGER check_ai_mention_on_comment AFTER INSERT ON missive.conversation_comments
     FOR EACH ROW EXECUTE FUNCTION trigger_check_ai_mention();
-

@@ -28,4 +28,3 @@ END $$;
 
 -- Ensure MCP role respects RLS (critical for email security)
 ALTER ROLE mcp_readonly NOBYPASSRLS;
-

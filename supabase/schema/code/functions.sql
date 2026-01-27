@@ -2165,6 +2165,209 @@ BEGIN
 END;
 $$;
 
+-- Grouped count function - returns counts per group value
+CREATE OR REPLACE FUNCTION count_unified_items_grouped(
+    p_group_by TEXT,
+    p_group_order TEXT DEFAULT 'asc',
+    p_types TEXT[] DEFAULT NULL, p_task_types UUID[] DEFAULT NULL,
+    p_text_search TEXT DEFAULT NULL, p_involved_person TEXT DEFAULT NULL,
+    p_tag_search TEXT DEFAULT NULL, p_cost_group_code TEXT DEFAULT NULL,
+    p_project_search TEXT DEFAULT NULL, p_location_search TEXT DEFAULT NULL,
+    p_name_contains TEXT DEFAULT NULL, p_description_contains TEXT DEFAULT NULL,
+    p_customer_contains TEXT DEFAULT NULL, p_tasklist_contains TEXT DEFAULT NULL,
+    p_creator_contains TEXT DEFAULT NULL, p_assigned_to_contains TEXT DEFAULT NULL,
+    p_status_in TEXT[] DEFAULT NULL, p_status_not_in TEXT[] DEFAULT NULL,
+    p_priority_in TEXT[] DEFAULT NULL, p_priority_not_in TEXT[] DEFAULT NULL,
+    p_project_status_in TEXT[] DEFAULT NULL, p_project_status_not_in TEXT[] DEFAULT NULL,
+    p_due_date_min TIMESTAMP DEFAULT NULL, p_due_date_max TIMESTAMP DEFAULT NULL,
+    p_due_date_is_null BOOLEAN DEFAULT NULL,
+    p_created_at_min TIMESTAMPTZ DEFAULT NULL, p_created_at_max TIMESTAMPTZ DEFAULT NULL,
+    p_updated_at_min TIMESTAMPTZ DEFAULT NULL, p_updated_at_max TIMESTAMPTZ DEFAULT NULL,
+    p_progress_min INTEGER DEFAULT NULL, p_progress_max INTEGER DEFAULT NULL,
+    p_attachment_count_min INTEGER DEFAULT NULL, p_attachment_count_max INTEGER DEFAULT NULL,
+    p_file_extension_contains TEXT DEFAULT NULL,
+    p_accumulated_estimated_minutes_min INTEGER DEFAULT NULL, p_accumulated_estimated_minutes_max INTEGER DEFAULT NULL,
+    p_logged_minutes_min INTEGER DEFAULT NULL, p_logged_minutes_max INTEGER DEFAULT NULL,
+    p_billable_minutes_min INTEGER DEFAULT NULL, p_billable_minutes_max INTEGER DEFAULT NULL,
+    p_hide_completed_tasks BOOLEAN DEFAULT NULL,
+    p_hide_inactive_projects BOOLEAN DEFAULT NULL,
+    p_file_ignore_patterns TEXT[] DEFAULT NULL
+)
+RETURNS TABLE(group_value TEXT, group_count INTEGER)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_sql TEXT;
+    v_where TEXT[] := ARRAY[]::TEXT[];
+    v_where_clause TEXT;
+    v_person_ids UUID[];
+    v_cost_min INTEGER;
+    v_cost_max INTEGER;
+    v_location_ids UUID[];
+    v_valid_group_fields TEXT[] := ARRAY['project', 'status', 'type', 'priority', 'location', 'cost_group', 'task_type_name', 'customer', 'creator', 'tasklist'];
+BEGIN
+    -- Validate group_by parameter (required)
+    IF p_group_by IS NULL OR NOT (p_group_by = ANY(v_valid_group_fields)) THEN
+        RAISE EXCEPTION 'Invalid p_group_by value. Must be one of: %', array_to_string(v_valid_group_fields, ', ');
+    END IF;
+    IF p_group_order NOT IN ('asc', 'desc') THEN p_group_order := 'asc'; END IF;
+
+    -- Pre-compute lookup filters
+    IF p_involved_person IS NOT NULL AND TRIM(p_involved_person) != '' THEN
+        v_person_ids := find_person_ids_by_search(p_involved_person);
+        IF array_length(v_person_ids, 1) IS NULL THEN RETURN; END IF;
+    END IF;
+    
+    IF p_cost_group_code IS NOT NULL AND TRIM(p_cost_group_code) != '' THEN
+        SELECT cgr.min_code, cgr.max_code INTO v_cost_min, v_cost_max FROM compute_cost_group_range(p_cost_group_code) cgr;
+    END IF;
+    
+    IF p_location_search IS NOT NULL AND TRIM(p_location_search) != '' THEN
+        v_location_ids := find_location_ids_by_search(p_location_search);
+        IF array_length(v_location_ids, 1) IS NULL THEN RETURN; END IF;
+    END IF;
+    
+    -- Build WHERE conditions (same as count_unified_items)
+    IF p_types IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.type = ANY(%L::TEXT[])', p_types));
+    END IF;
+    IF p_task_types IS NOT NULL THEN
+        v_where := array_append(v_where, format('(ui.type != ''task'' OR ui.task_type_id = ANY(%L::UUID[]))', p_task_types));
+    END IF;
+    IF p_text_search IS NOT NULL AND p_text_search != '' THEN
+        v_where := array_append(v_where, format('ui.search_text ILIKE %L', '%' || p_text_search || '%'));
+    END IF;
+    IF v_person_ids IS NOT NULL THEN
+        v_where := array_append(v_where, format('EXISTS (SELECT 1 FROM item_involved_persons iip WHERE iip.item_id = ui.id AND iip.item_type = ui.type AND iip.unified_person_id = ANY(%L::UUID[]))', v_person_ids));
+    END IF;
+    IF p_tag_search IS NOT NULL AND p_tag_search != '' THEN
+        v_where := array_append(v_where, format('ui.tag_names_text ILIKE %L', '%' || p_tag_search || '%'));
+    END IF;
+    IF v_cost_min IS NOT NULL THEN
+        v_where := array_append(v_where, format('(ui.cost_group_code IS NOT NULL AND ui.cost_group_code ~ ''^\d+$'' AND ui.cost_group_code::INTEGER >= %s AND ui.cost_group_code::INTEGER <= %s)', v_cost_min, v_cost_max));
+    END IF;
+    IF p_project_search IS NOT NULL AND p_project_search != '' THEN
+        v_where := array_append(v_where, format('ui.project ILIKE %L', '%' || p_project_search || '%'));
+    END IF;
+    IF v_location_ids IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.location_ids && %L::UUID[]', v_location_ids));
+    END IF;
+    IF p_name_contains IS NOT NULL AND p_name_contains != '' THEN
+        v_where := array_append(v_where, format('ui.name ILIKE %L', '%' || p_name_contains || '%'));
+    END IF;
+    IF p_description_contains IS NOT NULL AND p_description_contains != '' THEN
+        v_where := array_append(v_where, format('ui.description ILIKE %L', '%' || p_description_contains || '%'));
+    END IF;
+    IF p_customer_contains IS NOT NULL AND p_customer_contains != '' THEN
+        v_where := array_append(v_where, format('ui.customer ILIKE %L', '%' || p_customer_contains || '%'));
+    END IF;
+    IF p_tasklist_contains IS NOT NULL AND p_tasklist_contains != '' THEN
+        v_where := array_append(v_where, format('ui.tasklist ILIKE %L', '%' || p_tasklist_contains || '%'));
+    END IF;
+    IF p_creator_contains IS NOT NULL AND p_creator_contains != '' THEN
+        v_where := array_append(v_where, format('ui.creator ILIKE %L', '%' || p_creator_contains || '%'));
+    END IF;
+    IF p_assigned_to_contains IS NOT NULL AND p_assigned_to_contains != '' THEN
+        v_where := array_append(v_where, format('ui.assignee_search_text ILIKE %L', '%' || p_assigned_to_contains || '%'));
+    END IF;
+    IF p_status_in IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.status = ANY(%L::TEXT[])', p_status_in));
+    END IF;
+    IF p_status_not_in IS NOT NULL THEN
+        v_where := array_append(v_where, format('(ui.status IS NULL OR NOT (ui.status = ANY(%L::TEXT[])))', p_status_not_in));
+    END IF;
+    IF p_hide_completed_tasks = TRUE THEN
+        v_where := array_append(v_where, '(ui.type != ''task'' OR ui.status != ''completed'')');
+    END IF;
+    IF p_hide_inactive_projects = TRUE THEN
+        v_where := array_append(v_where, '(ui.project_status IS NULL OR ui.project_status = ''active'')');
+    END IF;
+    IF p_project_status_in IS NOT NULL THEN
+        v_where := array_append(v_where, format('(ui.project_status IS NULL OR ui.project_status = ANY(%L::TEXT[]))', p_project_status_in));
+    END IF;
+    IF p_project_status_not_in IS NOT NULL THEN
+        v_where := array_append(v_where, format('(ui.project_status IS NULL OR NOT (ui.project_status = ANY(%L::TEXT[])))', p_project_status_not_in));
+    END IF;
+    IF p_file_ignore_patterns IS NOT NULL AND array_length(p_file_ignore_patterns, 1) > 0 THEN
+        v_where := array_append(v_where, format('(ui.type != ''file'' OR NOT (ui.name LIKE ANY(%L::TEXT[])))', p_file_ignore_patterns));
+    END IF;
+    IF p_priority_in IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.priority = ANY(%L::TEXT[])', p_priority_in));
+    END IF;
+    IF p_priority_not_in IS NOT NULL THEN
+        v_where := array_append(v_where, format('(ui.priority IS NULL OR NOT (ui.priority = ANY(%L::TEXT[])))', p_priority_not_in));
+    END IF;
+    IF p_due_date_min IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.due_date >= %L', p_due_date_min));
+    END IF;
+    IF p_due_date_max IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.due_date <= %L', p_due_date_max));
+    END IF;
+    IF p_due_date_is_null = TRUE THEN
+        v_where := array_append(v_where, 'ui.due_date IS NULL');
+    ELSIF p_due_date_is_null = FALSE THEN
+        v_where := array_append(v_where, 'ui.due_date IS NOT NULL');
+    END IF;
+    IF p_created_at_min IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.created_at >= %L', p_created_at_min));
+    END IF;
+    IF p_created_at_max IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.created_at <= %L', p_created_at_max));
+    END IF;
+    IF p_updated_at_min IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.updated_at >= %L', p_updated_at_min));
+    END IF;
+    IF p_updated_at_max IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.updated_at <= %L', p_updated_at_max));
+    END IF;
+    IF p_progress_min IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.progress >= %s', p_progress_min));
+    END IF;
+    IF p_progress_max IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.progress <= %s', p_progress_max));
+    END IF;
+    IF p_attachment_count_min IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.attachment_count >= %s', p_attachment_count_min));
+    END IF;
+    IF p_attachment_count_max IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.attachment_count <= %s', p_attachment_count_max));
+    END IF;
+    IF p_file_extension_contains IS NOT NULL AND p_file_extension_contains != '' THEN
+        v_where := array_append(v_where, format('ui.file_extension ILIKE %L', '%' || p_file_extension_contains || '%'));
+    END IF;
+    IF p_accumulated_estimated_minutes_min IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.accumulated_estimated_minutes >= %s', p_accumulated_estimated_minutes_min));
+    END IF;
+    IF p_accumulated_estimated_minutes_max IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.accumulated_estimated_minutes <= %s', p_accumulated_estimated_minutes_max));
+    END IF;
+    IF p_logged_minutes_min IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.logged_minutes >= %s', p_logged_minutes_min));
+    END IF;
+    IF p_logged_minutes_max IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.logged_minutes <= %s', p_logged_minutes_max));
+    END IF;
+    IF p_billable_minutes_min IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.billable_minutes >= %s', p_billable_minutes_min));
+    END IF;
+    IF p_billable_minutes_max IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.billable_minutes <= %s', p_billable_minutes_max));
+    END IF;
+    
+    -- Build WHERE clause
+    IF array_length(v_where, 1) > 0 THEN
+        v_where_clause := ' WHERE ' || array_to_string(v_where, ' AND ');
+    ELSE
+        v_where_clause := '';
+    END IF;
+    
+    -- GROUP BY query with dynamic column
+    v_sql := format('SELECT ui.%I::TEXT AS group_value, COUNT(*)::INTEGER AS group_count FROM unified_items_secure ui%s GROUP BY ui.%I ORDER BY ui.%I %s NULLS LAST',
+        p_group_by, v_where_clause, p_group_by, p_group_by, p_group_order);
+    
+    RETURN QUERY EXECUTE v_sql;
+END;
+$$;
+
 -- =====================================
 -- 12. UNIFIED PERSONS QUERY
 -- =====================================
@@ -3404,7 +3607,7 @@ CREATE OR REPLACE FUNCTION trigger_check_ai_mention()
 RETURNS TRIGGER AS $$
 BEGIN
     -- Check if comment body contains @ai (case-insensitive)
-    IF NEW.body ~* '@ai\b' THEN
+    IF NEW.body ~* '@ai\y' THEN
         INSERT INTO public.ai_triggers (
             conversation_id, 
             comment_id, 
@@ -3421,4 +3624,3 @@ BEGIN
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
-
