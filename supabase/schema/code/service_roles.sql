@@ -197,11 +197,6 @@ GRANT SELECT, INSERT, UPDATE ON missive.conversation_comments TO tmc_connector;
 GRANT SELECT, INSERT, UPDATE ON missive.comment_attachments TO tmc_connector;
 GRANT SELECT, INSERT, UPDATE ON missive.comment_tasks TO tmc_connector;
 GRANT SELECT, INSERT, UPDATE ON missive.contacts TO tmc_connector;
-GRANT USAGE ON SEQUENCE missive.contacts_id_seq TO tmc_connector;
-GRANT USAGE ON SEQUENCE missive.message_recipients_id_seq TO tmc_connector;
-GRANT USAGE ON SEQUENCE missive.conversation_authors_id_seq TO tmc_connector;
-GRANT USAGE ON SEQUENCE missive.comment_mentions_id_seq TO tmc_connector;
-GRANT USAGE ON SEQUENCE missive.comment_tasks_id_seq TO tmc_connector;
 GRANT SELECT, INSERT, UPDATE, DELETE ON missive.conversation_users TO tmc_connector;
 GRANT SELECT, INSERT, UPDATE, DELETE ON missive.conversation_assignees TO tmc_connector;
 GRANT SELECT, INSERT, UPDATE, DELETE ON missive.conversation_labels TO tmc_connector;
@@ -224,6 +219,19 @@ GRANT EXECUTE ON FUNCTION teamworkmissiveconnector.mark_completed(INTEGER, INTEG
 GRANT EXECUTE ON FUNCTION teamworkmissiveconnector.mark_failed(INTEGER, TEXT, BOOLEAN) TO tmc_connector;
 GRANT EXECUTE ON FUNCTION teamworkmissiveconnector.cleanup_old_items(INTEGER) TO tmc_connector;
 GRANT EXECUTE ON FUNCTION teamworkmissiveconnector.reset_stuck_items(INTEGER) TO tmc_connector;
+
+-- Sequence access (needed for INSERT on tables with serial/identity columns)
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA teamwork TO tmc_connector;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA missive TO tmc_connector;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA teamworkmissiveconnector TO tmc_connector;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO tmc_connector;
+
+--------------------------------------------------------------------------------
+-- MCP Server (Read-Only) Role
+-- The stubs file creates mcp_readonly as NOLOGIN; upgrade to LOGIN here
+-- so the MCP server can connect directly via psycopg/asyncpg.
+--------------------------------------------------------------------------------
+ALTER ROLE mcp_readonly WITH LOGIN;
 
 --------------------------------------------------------------------------------
 -- Verification queries (run manually)
