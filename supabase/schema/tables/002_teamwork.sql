@@ -263,8 +263,6 @@ CREATE INDEX idx_tw_tasks_deleted_status ON teamwork.tasks(deleted_at, status);
 CREATE INDEX idx_tw_tasks_project_status ON teamwork.tasks(project_id, status) WHERE deleted_at IS NULL;
 CREATE INDEX idx_tw_tasks_created_by_id ON teamwork.tasks(created_by_id);
 CREATE INDEX idx_tw_tasks_updated_by_id ON teamwork.tasks(updated_by_id);
-CREATE INDEX idx_tw_users_first_name_lower ON teamwork.users(LOWER(first_name));
-CREATE INDEX idx_tw_users_last_name_lower ON teamwork.users(LOWER(last_name));
 
 -- Timelog indexes
 CREATE INDEX idx_tw_timelogs_task_id ON teamwork.timelogs(task_id);

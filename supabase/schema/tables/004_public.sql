@@ -316,7 +316,6 @@ CREATE INDEX idx_unified_persons_display_name ON unified_persons(display_name);
 CREATE INDEX idx_unified_persons_primary_email ON unified_persons(primary_email);
 CREATE INDEX idx_unified_persons_is_internal ON unified_persons(is_internal);
 CREATE INDEX idx_unified_persons_is_company ON unified_persons(is_company);
-CREATE INDEX idx_unified_persons_display_name_lower ON unified_persons(LOWER(display_name));
 CREATE INDEX idx_unified_persons_primary_email_lower ON unified_persons(LOWER(primary_email));
 CREATE INDEX idx_unified_person_links_unified_person_id ON unified_person_links(unified_person_id);
 CREATE INDEX idx_unified_person_links_link_type ON unified_person_links(link_type);

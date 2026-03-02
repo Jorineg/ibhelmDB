@@ -4,10 +4,6 @@
 -- GiST/GIN indexes that Atlas may have issues with
 -- Run manually after schema apply if needed
 
--- JSONB index for file metadata queries
-CREATE INDEX IF NOT EXISTS idx_files_auto_extracted_metadata_gin 
-    ON files USING GIN (auto_extracted_metadata);
-
 -- Trigram indexes for location search (used by find_location_ids_by_search)
 CREATE INDEX IF NOT EXISTS idx_locations_name_trgm 
     ON locations USING GIN (name gin_trgm_ops);
