@@ -1695,6 +1695,133 @@ BEGIN
 END;
 $$;
 
+-- =====================================
+-- SEARCH QUERY PARSER
+-- =====================================
+-- Parses a search string with operators into a SQL WHERE clause fragment.
+-- Operators: multiple words (AND), -word (NOT), "exact phrase", OR
+-- Only exact uppercase OR is treated as operator; quoted "OR" is a literal search term.
+-- Returns NULL if input is empty or yields no conditions.
+
+CREATE OR REPLACE FUNCTION build_search_conditions(p_search TEXT, p_column TEXT DEFAULT 'ui.search_text')
+RETURNS TEXT
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_input TEXT;
+    v_len INT;
+    v_pos INT := 1;
+    v_char TEXT;
+    v_token TEXT;
+    v_tokens TEXT[] := '{}';
+    v_is_quoted BOOLEAN[] := '{}';
+    v_conditions TEXT[] := '{}';
+    v_or_group TEXT[] := '{}';
+    v_negated BOOLEAN;
+    v_or_pending BOOLEAN := FALSE;
+    v_i INT;
+BEGIN
+    v_input := TRIM(p_search);
+    IF v_input IS NULL OR v_input = '' THEN RETURN NULL; END IF;
+    v_len := LENGTH(v_input);
+
+    -- Phase 1: Tokenize (split by whitespace, respecting "quoted phrases")
+    WHILE v_pos <= v_len LOOP
+        WHILE v_pos <= v_len AND SUBSTR(v_input, v_pos, 1) = ' ' LOOP
+            v_pos := v_pos + 1;
+        END LOOP;
+        IF v_pos > v_len THEN EXIT; END IF;
+
+        v_token := '';
+        v_char := SUBSTR(v_input, v_pos, 1);
+
+        IF v_char = '-' AND v_pos + 1 <= v_len AND SUBSTR(v_input, v_pos + 1, 1) = '"' THEN
+            v_pos := v_pos + 2;
+            WHILE v_pos <= v_len AND SUBSTR(v_input, v_pos, 1) != '"' LOOP
+                v_token := v_token || SUBSTR(v_input, v_pos, 1);
+                v_pos := v_pos + 1;
+            END LOOP;
+            IF v_pos <= v_len THEN v_pos := v_pos + 1; END IF;
+            IF v_token != '' THEN
+                v_tokens := array_append(v_tokens, '-' || v_token);
+                v_is_quoted := array_append(v_is_quoted, TRUE);
+            END IF;
+        ELSIF v_char = '"' THEN
+            v_pos := v_pos + 1;
+            WHILE v_pos <= v_len AND SUBSTR(v_input, v_pos, 1) != '"' LOOP
+                v_token := v_token || SUBSTR(v_input, v_pos, 1);
+                v_pos := v_pos + 1;
+            END LOOP;
+            IF v_pos <= v_len THEN v_pos := v_pos + 1; END IF;
+            IF v_token != '' THEN
+                v_tokens := array_append(v_tokens, v_token);
+                v_is_quoted := array_append(v_is_quoted, TRUE);
+            END IF;
+        ELSE
+            WHILE v_pos <= v_len AND SUBSTR(v_input, v_pos, 1) != ' ' LOOP
+                v_token := v_token || SUBSTR(v_input, v_pos, 1);
+                v_pos := v_pos + 1;
+            END LOOP;
+            IF v_token != '' THEN
+                v_tokens := array_append(v_tokens, v_token);
+                v_is_quoted := array_append(v_is_quoted, FALSE);
+            END IF;
+        END IF;
+    END LOOP;
+
+    IF array_length(v_tokens, 1) IS NULL THEN RETURN NULL; END IF;
+
+    -- Phase 2: Build conditions (AND by default, OR between terms, - for NOT)
+    FOR v_i IN 1..array_length(v_tokens, 1) LOOP
+        v_token := v_tokens[v_i];
+
+        IF v_token = 'OR' AND NOT v_is_quoted[v_i] THEN
+            v_or_pending := TRUE;
+            CONTINUE;
+        END IF;
+
+        v_negated := (LEFT(v_token, 1) = '-' AND LENGTH(v_token) > 1);
+        IF v_negated THEN v_token := SUBSTR(v_token, 2); END IF;
+
+        IF v_negated THEN
+            IF array_length(v_or_group, 1) > 0 THEN
+                IF array_length(v_or_group, 1) = 1 THEN
+                    v_conditions := array_append(v_conditions, v_or_group[1]);
+                ELSE
+                    v_conditions := array_append(v_conditions, '(' || array_to_string(v_or_group, ' OR ') || ')');
+                END IF;
+                v_or_group := '{}';
+            END IF;
+            v_conditions := array_append(v_conditions, p_column || format(' NOT ILIKE %L', '%' || v_token || '%'));
+            v_or_pending := FALSE;
+        ELSIF v_or_pending THEN
+            v_or_group := array_append(v_or_group, p_column || format(' ILIKE %L', '%' || v_token || '%'));
+            v_or_pending := FALSE;
+        ELSE
+            IF array_length(v_or_group, 1) > 0 THEN
+                IF array_length(v_or_group, 1) = 1 THEN
+                    v_conditions := array_append(v_conditions, v_or_group[1]);
+                ELSE
+                    v_conditions := array_append(v_conditions, '(' || array_to_string(v_or_group, ' OR ') || ')');
+                END IF;
+                v_or_group := '{}';
+            END IF;
+            v_or_group := ARRAY[p_column || format(' ILIKE %L', '%' || v_token || '%')];
+        END IF;
+    END LOOP;
+
+    IF array_length(v_or_group, 1) > 0 THEN
+        IF array_length(v_or_group, 1) = 1 THEN
+            v_conditions := array_append(v_conditions, v_or_group[1]);
+        ELSE
+            v_conditions := array_append(v_conditions, '(' || array_to_string(v_or_group, ' OR ') || ')');
+        END IF;
+    END IF;
+
+    IF array_length(v_conditions, 1) IS NULL THEN RETURN NULL; END IF;
+    RETURN array_to_string(v_conditions, ' AND ');
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION query_unified_items(
     p_types TEXT[] DEFAULT NULL, p_task_types UUID[] DEFAULT NULL,
     p_text_search TEXT DEFAULT NULL, p_involved_person TEXT DEFAULT NULL,
@@ -1740,6 +1867,7 @@ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
 DECLARE
     v_sql TEXT;
     v_where TEXT[] := ARRAY[]::TEXT[];
+    v_search_cond TEXT;
     v_order_expr TEXT;
     v_order_expr_outer TEXT;
     v_group_expr TEXT := '';
@@ -1786,9 +1914,12 @@ BEGIN
     IF p_task_types IS NOT NULL THEN
         v_where := array_append(v_where, format('(ui.type != ''task'' OR ui.task_type_id = ANY(%L::UUID[]))', p_task_types));
     END IF;
-    -- Text search uses consolidated search_text column (includes body, tags, assignees, recipients, attachments)
+    -- Text search: supports multiple words (AND), "exact phrase", -exclude, OR
     IF p_text_search IS NOT NULL AND p_text_search != '' THEN
-        v_where := array_append(v_where, format('ui.search_text ILIKE %L', '%' || p_text_search || '%'));
+        v_search_cond := build_search_conditions(p_text_search);
+        IF v_search_cond IS NOT NULL THEN
+            v_where := array_append(v_where, v_search_cond);
+        END IF;
     END IF;
     IF v_person_ids IS NOT NULL THEN
         v_where := array_append(v_where, format('EXISTS (SELECT 1 FROM item_involved_persons iip WHERE iip.item_id = ui.id AND iip.item_type = ui.type AND iip.unified_person_id = ANY(%L::UUID[]))', v_person_ids));
@@ -1996,6 +2127,7 @@ DECLARE
     v_sql TEXT;
     v_where TEXT[] := ARRAY[]::TEXT[];
     v_where_clause TEXT;
+    v_search_cond TEXT;
     v_person_ids UUID[];
     v_cost_min INTEGER;
     v_cost_max INTEGER;
@@ -2024,9 +2156,12 @@ BEGIN
     IF p_task_types IS NOT NULL THEN
         v_where := array_append(v_where, format('(ui.type != ''task'' OR ui.task_type_id = ANY(%L::UUID[]))', p_task_types));
     END IF;
-    -- Text search uses consolidated search_text column (includes body, tags, assignees, recipients, attachments)
+    -- Text search: supports multiple words (AND), "exact phrase", -exclude, OR
     IF p_text_search IS NOT NULL AND p_text_search != '' THEN
-        v_where := array_append(v_where, format('ui.search_text ILIKE %L', '%' || p_text_search || '%'));
+        v_search_cond := build_search_conditions(p_text_search);
+        IF v_search_cond IS NOT NULL THEN
+            v_where := array_append(v_where, v_search_cond);
+        END IF;
     END IF;
     IF v_person_ids IS NOT NULL THEN
         v_where := array_append(v_where, format('EXISTS (SELECT 1 FROM item_involved_persons iip WHERE iip.item_id = ui.id AND iip.item_type = ui.type AND iip.unified_person_id = ANY(%L::UUID[]))', v_person_ids));

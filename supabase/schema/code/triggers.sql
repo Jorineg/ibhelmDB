@@ -258,6 +258,35 @@ DROP TRIGGER IF EXISTS trg_conv_comments_mv_stale ON missive.conversation_commen
 CREATE TRIGGER trg_conv_comments_mv_stale AFTER INSERT OR UPDATE OR DELETE ON missive.conversation_comments
     FOR EACH STATEMENT EXECUTE FUNCTION trigger_mark_mv_stale('mv_conversation_comments_agg');
 
+-- Main entity tables → mark mv_unified_items as stale
+DROP TRIGGER IF EXISTS trg_tasks_mv_stale ON teamwork.tasks;
+CREATE TRIGGER trg_tasks_mv_stale AFTER INSERT OR UPDATE OR DELETE ON teamwork.tasks
+    FOR EACH STATEMENT EXECUTE FUNCTION trigger_mark_mv_stale('mv_unified_items');
+
+DROP TRIGGER IF EXISTS trg_projects_mv_stale ON teamwork.projects;
+CREATE TRIGGER trg_projects_mv_stale AFTER INSERT OR UPDATE OR DELETE ON teamwork.projects
+    FOR EACH STATEMENT EXECUTE FUNCTION trigger_mark_mv_stale('mv_unified_items');
+
+DROP TRIGGER IF EXISTS trg_conversations_mv_stale ON missive.conversations;
+CREATE TRIGGER trg_conversations_mv_stale AFTER INSERT OR UPDATE OR DELETE ON missive.conversations
+    FOR EACH STATEMENT EXECUTE FUNCTION trigger_mark_mv_stale('mv_unified_items');
+
+DROP TRIGGER IF EXISTS trg_messages_mv_stale ON missive.messages;
+CREATE TRIGGER trg_messages_mv_stale AFTER INSERT OR UPDATE OR DELETE ON missive.messages
+    FOR EACH STATEMENT EXECUTE FUNCTION trigger_mark_mv_stale('mv_unified_items');
+
+DROP TRIGGER IF EXISTS trg_files_mv_stale ON public.files;
+CREATE TRIGGER trg_files_mv_stale AFTER INSERT OR UPDATE OR DELETE ON public.files
+    FOR EACH STATEMENT EXECUTE FUNCTION trigger_mark_mv_stale('mv_unified_items');
+
+DROP TRIGGER IF EXISTS trg_craft_docs_mv_stale ON public.craft_documents;
+CREATE TRIGGER trg_craft_docs_mv_stale AFTER INSERT OR UPDATE OR DELETE ON public.craft_documents
+    FOR EACH STATEMENT EXECUTE FUNCTION trigger_mark_mv_stale('mv_unified_items');
+
+DROP TRIGGER IF EXISTS trg_timelogs_mv_stale ON teamwork.timelogs;
+CREATE TRIGGER trg_timelogs_mv_stale AFTER INSERT OR UPDATE OR DELETE ON teamwork.timelogs
+    FOR EACH STATEMENT EXECUTE FUNCTION trigger_mark_mv_stale('mv_task_timelogs_agg');
+
 -- =====================================
 -- 9. ATTACHMENT DOWNLOAD QUEUE TRIGGER
 -- =====================================
