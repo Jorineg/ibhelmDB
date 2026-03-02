@@ -205,9 +205,26 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON missive.message_recipients TO tmc_connec
 GRANT SELECT, INSERT, UPDATE, DELETE ON missive.comment_mentions TO tmc_connector;
 GRANT SELECT, INSERT, UPDATE, DELETE ON missive.comment_task_assignees TO tmc_connector;
 
--- public schema: Limited access
+-- public schema: Direct access
 GRANT SELECT, INSERT, UPDATE ON public.craft_documents TO tmc_connector;
 GRANT SELECT ON public.app_settings TO tmc_connector;
+
+-- public schema: Tables written by DB triggers during TMC inserts
+-- (auto-link persons, auto-categorize locations/cost_groups, auto-link projects, etc.)
+GRANT SELECT, INSERT, UPDATE ON public.unified_persons TO tmc_connector;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.unified_person_links TO tmc_connector;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.object_locations TO tmc_connector;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.object_cost_groups TO tmc_connector;
+GRANT SELECT, INSERT, UPDATE ON public.task_extensions TO tmc_connector;
+GRANT SELECT, INSERT, UPDATE ON public.project_conversations TO tmc_connector;
+GRANT SELECT, INSERT, UPDATE ON public.project_extensions TO tmc_connector;
+GRANT SELECT, INSERT, UPDATE ON public.email_attachment_files TO tmc_connector;
+GRANT SELECT, INSERT, UPDATE ON public.item_involved_persons TO tmc_connector;
+GRANT SELECT, INSERT, UPDATE ON public.ai_triggers TO tmc_connector;
+GRANT SELECT ON public.locations TO tmc_connector;
+GRANT SELECT ON public.cost_groups TO tmc_connector;
+GRANT SELECT ON public.task_types TO tmc_connector;
+GRANT SELECT ON public.task_type_rules TO tmc_connector;
 
 -- teamworkmissiveconnector schema: Queue management
 GRANT SELECT, INSERT, UPDATE ON teamworkmissiveconnector.queue_items TO tmc_connector;
