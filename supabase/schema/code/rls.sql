@@ -210,7 +210,44 @@ FOR SELECT USING (
 -- message_recipients, conversation_labels, etc: derived from messages
 
 -- =====================================
--- 10. AUTO-ENABLE RLS ON NEW TABLES (Event Trigger)
+-- 10. CHAT RLS
+-- =====================================
+
+ALTER TABLE chat_sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE chat_messages ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "chat_sessions_select_own" ON chat_sessions;
+DROP POLICY IF EXISTS "chat_sessions_insert_own" ON chat_sessions;
+DROP POLICY IF EXISTS "chat_sessions_update_own" ON chat_sessions;
+DROP POLICY IF EXISTS "chat_sessions_delete_own" ON chat_sessions;
+
+CREATE POLICY "chat_sessions_select_own" ON chat_sessions
+FOR SELECT USING (user_id = get_current_user_id());
+
+CREATE POLICY "chat_sessions_insert_own" ON chat_sessions
+FOR INSERT WITH CHECK (user_id = get_current_user_id());
+
+CREATE POLICY "chat_sessions_update_own" ON chat_sessions
+FOR UPDATE USING (user_id = get_current_user_id());
+
+CREATE POLICY "chat_sessions_delete_own" ON chat_sessions
+FOR DELETE USING (user_id = get_current_user_id());
+
+DROP POLICY IF EXISTS "chat_messages_select_own" ON chat_messages;
+DROP POLICY IF EXISTS "chat_messages_insert_own" ON chat_messages;
+DROP POLICY IF EXISTS "chat_messages_delete_own" ON chat_messages;
+
+CREATE POLICY "chat_messages_select_own" ON chat_messages
+FOR SELECT USING (session_id IN (SELECT id FROM chat_sessions WHERE user_id = get_current_user_id()));
+
+CREATE POLICY "chat_messages_insert_own" ON chat_messages
+FOR INSERT WITH CHECK (session_id IN (SELECT id FROM chat_sessions WHERE user_id = get_current_user_id()));
+
+CREATE POLICY "chat_messages_delete_own" ON chat_messages
+FOR DELETE USING (session_id IN (SELECT id FROM chat_sessions WHERE user_id = get_current_user_id()));
+
+-- =====================================
+-- 11. AUTO-ENABLE RLS ON NEW TABLES (Event Trigger)
 -- =====================================
 
 CREATE OR REPLACE FUNCTION auto_enable_rls_on_create()
@@ -297,6 +334,10 @@ GRANT SELECT ON ALL TABLES IN SCHEMA teamwork TO authenticated;
 -- Settings tables: authenticated can read/write (RLS controls row access)
 GRANT SELECT, INSERT, UPDATE, DELETE ON user_settings TO authenticated;
 GRANT SELECT, UPDATE ON app_settings TO authenticated;
+
+-- Chat tables: authenticated can CRUD (RLS controls per-user access)
+GRANT SELECT, INSERT, UPDATE, DELETE ON chat_sessions TO authenticated;
+GRANT SELECT, INSERT, DELETE ON chat_messages TO authenticated;
 
 -- Operation runs: authenticated can read all, RLS controls write
 GRANT SELECT, INSERT, UPDATE ON operation_runs TO authenticated;

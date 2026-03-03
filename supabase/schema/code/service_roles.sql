@@ -164,7 +164,7 @@ END $$;
 
 DROP ROLE IF EXISTS tmc_connector;
 
-CREATE ROLE tmc_connector WITH LOGIN;
+CREATE ROLE tmc_connector WITH LOGIN BYPASSRLS;
 COMMENT ON ROLE tmc_connector IS 'TeamworkMissiveConnector - can sync Teamwork, Missive, Craft data';
 
 -- Schema access
@@ -192,7 +192,7 @@ GRANT SELECT, INSERT, UPDATE ON missive.teams TO tmc_connector;
 GRANT SELECT, INSERT, UPDATE ON missive.shared_labels TO tmc_connector;
 GRANT SELECT, INSERT, UPDATE ON missive.conversations TO tmc_connector;
 GRANT SELECT, INSERT, UPDATE ON missive.messages TO tmc_connector;
-GRANT SELECT, INSERT, UPDATE ON missive.attachments TO tmc_connector;
+GRANT SELECT, INSERT, UPDATE, DELETE ON missive.attachments TO tmc_connector;
 GRANT SELECT, INSERT, UPDATE ON missive.conversation_comments TO tmc_connector;
 GRANT SELECT, INSERT, UPDATE ON missive.comment_attachments TO tmc_connector;
 GRANT SELECT, INSERT, UPDATE ON missive.comment_tasks TO tmc_connector;

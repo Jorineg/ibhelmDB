@@ -722,7 +722,7 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION refresh_task_involvement(p_task_id INTEGER) RETURNS void LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION refresh_task_involvement(p_task_id INTEGER) RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
 BEGIN
     DELETE FROM item_involved_persons WHERE item_id = p_task_id::TEXT AND item_type = 'task';
     
@@ -743,7 +743,7 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION refresh_message_involvement(p_message_id UUID) RETURNS void LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION refresh_message_involvement(p_message_id UUID) RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
 DECLARE v_conv_id UUID;
 BEGIN
     SELECT conversation_id INTO v_conv_id FROM missive.messages WHERE id = p_message_id;
@@ -776,7 +776,7 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION refresh_conversation_involvement(p_conv_id UUID) RETURNS void LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION refresh_conversation_involvement(p_conv_id UUID) RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
 DECLARE v_msg_id UUID;
 BEGIN
     FOR v_msg_id IN SELECT id FROM missive.messages WHERE conversation_id = p_conv_id LOOP
@@ -785,14 +785,14 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION trigger_refresh_task_involvement() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION trigger_refresh_task_involvement() RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER AS $$
 BEGIN
     IF TG_OP = 'DELETE' THEN DELETE FROM item_involved_persons WHERE item_id = OLD.id::TEXT AND item_type = 'task'; RETURN OLD;
     ELSE PERFORM refresh_task_involvement(NEW.id); RETURN NEW; END IF;
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION trigger_refresh_task_assignee_involvement() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION trigger_refresh_task_assignee_involvement() RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER AS $$
 BEGIN
     IF TG_OP = 'DELETE' THEN
         -- Only refresh if task still exists (handles cascade deletes)
@@ -804,21 +804,21 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION trigger_refresh_message_involvement() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION trigger_refresh_message_involvement() RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER AS $$
 BEGIN
     IF TG_OP = 'DELETE' THEN DELETE FROM item_involved_persons WHERE item_id = OLD.id::TEXT AND item_type = 'email'; RETURN OLD;
     ELSE PERFORM refresh_message_involvement(NEW.id); RETURN NEW; END IF;
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION trigger_refresh_recipient_involvement() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION trigger_refresh_recipient_involvement() RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER AS $$
 BEGIN
     IF TG_OP = 'DELETE' THEN PERFORM refresh_message_involvement(OLD.message_id); RETURN OLD;
     ELSE PERFORM refresh_message_involvement(NEW.message_id); RETURN NEW; END IF;
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION trigger_refresh_conversation_involvement() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION trigger_refresh_conversation_involvement() RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER AS $$
 BEGIN
     IF TG_OP = 'DELETE' THEN PERFORM refresh_conversation_involvement(OLD.conversation_id); RETURN OLD;
     ELSE PERFORM refresh_conversation_involvement(NEW.conversation_id); RETURN NEW; END IF;
