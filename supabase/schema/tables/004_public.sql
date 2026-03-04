@@ -435,6 +435,7 @@ CREATE TABLE chat_messages (
     role VARCHAR(20) NOT NULL,
     content TEXT,
     tool_calls JSONB,
+    metadata JSONB,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     CONSTRAINT chat_messages_role_check CHECK (role IN ('user', 'assistant'))
 );
@@ -448,6 +449,7 @@ COMMENT ON TABLE chat_sessions IS 'AI chat sessions per user';
 COMMENT ON TABLE chat_messages IS 'Messages within a chat session';
 COMMENT ON COLUMN chat_messages.role IS 'user or assistant';
 COMMENT ON COLUMN chat_messages.tool_calls IS '[{id, code, result, error}] for assistant messages with tool use';
+COMMENT ON COLUMN chat_messages.metadata IS '{input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens} for assistant messages';
 
 -- =====================================
 -- MCP READONLY GRANTS

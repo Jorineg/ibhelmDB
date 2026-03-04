@@ -405,6 +405,28 @@ Table app_settings {
 }
 
 // =====================================
+// CHAT
+// =====================================
+
+Table chat_sessions {
+  id uuid [pk, default: `gen_random_uuid()`]
+  user_id uuid [not null]
+  title text
+  created_at timestamptz [default: `now()`]
+  updated_at timestamptz [default: `now()`]
+}
+
+Table chat_messages {
+  id uuid [pk, default: `gen_random_uuid()`]
+  session_id uuid [not null, ref: > chat_sessions.id]
+  role varchar(20) [not null, note: 'user | assistant']
+  content text
+  tool_calls jsonb [note: '[{id, code, result, error}]']
+  metadata jsonb [note: '{input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens}']
+  created_at timestamptz [default: `now()`]
+}
+
+// =====================================
 // GHOST TABLES (Visual Reference Only)
 // Diese existieren eigentlich in anderen Schemas
 // =====================================
