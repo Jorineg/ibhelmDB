@@ -412,6 +412,7 @@ Table chat_sessions {
   id uuid [pk, default: `gen_random_uuid()`]
   user_id uuid [not null]
   title text
+  system_prompt text
   created_at timestamptz [default: `now()`]
   updated_at timestamptz [default: `now()`]
 }
