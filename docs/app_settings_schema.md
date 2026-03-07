@@ -40,6 +40,62 @@ Single-row table. Admin-only settings that affect all users.
 | `file_ignore_patterns` | FileIgnorePattern[] | (builtin) | LIKE patterns to hide files |
 | `public_email_addresses` | string[] | `[]` | Shared email addresses visible to all users (RLS) |
 | `ai_agent_system_prompt` | string | (default template) | System prompt template for AI Email Agent with {variable} placeholders |
+| `chat_models` | ChatModel[] | (fallback to CLAUDE_MODEL env) | Available AI models for the chat service |
+
+### Chat Models Schema
+
+Each entry in `chat_models` defines an available model:
+
+```json
+[
+  {
+    "id": "claude-sonnet-4-20250514",
+    "provider": "anthropic",
+    "name": "Claude Sonnet 4",
+    "default": true,
+    "context_window": 200000,
+    "supports_vision": true,
+    "input_price": 3.0,
+    "output_price": 15.0,
+    "cache_read_price": 0.3,
+    "cache_write_price": 3.75
+  },
+  {
+    "id": "moonshotai/Kimi-K2.5",
+    "provider": "nebius",
+    "base_url": "https://api.tokenfactory.eu-west1.nebius.com/v1/",
+    "name": "Kimi K2.5",
+    "context_window": 256000,
+    "supports_vision": false,
+    "input_price": 0.5,
+    "output_price": 2.5
+  },
+  {
+    "id": "zai-org/GLM-4.7-FP8",
+    "provider": "nebius",
+    "base_url": "https://api.tokenfactory.nebius.com/v1/",
+    "name": "GLM 4.7",
+    "context_window": 200000,
+    "supports_vision": false,
+    "input_price": 0.4,
+    "output_price": 2.0
+  }
+]
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | yes | Model ID passed to the provider API |
+| `provider` | `"anthropic"` \| `"nebius"` | yes | Which API provider to use |
+| `name` | string | yes | Display name in the UI |
+| `default` | boolean | no | If true, selected by default |
+| `base_url` | string | no | Override base URL (required for nebius, region-specific) |
+| `context_window` | number | no | Max context tokens |
+| `supports_vision` | boolean | no | Whether model accepts image inputs |
+| `input_price` | number | no | Price per 1M input tokens (USD) |
+| `output_price` | number | no | Price per 1M output tokens (USD) |
+| `cache_read_price` | number | no | Price per 1M cache-read tokens (Anthropic only) |
+| `cache_write_price` | number | no | Price per 1M cache-write tokens (Anthropic only) |
 
 ### AI Agent System Prompt Template Variables
 

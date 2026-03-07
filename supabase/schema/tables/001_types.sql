@@ -21,6 +21,9 @@ COMMENT ON TYPE s3_status IS 'S3 upload status: pending→uploading→uploaded, 
 CREATE TYPE processing_status AS ENUM ('pending', 'indexing', 'done', 'error', 'skipped');
 COMMENT ON TYPE processing_status IS 'OCR/thumbnail status: pending→indexing→done, or skipped (intentionally not processed), or error (failed after retries)';
 
+CREATE TYPE chat_message_status AS ENUM ('generating', 'complete', 'error', 'canceled');
+COMMENT ON TYPE chat_message_status IS 'Chat message lifecycle: generating→complete, or error/canceled';
+
 -- =====================================
 -- TASK TYPES (Configurable via UI)
 -- =====================================

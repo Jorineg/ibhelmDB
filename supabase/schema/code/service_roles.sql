@@ -209,6 +209,10 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON missive.comment_task_assignees TO tmc_co
 GRANT SELECT, INSERT, UPDATE ON public.craft_documents TO tmc_connector;
 GRANT SELECT ON public.app_settings TO tmc_connector;
 
+-- public schema: Tables accessed by DB triggers during TMC craft_documents upserts
+GRANT SELECT ON public.project_craft_documents TO tmc_connector;
+GRANT INSERT ON public.project_event_log TO tmc_connector;
+
 -- public schema: Tables written by DB triggers during TMC inserts
 -- (auto-link persons, auto-categorize locations/cost_groups, auto-link projects, etc.)
 GRANT SELECT, INSERT, UPDATE ON public.unified_persons TO tmc_connector;

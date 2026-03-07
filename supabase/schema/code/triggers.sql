@@ -308,3 +308,51 @@ CREATE TRIGGER delete_s3_content_on_delete AFTER DELETE ON file_contents
 DROP TRIGGER IF EXISTS check_ai_mention_on_comment ON missive.conversation_comments;
 CREATE TRIGGER check_ai_mention_on_comment AFTER INSERT ON missive.conversation_comments
     FOR EACH ROW EXECUTE FUNCTION trigger_check_ai_mention();
+
+-- =====================================
+-- 11. PROJECT ACTIVITY SYSTEM (TIER 4)
+-- =====================================
+
+DROP TRIGGER IF EXISTS log_task_created ON teamwork.tasks;
+CREATE TRIGGER log_task_created AFTER INSERT ON teamwork.tasks
+    FOR EACH ROW EXECUTE FUNCTION log_task_created();
+
+DROP TRIGGER IF EXISTS log_task_changed ON teamwork.tasks;
+CREATE TRIGGER log_task_changed AFTER UPDATE ON teamwork.tasks
+    FOR EACH ROW WHEN (
+        OLD.status IS DISTINCT FROM NEW.status OR
+        OLD.priority IS DISTINCT FROM NEW.priority OR
+        OLD.due_date IS DISTINCT FROM NEW.due_date OR
+        OLD.start_date IS DISTINCT FROM NEW.start_date OR
+        OLD.progress IS DISTINCT FROM NEW.progress OR
+        OLD.name IS DISTINCT FROM NEW.name OR
+        OLD.description IS DISTINCT FROM NEW.description OR
+        OLD.estimate_minutes IS DISTINCT FROM NEW.estimate_minutes
+    )
+    EXECUTE FUNCTION log_task_changed();
+
+DROP TRIGGER IF EXISTS log_task_assignee_change ON teamwork.task_assignees;
+CREATE TRIGGER log_task_assignee_change AFTER INSERT OR DELETE ON teamwork.task_assignees
+    FOR EACH ROW EXECUTE FUNCTION log_task_assignee_change();
+
+DROP TRIGGER IF EXISTS log_task_tag_change ON teamwork.task_tags;
+CREATE TRIGGER log_task_tag_change AFTER INSERT OR DELETE ON teamwork.task_tags
+    FOR EACH ROW EXECUTE FUNCTION log_task_tag_change();
+
+DROP TRIGGER IF EXISTS log_email_linked ON project_conversations;
+CREATE TRIGGER log_email_linked AFTER INSERT ON project_conversations
+    FOR EACH ROW EXECUTE FUNCTION log_email_linked();
+
+DROP TRIGGER IF EXISTS log_craft_doc_linked ON project_craft_documents;
+CREATE TRIGGER log_craft_doc_linked AFTER INSERT ON project_craft_documents
+    FOR EACH ROW EXECUTE FUNCTION log_craft_doc_linked();
+
+DROP TRIGGER IF EXISTS log_craft_doc_changed ON craft_documents;
+CREATE TRIGGER log_craft_doc_changed AFTER UPDATE ON craft_documents
+    FOR EACH ROW WHEN (OLD.markdown_content IS DISTINCT FROM NEW.markdown_content)
+    EXECUTE FUNCTION log_craft_doc_changed();
+
+DROP TRIGGER IF EXISTS log_file_added ON files;
+CREATE TRIGGER log_file_added AFTER INSERT ON files
+    FOR EACH ROW WHEN (NEW.project_id IS NOT NULL)
+    EXECUTE FUNCTION log_file_added();

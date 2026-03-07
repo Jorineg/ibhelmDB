@@ -421,8 +421,20 @@ Table chat_messages {
   session_id uuid [not null, ref: > chat_sessions.id]
   role varchar(20) [not null, note: 'user | assistant']
   content text
-  tool_calls jsonb [note: '[{id, code, result, error}]']
+  blocks jsonb [note: 'Neutral content blocks: [{type,text}, {type,id,code,result,error}, {type,text}]']
   metadata jsonb [note: '{input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens}']
+  created_at timestamptz [default: `now()`]
+}
+
+Table chat_files {
+  id uuid [pk, default: `gen_random_uuid()`]
+  message_id uuid [not null, ref: > chat_messages.id]
+  filename text [not null]
+  content_hash text [not null, note: 'SHA-256, also used as S3 key/path']
+  bucket text [not null, note: 'files or chat-files']
+  origin varchar(20) [not null, note: 'upload | generated | reference']
+  size_bytes bigint
+  mime_type text
   created_at timestamptz [default: `now()`]
 }
 

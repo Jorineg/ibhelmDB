@@ -44,6 +44,11 @@ RETURNS UUID LANGUAGE sql STABLE AS $$
   )
 $$;
 
+COMMENT ON FUNCTION get_current_user_email() IS '@schema_doc Current user email from JWT or app.user_email setting';
+COMMENT ON FUNCTION get_current_user_id() IS '@schema_doc Current user UUID from JWT or app.user_id setting';
+COMMENT ON FUNCTION is_admin() IS '@schema_doc Check if current user has admin role in JWT app_metadata';
+COMMENT ON FUNCTION get_public_emails() IS '@schema_doc Email addresses visible to all users (from app_settings)';
+
 -- =====================================
 -- 2. USER SETTINGS RLS
 -- =====================================
@@ -246,31 +251,39 @@ FOR INSERT WITH CHECK (session_id IN (SELECT id FROM chat_sessions WHERE user_id
 CREATE POLICY "chat_messages_delete_own" ON chat_messages
 FOR DELETE USING (session_id IN (SELECT id FROM chat_sessions WHERE user_id = get_current_user_id()));
 
--- =====================================
--- 11. AUTO-ENABLE RLS ON NEW TABLES (Event Trigger)
--- =====================================
+-- chat_files: access through message → session ownership chain
+ALTER TABLE chat_files ENABLE ROW LEVEL SECURITY;
 
-CREATE OR REPLACE FUNCTION auto_enable_rls_on_create()
-RETURNS event_trigger LANGUAGE plpgsql AS $$
-DECLARE
-  obj record;
-BEGIN
-  FOR obj IN SELECT * FROM pg_event_trigger_ddl_commands() 
-             WHERE command_tag = 'CREATE TABLE'
-             AND schema_name IN ('public', 'missive', 'teamwork')
-  LOOP
-    EXECUTE format('ALTER TABLE %s ENABLE ROW LEVEL SECURITY', obj.object_identity);
-    RAISE NOTICE 'Auto-enabled RLS on %', obj.object_identity;
-  END LOOP;
-END;
-$$;
+DROP POLICY IF EXISTS "chat_files_select_own" ON chat_files;
+DROP POLICY IF EXISTS "chat_files_insert_own" ON chat_files;
+DROP POLICY IF EXISTS "chat_files_delete_own" ON chat_files;
 
--- Drop and recreate event trigger (idempotent)
+CREATE POLICY "chat_files_select_own" ON chat_files
+FOR SELECT USING (message_id IN (
+    SELECT m.id FROM chat_messages m
+    JOIN chat_sessions s ON m.session_id = s.id
+    WHERE s.user_id = get_current_user_id()
+));
+
+CREATE POLICY "chat_files_insert_own" ON chat_files
+FOR INSERT WITH CHECK (message_id IN (
+    SELECT m.id FROM chat_messages m
+    JOIN chat_sessions s ON m.session_id = s.id
+    WHERE s.user_id = get_current_user_id()
+));
+
+CREATE POLICY "chat_files_delete_own" ON chat_files
+FOR DELETE USING (message_id IN (
+    SELECT m.id FROM chat_messages m
+    JOIN chat_sessions s ON m.session_id = s.id
+    WHERE s.user_id = get_current_user_id()
+));
+
+-- =====================================
+-- Remove legacy auto-RLS trigger (never fired during normal deployment since
+-- Atlas creates tables before rls.sql runs; RLS is enabled explicitly per table above)
 DROP EVENT TRIGGER IF EXISTS auto_rls_trigger;
-CREATE EVENT TRIGGER auto_rls_trigger
-ON ddl_command_end
-WHEN TAG IN ('CREATE TABLE')
-EXECUTE FUNCTION auto_enable_rls_on_create();
+DROP FUNCTION IF EXISTS auto_enable_rls_on_create();
 
 -- =====================================
 -- GRANTS FOR RLS TO WORK

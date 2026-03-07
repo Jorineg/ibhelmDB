@@ -78,6 +78,10 @@ CREATE TABLE project_extensions (
     nas_folder_path TEXT,
     client_person_id UUID REFERENCES unified_persons(id) ON DELETE SET NULL,
     internal_notes TEXT,
+    profile_markdown TEXT,
+    profile_generated_at TIMESTAMPTZ,
+    status_markdown TEXT,
+    status_generated_at TIMESTAMPTZ,
     db_created_at TIMESTAMP DEFAULT NOW(),
     db_updated_at TIMESTAMP DEFAULT NOW()
 );
@@ -418,7 +422,85 @@ COMMENT ON COLUMN ai_triggers.result_post_id IS 'Missive post ID of final AI res
 COMMENT ON COLUMN ai_triggers.result_markdown IS 'Stored AI response for debugging/audit';
 
 -- =====================================
--- 12. CHAT
+-- 12. PROJECT ACTIVITY SYSTEM
+-- =====================================
+
+CREATE TABLE project_event_log (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    tw_project_id INT NOT NULL REFERENCES teamwork.projects(id) ON DELETE CASCADE,
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    source_table VARCHAR(50) NOT NULL,
+    source_id TEXT NOT NULL,
+    event_type VARCHAR(20) NOT NULL,
+
+    details JSONB NOT NULL,
+
+    old_content TEXT,
+    content_diff TEXT,
+
+    processed_by_diff BOOLEAN DEFAULT FALSE,
+    processed_by_agent BOOLEAN DEFAULT FALSE,
+
+    db_created_at TIMESTAMPTZ DEFAULT NOW(),
+
+    CONSTRAINT pel_event_type_check CHECK (event_type IN ('created', 'changed', 'deleted'))
+);
+
+CREATE INDEX idx_event_log_project ON project_event_log(tw_project_id, occurred_at);
+CREATE INDEX idx_event_log_unprocessed_diff ON project_event_log(id)
+    WHERE NOT processed_by_diff AND old_content IS NOT NULL;
+CREATE INDEX idx_event_log_unprocessed_agent ON project_event_log(id)
+    WHERE NOT processed_by_agent;
+
+CREATE TABLE project_activity_log (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tw_project_id INT NOT NULL REFERENCES teamwork.projects(id) ON DELETE CASCADE,
+    logged_at TIMESTAMPTZ NOT NULL,
+
+    category VARCHAR(30) NOT NULL,
+
+    summary TEXT NOT NULL,
+
+    source_event_ids BIGINT[],
+    kgr_codes TEXT[],
+    involved_persons TEXT[],
+
+    generated_at TIMESTAMPTZ DEFAULT NOW(),
+
+    CONSTRAINT pal_category_check CHECK (category IN (
+        'decision', 'blocker', 'resolution', 'progress',
+        'milestone', 'risk', 'scope_change', 'communication'
+    ))
+);
+
+CREATE INDEX idx_activity_log_project ON project_activity_log(tw_project_id, logged_at);
+
+COMMENT ON TABLE project_event_log IS 'Tier 4: Mechanical event log — raw facts captured by DB triggers';
+COMMENT ON COLUMN project_event_log.old_content IS 'Temporary: old text for diff computation (NULLed after processing)';
+COMMENT ON COLUMN project_event_log.content_diff IS 'Computed unified diff for long text changes';
+COMMENT ON TABLE project_activity_log IS 'Tier 3: AI-generated activity narrative — semantic summaries of Tier 4 events';
+
+CREATE TABLE project_agent_requests (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tw_project_id INT NOT NULL REFERENCES teamwork.projects(id) ON DELETE CASCADE,
+    action VARCHAR(30) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    result_session_id UUID,
+    error_message TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    processed_at TIMESTAMPTZ,
+
+    CONSTRAINT par_action_check CHECK (action IN ('bootstrap')),
+    CONSTRAINT par_status_check CHECK (status IN ('pending', 'processing', 'done', 'error'))
+);
+
+CREATE INDEX idx_par_status ON project_agent_requests(status) WHERE status = 'pending';
+
+COMMENT ON TABLE project_agent_requests IS 'Queue for on-demand agent actions (bootstrap Tier 1/2)';
+
+-- =====================================
+-- 13. CHAT
 -- =====================================
 
 CREATE TABLE chat_sessions (
@@ -434,8 +516,9 @@ CREATE TABLE chat_messages (
     session_id UUID NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
     role VARCHAR(20) NOT NULL,
     content TEXT,
-    tool_calls JSONB,
+    blocks JSONB,
     metadata JSONB,
+    status chat_message_status NOT NULL DEFAULT 'complete',
     created_at TIMESTAMPTZ DEFAULT NOW(),
     CONSTRAINT chat_messages_role_check CHECK (role IN ('user', 'assistant'))
 );
@@ -445,11 +528,32 @@ CREATE INDEX idx_chat_sessions_updated_at ON chat_sessions(updated_at DESC);
 CREATE INDEX idx_chat_messages_session_id ON chat_messages(session_id);
 CREATE INDEX idx_chat_messages_created_at ON chat_messages(session_id, created_at);
 
+CREATE TABLE chat_files (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    message_id UUID NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+    filename TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    bucket TEXT NOT NULL,
+    origin VARCHAR(20) NOT NULL,
+    size_bytes BIGINT,
+    mime_type TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT chat_files_origin_check CHECK (origin IN ('upload', 'generated', 'reference')),
+    CONSTRAINT chat_files_bucket_check CHECK (bucket IN ('files', 'chat-files'))
+);
+
+CREATE INDEX idx_chat_files_message_id ON chat_files(message_id);
+CREATE INDEX idx_chat_files_content_hash ON chat_files(content_hash);
+
 COMMENT ON TABLE chat_sessions IS 'AI chat sessions per user';
 COMMENT ON TABLE chat_messages IS 'Messages within a chat session';
 COMMENT ON COLUMN chat_messages.role IS 'user or assistant';
-COMMENT ON COLUMN chat_messages.tool_calls IS '[{id, code, result, error}] for assistant messages with tool use';
-COMMENT ON COLUMN chat_messages.metadata IS '{input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens} for assistant messages';
+COMMENT ON COLUMN chat_messages.blocks IS 'Neutral content blocks: [{type:"text",text}, {type:"tool_call",id,code,result|[{type:"text"},{type:"image",storage_path,media_type}],error}, {type:"thinking",text}]';
+COMMENT ON COLUMN chat_messages.metadata IS '{input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, model} for assistant messages';
+COMMENT ON TABLE chat_files IS 'Files attached to chat messages (uploads, generated, or references to existing NAS files)';
+COMMENT ON COLUMN chat_files.content_hash IS 'SHA-256 hash of file content, also used as S3 key/path in the bucket';
+COMMENT ON COLUMN chat_files.bucket IS 'Supabase Storage bucket: files (existing NAS) or chat-files (uploaded/generated)';
+COMMENT ON COLUMN chat_files.origin IS 'upload: user uploaded, generated: sandbox created, reference: matched existing file_contents';
 
 -- =====================================
 -- MCP READONLY GRANTS

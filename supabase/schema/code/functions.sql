@@ -3759,3 +3759,576 @@ BEGIN
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
+
+-- =====================================
+-- SEARCH WITH SNIPPETS
+-- =====================================
+
+-- Extract positive search terms from a search string.
+-- Handles: words, "quoted phrases", -excluded (skipped), OR (skipped as keyword).
+CREATE OR REPLACE FUNCTION parse_search_terms(p_search TEXT)
+RETURNS TEXT[]
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_input TEXT;
+    v_len INT;
+    v_pos INT := 1;
+    v_char TEXT;
+    v_token TEXT;
+    v_terms TEXT[] := '{}';
+BEGIN
+    v_input := TRIM(p_search);
+    IF v_input IS NULL OR v_input = '' THEN RETURN NULL; END IF;
+    v_len := LENGTH(v_input);
+
+    WHILE v_pos <= v_len LOOP
+        WHILE v_pos <= v_len AND SUBSTR(v_input, v_pos, 1) = ' ' LOOP v_pos := v_pos + 1; END LOOP;
+        IF v_pos > v_len THEN EXIT; END IF;
+
+        v_char := SUBSTR(v_input, v_pos, 1);
+        v_token := '';
+
+        IF v_char = '-' AND v_pos + 1 <= v_len AND SUBSTR(v_input, v_pos + 1, 1) = '"' THEN
+            v_pos := v_pos + 2;
+            WHILE v_pos <= v_len AND SUBSTR(v_input, v_pos, 1) != '"' LOOP v_pos := v_pos + 1; END LOOP;
+            IF v_pos <= v_len THEN v_pos := v_pos + 1; END IF;
+        ELSIF v_char = '"' THEN
+            v_pos := v_pos + 1;
+            WHILE v_pos <= v_len AND SUBSTR(v_input, v_pos, 1) != '"' LOOP
+                v_token := v_token || SUBSTR(v_input, v_pos, 1);
+                v_pos := v_pos + 1;
+            END LOOP;
+            IF v_pos <= v_len THEN v_pos := v_pos + 1; END IF;
+            IF v_token != '' THEN v_terms := array_append(v_terms, v_token); END IF;
+        ELSIF v_char = '-' THEN
+            WHILE v_pos <= v_len AND SUBSTR(v_input, v_pos, 1) != ' ' LOOP v_pos := v_pos + 1; END LOOP;
+        ELSE
+            WHILE v_pos <= v_len AND SUBSTR(v_input, v_pos, 1) != ' ' LOOP
+                v_token := v_token || SUBSTR(v_input, v_pos, 1);
+                v_pos := v_pos + 1;
+            END LOOP;
+            IF v_token != '' AND v_token != 'OR' THEN
+                v_terms := array_append(v_terms, v_token);
+            END IF;
+        END IF;
+    END LOOP;
+
+    IF array_length(v_terms, 1) IS NULL THEN RETURN NULL; END IF;
+    RETURN v_terms;
+END;
+$$;
+
+
+-- Extract context snippets around search term matches in a text.
+-- Uses a total character budget distributed across snippets.
+-- Returns snippets joined by ' … ', or NULL if no matches.
+CREATE OR REPLACE FUNCTION extract_search_snippets(
+    p_text TEXT,
+    p_search TEXT,
+    p_total_chars INT DEFAULT 300,
+    p_max_snippets INT DEFAULT 5
+)
+RETURNS TEXT
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+    v_terms TEXT[];
+    v_text_lower TEXT;
+    v_text_len INT;
+    v_term TEXT;
+    v_term_lower TEXT;
+    v_tlen INT;
+    v_search_from INT;
+    v_pos INT;
+    v_match_pos INT[] := '{}';
+    v_match_len INT[] := '{}';
+    v_found INT;
+    v_sel_pos INT[] := '{}';
+    v_sel_len INT[] := '{}';
+    v_num_sel INT := 0;
+    v_candidate_pos INT;
+    v_candidate_len INT;
+    v_overlap BOOLEAN;
+    v_ctx INT;
+    v_window_start INT;
+    v_window_end INT;
+    v_snippets TEXT[] := '{}';
+    v_start INT;
+    v_end INT;
+    v_snippet TEXT;
+    v_i INT;
+    v_j INT;
+BEGIN
+    IF p_text IS NULL OR p_text = '' OR p_search IS NULL OR p_search = '' THEN
+        RETURN NULL;
+    END IF;
+
+    v_terms := parse_search_terms(p_search);
+    IF v_terms IS NULL THEN RETURN NULL; END IF;
+
+    v_text_lower := LOWER(p_text);
+    v_text_len := LENGTH(p_text);
+
+    FOREACH v_term IN ARRAY v_terms LOOP
+        v_term_lower := LOWER(v_term);
+        v_tlen := LENGTH(v_term);
+        v_search_from := 1;
+        v_found := 0;
+        LOOP
+            v_pos := POSITION(v_term_lower IN SUBSTR(v_text_lower, v_search_from));
+            EXIT WHEN v_pos = 0 OR v_found >= 10;
+            v_pos := v_pos + v_search_from - 1;
+            v_match_pos := array_append(v_match_pos, v_pos);
+            v_match_len := array_append(v_match_len, v_tlen);
+            v_search_from := v_pos + v_tlen;
+            v_found := v_found + 1;
+        END LOOP;
+    END LOOP;
+
+    IF array_length(v_match_pos, 1) IS NULL THEN RETURN NULL; END IF;
+
+    -- Estimate context window for overlap detection
+    v_ctx := GREATEST(p_total_chars / LEAST(array_length(v_match_pos, 1), p_max_snippets), 20);
+
+    -- Greedy non-overlapping selection sorted by position
+    FOR v_i IN (
+        SELECT idx FROM generate_subscripts(v_match_pos, 1) idx
+        ORDER BY v_match_pos[idx]
+    ) LOOP
+        EXIT WHEN v_num_sel >= p_max_snippets;
+
+        v_candidate_pos := v_match_pos[v_i];
+        v_candidate_len := v_match_len[v_i];
+
+        v_overlap := FALSE;
+        FOR v_j IN 1..v_num_sel LOOP
+            v_window_start := GREATEST(v_sel_pos[v_j] - v_ctx / 2, 1);
+            v_window_end := LEAST(v_sel_pos[v_j] + v_sel_len[v_j] + v_ctx / 2, v_text_len);
+            IF v_candidate_pos >= v_window_start AND v_candidate_pos <= v_window_end THEN
+                v_overlap := TRUE;
+                EXIT;
+            END IF;
+        END LOOP;
+
+        IF NOT v_overlap THEN
+            v_sel_pos := array_append(v_sel_pos, v_candidate_pos);
+            v_sel_len := array_append(v_sel_len, v_candidate_len);
+            v_num_sel := v_num_sel + 1;
+        END IF;
+    END LOOP;
+
+    IF v_num_sel = 0 THEN RETURN NULL; END IF;
+
+    -- Recalculate with actual count
+    v_ctx := GREATEST(p_total_chars / v_num_sel, 20);
+
+    FOR v_i IN 1..v_num_sel LOOP
+        v_start := GREATEST(v_sel_pos[v_i] - v_ctx / 2, 1);
+        v_end := LEAST(v_sel_pos[v_i] + v_sel_len[v_i] + v_ctx / 2, v_text_len);
+        v_snippet := SUBSTR(p_text, v_start, v_end - v_start);
+        IF v_start > 1 THEN v_snippet := '…' || v_snippet; END IF;
+        IF v_end < v_text_len THEN v_snippet := v_snippet || '…'; END IF;
+        v_snippets := array_append(v_snippets, v_snippet);
+    END LOOP;
+
+    RETURN array_to_string(v_snippets, ' … ');
+END;
+$$;
+
+
+-- Search chat history with context snippets.
+-- Concatenates all message content per session, then searches with snippet extraction.
+CREATE OR REPLACE FUNCTION search_chat_history(
+    p_search TEXT,
+    p_limit INT DEFAULT 20,
+    p_sort_by TEXT DEFAULT 'date'
+)
+RETURNS TABLE (
+    session_id UUID,
+    title TEXT,
+    last_activity TIMESTAMPTZ,
+    match_count BIGINT,
+    snippets TEXT
+)
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_search_cond TEXT;
+    v_order TEXT;
+    v_sql TEXT;
+BEGIN
+    v_search_cond := build_search_conditions(p_search, 'st.full_text');
+    IF v_search_cond IS NULL THEN RETURN; END IF;
+
+    v_order := CASE WHEN p_sort_by = 'relevance' THEN 'match_count DESC, last_activity DESC'
+                    ELSE 'last_activity DESC' END;
+
+    v_sql := format($q$
+        WITH session_texts AS (
+            SELECT
+                s.id,
+                s.title,
+                s.updated_at AS last_activity,
+                string_agg(COALESCE(m.content, ''), E'\n' ORDER BY m.created_at) AS full_text
+            FROM chat_sessions s
+            JOIN chat_messages m ON m.session_id = s.id
+            WHERE s.user_id = get_current_user_id()
+              AND m.content IS NOT NULL AND m.content != ''
+            GROUP BY s.id
+        )
+        SELECT
+            st.id AS session_id,
+            st.title,
+            st.last_activity,
+            (SELECT count(*) FROM unnest(parse_search_terms(%L)) t
+             WHERE st.full_text ILIKE '%%' || t || '%%') AS match_count,
+            extract_search_snippets(st.full_text, %L) AS snippets
+        FROM session_texts st
+        WHERE %s
+        ORDER BY %s
+        LIMIT %s
+    $q$, p_search, p_search, v_search_cond, v_order, p_limit);
+
+    RETURN QUERY EXECUTE v_sql;
+END;
+$$;
+
+
+-- Search unified items with context snippets.
+CREATE OR REPLACE FUNCTION search_items_with_snippets(
+    p_search TEXT,
+    p_types TEXT[] DEFAULT NULL,
+    p_limit INT DEFAULT 20,
+    p_sort_by TEXT DEFAULT 'date'
+)
+RETURNS TABLE (
+    id TEXT,
+    type TEXT,
+    name TEXT,
+    project TEXT,
+    updated_at TIMESTAMPTZ,
+    url TEXT,
+    snippets TEXT
+)
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_search_cond TEXT;
+    v_order TEXT;
+    v_sql TEXT;
+    v_where TEXT[];
+BEGIN
+    v_search_cond := build_search_conditions(p_search);
+    IF v_search_cond IS NULL THEN RETURN; END IF;
+
+    v_where := ARRAY[v_search_cond];
+    IF p_types IS NOT NULL THEN
+        v_where := array_append(v_where, format('ui.type = ANY(%L::TEXT[])', p_types));
+    END IF;
+
+    v_order := CASE WHEN p_sort_by = 'relevance'
+        THEN format('(SELECT count(*) FROM unnest(parse_search_terms(%L)) t
+                      WHERE ui.search_text ILIKE ''%%'' || t || ''%%'') DESC, ui.updated_at DESC', p_search)
+        ELSE 'ui.updated_at DESC' END;
+
+    v_sql := format($q$
+        SELECT
+            ui.id,
+            ui.type,
+            ui.name,
+            ui.project,
+            ui.updated_at,
+            COALESCE(ui.teamwork_url, ui.missive_url, ui.craft_url) AS url,
+            extract_search_snippets(ui.search_text, %L) AS snippets
+        FROM unified_items_secure ui
+        WHERE %s
+        ORDER BY %s
+        LIMIT %s
+    $q$, p_search, array_to_string(v_where, ' AND '), v_order, p_limit);
+
+    RETURN QUERY EXECUTE v_sql;
+END;
+$$;
+
+
+-- Get full transcript of a chat session as concatenated text.
+CREATE OR REPLACE FUNCTION get_chat_session_text(p_session_id UUID)
+RETURNS TEXT
+LANGUAGE sql STABLE AS $$
+    SELECT string_agg(
+        '[' || m.role || ' ' || to_char(m.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ']: '
+        || COALESCE(m.content, ''),
+        E'\n\n' ORDER BY m.created_at
+    )
+    FROM chat_messages m
+    JOIN chat_sessions s ON s.id = m.session_id
+    WHERE m.session_id = p_session_id
+      AND s.user_id = get_current_user_id()
+      AND m.content IS NOT NULL AND m.content != '';
+$$;
+
+-- =====================================
+-- PROJECT ACTIVITY SYSTEM (TIER 4 EVENT LOG)
+-- =====================================
+
+CREATE OR REPLACE FUNCTION log_task_created()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_assignees TEXT[];
+    v_tasklist TEXT;
+BEGIN
+    IF NEW.project_id IS NULL THEN RETURN NEW; END IF;
+
+    SELECT name INTO v_tasklist FROM teamwork.tasklists WHERE id = NEW.tasklist_id;
+    SELECT array_agg(u.first_name || ' ' || u.last_name)
+      INTO v_assignees
+      FROM teamwork.task_assignees ta
+      JOIN teamwork.users u ON ta.user_id = u.id
+     WHERE ta.task_id = NEW.id;
+
+    INSERT INTO project_event_log (tw_project_id, source_table, source_id, event_type, details)
+    VALUES (NEW.project_id, 'teamwork.tasks', NEW.id::text, 'created',
+        jsonb_build_object(
+            'name', NEW.name,
+            'tasklist', COALESCE(v_tasklist, ''),
+            'status', COALESCE(NEW.status, 'new'),
+            'assignees', COALESCE(v_assignees, ARRAY[]::text[])
+        ));
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION log_task_changed()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_changes JSONB := '[]'::jsonb;
+    v_has_long_desc BOOLEAN := FALSE;
+    v_old_content TEXT;
+BEGIN
+    IF NEW.project_id IS NULL THEN RETURN NEW; END IF;
+
+    IF OLD.status IS DISTINCT FROM NEW.status THEN
+        v_changes := v_changes || jsonb_build_array(jsonb_build_object('field', 'status', 'old', OLD.status, 'new', NEW.status));
+    END IF;
+    IF OLD.priority IS DISTINCT FROM NEW.priority THEN
+        v_changes := v_changes || jsonb_build_array(jsonb_build_object('field', 'priority', 'old', OLD.priority, 'new', NEW.priority));
+    END IF;
+    IF OLD.due_date IS DISTINCT FROM NEW.due_date THEN
+        v_changes := v_changes || jsonb_build_array(jsonb_build_object('field', 'due_date', 'old', OLD.due_date::text, 'new', NEW.due_date::text));
+    END IF;
+    IF OLD.start_date IS DISTINCT FROM NEW.start_date THEN
+        v_changes := v_changes || jsonb_build_array(jsonb_build_object('field', 'start_date', 'old', OLD.start_date::text, 'new', NEW.start_date::text));
+    END IF;
+    IF OLD.progress IS DISTINCT FROM NEW.progress THEN
+        v_changes := v_changes || jsonb_build_array(jsonb_build_object('field', 'progress', 'old', OLD.progress, 'new', NEW.progress));
+    END IF;
+    IF OLD.name IS DISTINCT FROM NEW.name THEN
+        v_changes := v_changes || jsonb_build_array(jsonb_build_object('field', 'name', 'old', OLD.name, 'new', NEW.name));
+    END IF;
+    IF OLD.estimate_minutes IS DISTINCT FROM NEW.estimate_minutes THEN
+        v_changes := v_changes || jsonb_build_array(jsonb_build_object('field', 'estimate_minutes', 'old', OLD.estimate_minutes, 'new', NEW.estimate_minutes));
+    END IF;
+
+    IF OLD.description IS DISTINCT FROM NEW.description THEN
+        IF length(COALESCE(OLD.description, '')) > 500 OR length(COALESCE(NEW.description, '')) > 500 THEN
+            v_has_long_desc := TRUE;
+            v_old_content := OLD.description;
+            v_changes := v_changes || jsonb_build_array(jsonb_build_object('field', 'description', 'diff', true));
+        ELSE
+            v_changes := v_changes || jsonb_build_array(jsonb_build_object('field', 'description', 'old', OLD.description, 'new', NEW.description));
+        END IF;
+    END IF;
+
+    IF jsonb_array_length(v_changes) = 0 THEN RETURN NEW; END IF;
+
+    INSERT INTO project_event_log (tw_project_id, source_table, source_id, event_type, details, old_content, processed_by_diff)
+    VALUES (NEW.project_id, 'teamwork.tasks', NEW.id::text, 'changed',
+        jsonb_build_object('name', NEW.name, 'changes', v_changes),
+        CASE WHEN v_has_long_desc THEN v_old_content END,
+        NOT v_has_long_desc);
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION log_task_assignee_change()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_task RECORD;
+    v_user_name TEXT;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        SELECT t.project_id, t.name INTO v_task FROM teamwork.tasks t WHERE t.id = NEW.task_id;
+        IF v_task.project_id IS NULL THEN RETURN NEW; END IF;
+        SELECT u.first_name || ' ' || u.last_name INTO v_user_name FROM teamwork.users u WHERE u.id = NEW.user_id;
+        INSERT INTO project_event_log (tw_project_id, source_table, source_id, event_type, details)
+        VALUES (v_task.project_id, 'teamwork.task_assignees', NEW.task_id::text, 'changed',
+            jsonb_build_object('name', v_task.name, 'changes', jsonb_build_array(
+                jsonb_build_object('field', 'assignee_added', 'new', COALESCE(v_user_name, NEW.user_id::text))
+            )));
+    ELSIF TG_OP = 'DELETE' THEN
+        SELECT t.project_id, t.name INTO v_task FROM teamwork.tasks t WHERE t.id = OLD.task_id;
+        IF v_task.project_id IS NULL THEN RETURN OLD; END IF;
+        SELECT u.first_name || ' ' || u.last_name INTO v_user_name FROM teamwork.users u WHERE u.id = OLD.user_id;
+        INSERT INTO project_event_log (tw_project_id, source_table, source_id, event_type, details)
+        VALUES (v_task.project_id, 'teamwork.task_assignees', OLD.task_id::text, 'changed',
+            jsonb_build_object('name', v_task.name, 'changes', jsonb_build_array(
+                jsonb_build_object('field', 'assignee_removed', 'old', COALESCE(v_user_name, OLD.user_id::text))
+            )));
+    END IF;
+    RETURN COALESCE(NEW, OLD);
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION log_task_tag_change()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_task RECORD;
+    v_tag_name TEXT;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        SELECT t.project_id, t.name INTO v_task FROM teamwork.tasks t WHERE t.id = NEW.task_id;
+        IF v_task.project_id IS NULL THEN RETURN NEW; END IF;
+        SELECT tg.name INTO v_tag_name FROM teamwork.tags tg WHERE tg.id = NEW.tag_id;
+        INSERT INTO project_event_log (tw_project_id, source_table, source_id, event_type, details)
+        VALUES (v_task.project_id, 'teamwork.task_tags', NEW.task_id::text, 'changed',
+            jsonb_build_object('name', v_task.name, 'changes', jsonb_build_array(
+                jsonb_build_object('field', 'tag_added', 'new', COALESCE(v_tag_name, NEW.tag_id::text))
+            )));
+    ELSIF TG_OP = 'DELETE' THEN
+        SELECT t.project_id, t.name INTO v_task FROM teamwork.tasks t WHERE t.id = OLD.task_id;
+        IF v_task.project_id IS NULL THEN RETURN OLD; END IF;
+        SELECT tg.name INTO v_tag_name FROM teamwork.tags tg WHERE tg.id = OLD.tag_id;
+        INSERT INTO project_event_log (tw_project_id, source_table, source_id, event_type, details)
+        VALUES (v_task.project_id, 'teamwork.task_tags', OLD.task_id::text, 'changed',
+            jsonb_build_object('name', v_task.name, 'changes', jsonb_build_array(
+                jsonb_build_object('field', 'tag_removed', 'old', COALESCE(v_tag_name, OLD.tag_id::text))
+            )));
+    END IF;
+    RETURN COALESCE(NEW, OLD);
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION log_email_linked()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_conv RECORD;
+    v_from TEXT;
+    v_to TEXT;
+BEGIN
+    SELECT c.subject, c.latest_message_subject, c.messages_count
+      INTO v_conv
+      FROM missive.conversations c WHERE c.id = NEW.m_conversation_id;
+
+    SELECT mc.email INTO v_from
+      FROM missive.messages m
+      JOIN missive.contacts mc ON m.from_contact_id = mc.id
+     WHERE m.conversation_id = NEW.m_conversation_id
+     ORDER BY m.delivered_at DESC NULLS LAST LIMIT 1;
+
+    SELECT mc.email INTO v_to
+      FROM missive.message_recipients mr
+      JOIN missive.contacts mc ON mr.contact_id = mc.id
+      JOIN missive.messages m ON mr.message_id = m.id
+     WHERE m.conversation_id = NEW.m_conversation_id AND mr.recipient_type = 'to'
+     ORDER BY m.delivered_at DESC NULLS LAST LIMIT 1;
+
+    INSERT INTO project_event_log (tw_project_id, source_table, source_id, event_type, details)
+    VALUES (NEW.tw_project_id, 'project_conversations', NEW.m_conversation_id::text, 'created',
+        jsonb_build_object(
+            'subject', COALESCE(v_conv.latest_message_subject, v_conv.subject, ''),
+            'from', COALESCE(v_from, ''),
+            'to', COALESCE(v_to, ''),
+            'message_count', COALESCE(v_conv.messages_count, 0),
+            'conversation_id', NEW.m_conversation_id
+        ));
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION log_craft_doc_linked()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_doc RECORD;
+BEGIN
+    SELECT cd.title, length(COALESCE(cd.markdown_content, '')) as content_length
+      INTO v_doc
+      FROM craft_documents cd WHERE cd.id = NEW.craft_document_id;
+
+    INSERT INTO project_event_log (tw_project_id, source_table, source_id, event_type, details)
+    VALUES (NEW.tw_project_id, 'project_craft_documents', NEW.craft_document_id, 'created',
+        jsonb_build_object(
+            'title', COALESCE(v_doc.title, ''),
+            'content_length', COALESCE(v_doc.content_length, 0)
+        ));
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION log_craft_doc_changed()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_project_id INT;
+BEGIN
+    IF OLD.markdown_content IS NOT DISTINCT FROM NEW.markdown_content THEN RETURN NEW; END IF;
+
+    FOR v_project_id IN
+        SELECT tw_project_id FROM project_craft_documents WHERE craft_document_id = NEW.id
+    LOOP
+        INSERT INTO project_event_log (tw_project_id, source_table, source_id, event_type, details, old_content, processed_by_diff)
+        VALUES (v_project_id, 'craft_documents', NEW.id, 'changed',
+            jsonb_build_object(
+                'title', NEW.title,
+                'length_delta', length(COALESCE(NEW.markdown_content, '')) - length(COALESCE(OLD.markdown_content, '')),
+                'old_length', length(COALESCE(OLD.markdown_content, '')),
+                'new_length', length(COALESCE(NEW.markdown_content, ''))
+            ),
+            OLD.markdown_content, FALSE);
+    END LOOP;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION log_file_added()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_doc_type TEXT;
+BEGIN
+    IF NEW.project_id IS NULL THEN RETURN NEW; END IF;
+
+    SELECT dt.name INTO v_doc_type FROM document_types dt WHERE dt.id = NEW.document_type_id;
+
+    INSERT INTO project_event_log (tw_project_id, source_table, source_id, event_type, details)
+    VALUES (NEW.project_id, 'files', NEW.id::text, 'created',
+        jsonb_build_object(
+            'filename', COALESCE(
+                (regexp_match(NEW.full_path, '[^/]+$'))[1],
+                NEW.full_path
+            ),
+            'path', NEW.full_path,
+            'document_type', COALESCE(v_doc_type, '')
+        ));
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- =====================================
+-- SCHEMA DOC COMMENTS
+-- Functions tagged with @schema_doc are included in the generated schema documentation.
+-- =====================================
+
+COMMENT ON FUNCTION get_file_source_email(uuid) IS '@schema_doc Get source email for a file (files→attachments→messages→conversations+contacts)';
+COMMENT ON FUNCTION get_email_files(uuid) IS '@schema_doc Get files linked to an email message (attachments→files→file_contents)';
+COMMENT ON FUNCTION get_chat_session_text(uuid) IS '@schema_doc Get full chat session transcript as formatted text';
+COMMENT ON FUNCTION get_sync_status() IS '@schema_doc System health: data freshness per source (teamwork/missive/craft/files/thumbnails)';
+COMMENT ON FUNCTION query_unified_items(text[], uuid[], text, text, text, text, text, text, text, text, text, text, text, text, text[], text[], text[], text[], text[], text[], timestamp without time zone, timestamp without time zone, boolean, timestamp with time zone, timestamp with time zone, timestamp with time zone, timestamp with time zone, integer, integer, integer, integer, text, integer, integer, integer, integer, integer, integer, boolean, boolean, text[], text, text, text, text, integer, integer) IS '@schema_doc Main search across tasks/emails/files/craft docs with filtering, sorting, pagination';
+COMMENT ON FUNCTION count_unified_items(text[], uuid[], text, text, text, text, text, text, text, text, text, text, text, text, text[], text[], text[], text[], text[], text[], timestamp without time zone, timestamp without time zone, boolean, timestamp with time zone, timestamp with time zone, timestamp with time zone, timestamp with time zone, integer, integer, integer, integer, text, integer, integer, integer, integer, integer, integer, boolean, boolean, text[]) IS '@schema_doc Count results for query_unified_items with same filters';
+COMMENT ON FUNCTION count_unified_items_grouped(text, text, text[], uuid[], text, text, text, text, text, text, text, text, text, text, text, text, text[], text[], text[], text[], text[], text[], timestamp without time zone, timestamp without time zone, boolean, timestamp with time zone, timestamp with time zone, timestamp with time zone, timestamp with time zone, integer, integer, integer, integer, text, integer, integer, integer, integer, integer, integer, boolean, boolean, text[]) IS '@schema_doc Group-by counts for query_unified_items (e.g. by status, project)';
+COMMENT ON FUNCTION query_unified_persons(text, text, boolean, boolean, text, text, integer, integer) IS '@schema_doc Search people with filtering, sorting, pagination';
+COMMENT ON FUNCTION count_unified_persons(text, text, boolean, boolean) IS '@schema_doc Count results for query_unified_persons';
+COMMENT ON FUNCTION search_items_with_snippets(text, text[], integer, text) IS '@schema_doc Search items with highlighted context snippets';
+COMMENT ON FUNCTION search_chat_history(text, integer, text) IS '@schema_doc Search past chat sessions with context snippets';
