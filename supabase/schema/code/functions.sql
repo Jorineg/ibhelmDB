@@ -1822,6 +1822,51 @@ BEGIN
 END;
 $$;
 
+-- Convert an array of SQL LIKE patterns to a single anchored case-insensitive regex for ~* matching
+CREATE OR REPLACE FUNCTION like_array_to_regex(patterns TEXT[]) RETURNS TEXT
+LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+    SELECT '(' || string_agg(
+        '^' || replace(replace(
+            replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(
+                p,
+                '\', '\\'), '.', '\.'), '+', '\+'), '?', '\?'), '(', '\('), ')', '\)'),
+                '{', '\{'), '}', '\}'), '|', '\|'), '^', '\^'), '$', '\$'), '[', '\['), ']', '\]'),
+            '%', '.*'),
+            '_', '.') || '$',
+        '|') || ')'
+    FROM unnest(patterns) AS p;
+$$;
+
+-- Build file ignore WHERE clause: splits simple extension patterns (fast NOT IN) from complex patterns (regex)
+CREATE OR REPLACE FUNCTION build_file_ignore_condition(patterns TEXT[]) RETURNS TEXT
+LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$
+DECLARE
+    v_extensions TEXT[];
+    v_complex TEXT[];
+    v_parts TEXT[] := ARRAY[]::TEXT[];
+    v_pat TEXT;
+BEGIN
+    FOREACH v_pat IN ARRAY patterns LOOP
+        IF v_pat ~ '^%\.[a-zA-Z0-9]+$' THEN
+            v_extensions := array_append(v_extensions, lower(substring(v_pat from 3)));
+        ELSE
+            v_complex := array_append(v_complex, v_pat);
+        END IF;
+    END LOOP;
+
+    IF array_length(v_extensions, 1) > 0 THEN
+        v_parts := array_append(v_parts, format('(ui.file_extension IS NULL OR ui.file_extension NOT IN (%s))',
+            (SELECT string_agg(quote_literal(e), ', ') FROM unnest(v_extensions) e)));
+    END IF;
+    IF array_length(v_complex, 1) > 0 THEN
+        v_parts := array_append(v_parts, format('ui.name !~* %L', like_array_to_regex(v_complex)));
+    END IF;
+
+    IF array_length(v_parts, 1) IS NULL THEN RETURN NULL; END IF;
+    RETURN '(ui.type != ''file'' OR (' || array_to_string(v_parts, ' AND ') || '))';
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION query_unified_items(
     p_types TEXT[] DEFAULT NULL, p_task_types UUID[] DEFAULT NULL,
     p_text_search TEXT DEFAULT NULL, p_involved_person TEXT DEFAULT NULL,
@@ -1977,9 +2022,8 @@ BEGIN
     IF p_project_status_not_in IS NOT NULL THEN
         v_where := array_append(v_where, format('(ui.project_status IS NULL OR NOT (ui.project_status = ANY(%L::TEXT[])))', p_project_status_not_in));
     END IF;
-    -- File ignore patterns: hide files matching any of the LIKE patterns (match against name which contains full path)
     IF p_file_ignore_patterns IS NOT NULL AND array_length(p_file_ignore_patterns, 1) > 0 THEN
-        v_where := array_append(v_where, format('(ui.type != ''file'' OR NOT (ui.name LIKE ANY(%L::TEXT[])))', p_file_ignore_patterns));
+        v_where := array_append(v_where, build_file_ignore_condition(p_file_ignore_patterns));
     END IF;
     IF p_priority_in IS NOT NULL THEN
         v_where := array_append(v_where, format('ui.priority = ANY(%L::TEXT[])', p_priority_in));
@@ -2219,9 +2263,8 @@ BEGIN
     IF p_project_status_not_in IS NOT NULL THEN
         v_where := array_append(v_where, format('(ui.project_status IS NULL OR NOT (ui.project_status = ANY(%L::TEXT[])))', p_project_status_not_in));
     END IF;
-    -- File ignore patterns: hide files matching any of the LIKE patterns (match against name which contains full path)
     IF p_file_ignore_patterns IS NOT NULL AND array_length(p_file_ignore_patterns, 1) > 0 THEN
-        v_where := array_append(v_where, format('(ui.type != ''file'' OR NOT (ui.name LIKE ANY(%L::TEXT[])))', p_file_ignore_patterns));
+        v_where := array_append(v_where, build_file_ignore_condition(p_file_ignore_patterns));
     END IF;
     IF p_priority_in IS NOT NULL THEN
         v_where := array_append(v_where, format('ui.priority = ANY(%L::TEXT[])', p_priority_in));
@@ -2423,7 +2466,7 @@ BEGIN
         v_where := array_append(v_where, format('(ui.project_status IS NULL OR NOT (ui.project_status = ANY(%L::TEXT[])))', p_project_status_not_in));
     END IF;
     IF p_file_ignore_patterns IS NOT NULL AND array_length(p_file_ignore_patterns, 1) > 0 THEN
-        v_where := array_append(v_where, format('(ui.type != ''file'' OR NOT (ui.name LIKE ANY(%L::TEXT[])))', p_file_ignore_patterns));
+        v_where := array_append(v_where, build_file_ignore_condition(p_file_ignore_patterns));
     END IF;
     IF p_priority_in IS NOT NULL THEN
         v_where := array_append(v_where, format('ui.priority = ANY(%L::TEXT[])', p_priority_in));
@@ -2799,7 +2842,7 @@ RETURNS void AS $$
 BEGIN
     UPDATE mv_refresh_status SET needs_refresh = TRUE WHERE view_name = p_view_name;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 
 CREATE OR REPLACE FUNCTION trigger_mark_mv_stale()
 RETURNS TRIGGER AS $$
@@ -2807,7 +2850,7 @@ BEGIN
     PERFORM mark_mv_needs_refresh(TG_ARGV[0]);
     RETURN NULL;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 
 CREATE OR REPLACE FUNCTION refresh_unified_items_aggregates(p_concurrent BOOLEAN DEFAULT TRUE)
 RETURNS void AS $$
@@ -2890,25 +2933,22 @@ $$ LANGUAGE plpgsql STABLE;
 -- 18. FILE METADATA EXTRACTION
 -- =====================================
 
--- Link file to email attachment by matching local_filename against full_path's filename part
+-- Link file to email attachment by matching local_filename (relative path) against full_path suffix
 CREATE OR REPLACE FUNCTION link_file_to_email_attachment(p_file_id UUID)
 RETURNS TEXT AS $$
 DECLARE
     v_full_path TEXT;
-    v_filename TEXT;
     v_attachment_id UUID;
 BEGIN
     SELECT full_path INTO v_full_path FROM files WHERE id = p_file_id;
     IF NOT FOUND OR v_full_path IS NULL THEN RETURN 'skipped'; END IF;
     
-    -- Extract filename from full_path (part after last /)
-    v_filename := SUBSTRING(v_full_path FROM '[^/]+$');
-    IF v_filename IS NULL OR v_filename = '' THEN RETURN 'skipped'; END IF;
-    
-    -- Look up by local_filename in email_attachment_files
     SELECT missive_attachment_id INTO v_attachment_id
     FROM email_attachment_files
-    WHERE local_filename = v_filename AND status = 'completed';
+    WHERE status = 'completed'
+      AND local_filename IS NOT NULL
+      AND v_full_path LIKE '%/' || local_filename
+    LIMIT 1;
     
     IF v_attachment_id IS NOT NULL THEN
         UPDATE files SET source_missive_attachment_id = v_attachment_id WHERE id = p_file_id;
@@ -3461,14 +3501,14 @@ $$;
 CREATE OR REPLACE FUNCTION get_email_files(p_message_id UUID)
 RETURNS TABLE(
     file_id UUID,
-    full_path TEXT,
+    filename TEXT,
     storage_path TEXT,
     thumbnail_path TEXT
 )
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, missive AS $$
     SELECT 
         f.id AS file_id,
-        f.full_path,
+        SUBSTRING(f.full_path FROM '[^/]+$') AS filename,
         fc.storage_path,
         fc.thumbnail_path
     FROM missive.attachments ma
@@ -4213,25 +4253,58 @@ CREATE OR REPLACE FUNCTION log_email_linked()
 RETURNS TRIGGER AS $$
 DECLARE
     v_conv RECORD;
+    v_latest_message_id UUID;
     v_from TEXT;
     v_to TEXT;
+    v_is_public BOOLEAN;
 BEGIN
     SELECT c.subject, c.latest_message_subject, c.messages_count
       INTO v_conv
       FROM missive.conversations c WHERE c.id = NEW.m_conversation_id;
 
+    SELECT m.id INTO v_latest_message_id
+      FROM missive.messages m
+     WHERE m.conversation_id = NEW.m_conversation_id
+     ORDER BY m.delivered_at DESC NULLS LAST, m.created_at DESC NULLS LAST
+     LIMIT 1;
+
+    IF v_latest_message_id IS NULL THEN
+        RETURN NEW;
+    END IF;
+
     SELECT mc.email INTO v_from
       FROM missive.messages m
       JOIN missive.contacts mc ON m.from_contact_id = mc.id
-     WHERE m.conversation_id = NEW.m_conversation_id
-     ORDER BY m.delivered_at DESC NULLS LAST LIMIT 1;
+     WHERE m.id = v_latest_message_id;
 
     SELECT mc.email INTO v_to
       FROM missive.message_recipients mr
       JOIN missive.contacts mc ON mr.contact_id = mc.id
-      JOIN missive.messages m ON mr.message_id = m.id
-     WHERE m.conversation_id = NEW.m_conversation_id AND mr.recipient_type = 'to'
-     ORDER BY m.delivered_at DESC NULLS LAST LIMIT 1;
+     WHERE mr.message_id = v_latest_message_id
+       AND mr.recipient_type = 'to'
+     ORDER BY mr.id
+     LIMIT 1;
+
+    SELECT
+        EXISTS (
+            SELECT 1
+              FROM missive.messages m
+              JOIN missive.contacts c ON c.id = m.from_contact_id
+             WHERE m.id = v_latest_message_id
+               AND c.email = ANY(get_public_emails())
+        )
+        OR EXISTS (
+            SELECT 1
+              FROM missive.message_recipients mr
+              JOIN missive.contacts c ON c.id = mr.contact_id
+             WHERE mr.message_id = v_latest_message_id
+               AND c.email = ANY(get_public_emails())
+        )
+      INTO v_is_public;
+
+    IF NOT v_is_public THEN
+        RETURN NEW;
+    END IF;
 
     INSERT INTO project_event_log (tw_project_id, source_table, source_id, event_type, details)
     VALUES (NEW.tw_project_id, 'project_conversations', NEW.m_conversation_id::text, 'created',

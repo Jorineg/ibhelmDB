@@ -364,3 +364,17 @@ COMMENT ON FUNCTION get_public_emails() IS 'Returns list of public email address
 COMMENT ON FUNCTION is_admin() IS 'Returns true if current user has admin role in JWT app_metadata';
 COMMENT ON FUNCTION get_current_user_id() IS 'Returns current user UUID from JWT sub claim or session variable';
 
+-- =====================================
+-- STORAGE POLICIES
+-- =====================================
+
+DROP POLICY IF EXISTS "Authenticated read files" ON storage.objects;
+CREATE POLICY "Authenticated read files"
+ON storage.objects FOR SELECT TO authenticated
+USING (bucket_id = 'files');
+
+DROP POLICY IF EXISTS "Public read craft-files" ON storage.objects;
+CREATE POLICY "Public read craft-files"
+ON storage.objects FOR SELECT TO public
+USING (bucket_id = 'craft-files');
+

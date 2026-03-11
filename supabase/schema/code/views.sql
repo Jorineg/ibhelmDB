@@ -262,7 +262,7 @@ SELECT * FROM (
         NULL::TEXT AS craft_url, NULL::TEXT AS teamwork_url, NULL::TEXT AS missive_url,
         fc.storage_path, fc.thumbnail_path,
         -- File extension: part after last dot, empty if no dot
-        CASE WHEN f.full_path LIKE '%.%' THEN LOWER(SUBSTRING(f.full_path FROM '\.([^.]+)$')) ELSE NULL END AS file_extension,
+        CASE WHEN f.full_path LIKE '%.%' THEN LOWER(SUBSTRING(f.full_path FROM '\.([^./]+)$')) ELSE NULL END AS file_extension,
         NULL::INTEGER AS accumulated_estimated_minutes,
         NULL::INTEGER AS logged_minutes,
         NULL::INTEGER AS billable_minutes,

@@ -348,10 +348,9 @@ CREATE TRIGGER log_craft_doc_linked AFTER INSERT ON project_craft_documents
     FOR EACH ROW EXECUTE FUNCTION log_craft_doc_linked();
 
 DROP TRIGGER IF EXISTS log_craft_doc_changed ON craft_documents;
--- TEMPORARILY DISABLED: bulk craft URL re-hosting causing noise
--- CREATE TRIGGER log_craft_doc_changed AFTER UPDATE ON craft_documents
---     FOR EACH ROW WHEN (OLD.markdown_content IS DISTINCT FROM NEW.markdown_content)
---     EXECUTE FUNCTION log_craft_doc_changed();
+CREATE TRIGGER log_craft_doc_changed AFTER UPDATE ON craft_documents
+    FOR EACH ROW WHEN (OLD.markdown_content IS DISTINCT FROM NEW.markdown_content)
+    EXECUTE FUNCTION log_craft_doc_changed();
 
 DROP TRIGGER IF EXISTS log_file_added ON files;
 CREATE TRIGGER log_file_added AFTER INSERT ON files
