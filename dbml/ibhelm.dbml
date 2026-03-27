@@ -60,7 +60,7 @@ Table project_extensions {
   
   default_location_id uuid [ref: > locations.id]
   default_cost_group_id uuid [ref: > cost_groups.id]
-  nas_folder_path text [note: "z.B. '/projects/2024-001-Neubau-XY/' für Auto-Assignment"]
+  nas_folder_path text [note: "NAS-Projektordner (ein Segment, z.B. 2021005-DESY-San-Heiz-MK); letztes Pfadsegment wenn mit Slashes"]
   
   client_person_id uuid [ref: > unified_persons.id, note: "Auftraggeber"]
   
@@ -134,7 +134,7 @@ Table task_extensions {
   
   task_type_id uuid [ref: > task_types.id, note: "Reference to task_types table"]
   type_source varchar(50) [default: 'auto', note: "'auto' or 'manual'"]
-  type_source_tag_name varchar(255) [note: "Tag that triggered auto-assignment"]
+  type_source_tag_name varchar(255) [note: "Tag that triggered auto-assignment; also used as Craft folder_path fallback when Teamwork name does not match"]
   
   db_created_at timestamp [default: `now()`]
   db_updated_at timestamp [default: `now()`]

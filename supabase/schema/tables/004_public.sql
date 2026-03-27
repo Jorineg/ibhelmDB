@@ -396,8 +396,9 @@ COMMENT ON COLUMN locations.search_text IS 'Generated search text including all 
 COMMENT ON TABLE cost_groups IS 'Hierarchical cost groups (Kostengruppen) - DIN 276 structure';
 COMMENT ON COLUMN cost_groups.code IS '3-digit cost group code (100-999). Parent hierarchy: 456->450->400';
 COMMENT ON TABLE project_extensions IS '1:1 extension to tw_projects - only ibhelm-specific data';
-COMMENT ON COLUMN project_extensions.nas_folder_path IS 'e.g. /projects/2024-001-Neubau-XY/ for auto-assignment';
+COMMENT ON COLUMN project_extensions.nas_folder_path IS 'NAS project directory name (one segment, e.g. 2021005-DESY-San-Heiz-MK). May include slashes; last segment is used. Drives attachment downloader + file/Craft linking when set.';
 COMMENT ON TABLE task_extensions IS 'Decorator pattern: extends Teamwork tasks with ibhelm semantics';
+COMMENT ON COLUMN task_extensions.type_source_tag_name IS 'Teamwork tag that triggered task type; also used for Craft folder_path linking when project name does not match (see link_craft_document_to_project)';
 COMMENT ON TABLE craft_documents IS 'Stores Craft documents with their full markdown content';
 COMMENT ON COLUMN craft_documents.folder_path IS 'Full folder path e.g. /Projekte/Bauprojekt-A';
 COMMENT ON COLUMN craft_documents.folder_id IS 'Direct parent folder ID';
