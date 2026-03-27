@@ -4,3 +4,5 @@ supabase/_seed.sql
 supabase/.branches
 context
 .env
+benchmarks/results
+run_benchmark.sh

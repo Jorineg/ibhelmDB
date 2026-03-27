@@ -4,6 +4,32 @@
 -- All functions use CREATE OR REPLACE - safe to re-run
 
 -- =====================================
+-- 0. QUERY PERFORMANCE LOGGING
+-- =====================================
+
+CREATE TABLE IF NOT EXISTS public.query_performance_log (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    ts TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    fn TEXT NOT NULL,
+    duration_ms NUMERIC(10,2) NOT NULL,
+    row_count INTEGER,
+    params JSONB,
+    generated_sql TEXT
+);
+
+CREATE OR REPLACE FUNCTION log_query_perf(
+    p_fn TEXT, p_start TIMESTAMPTZ, p_row_count INTEGER DEFAULT NULL,
+    p_params JSONB DEFAULT NULL, p_sql TEXT DEFAULT NULL
+) RETURNS void AS $$
+BEGIN
+    INSERT INTO query_performance_log (fn, duration_ms, row_count, params, generated_sql)
+    VALUES (p_fn, extract(epoch FROM clock_timestamp() - p_start) * 1000, p_row_count, p_params, p_sql);
+EXCEPTION WHEN OTHERS THEN
+    NULL; -- never let logging break the actual query
+END;
+$$ LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = public;
+
+-- =====================================
 -- 1. AUTO-UPDATE TIMESTAMPS
 -- =====================================
 
@@ -16,6 +42,53 @@ END;
 $$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION update_updated_at_column() IS 'Generic trigger function to update db_updated_at timestamp';
+
+-- =====================================
+-- 1b. TEXT CLEANING FOR SEARCH
+-- =====================================
+
+-- Strips MIME attachments, base64 data, HTML tags, encoded words, transport headers,
+-- and long tracking URLs from email body_plain_text.
+-- Used in mv_unified_items.search_text to avoid indexing megabytes of binary noise.
+CREATE OR REPLACE FUNCTION strip_email_noise(body TEXT) RETURNS TEXT
+LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+  SELECT TRIM(REGEXP_REPLACE(
+    REGEXP_REPLACE(
+      REGEXP_REPLACE(
+        REGEXP_REPLACE(
+          REGEXP_REPLACE(
+            REGEXP_REPLACE(
+              REGEXP_REPLACE(
+                -- 1. Truncate at first MIME boundary / raw-source marker
+                LEFT(body, LEAST(
+                  CASE WHEN POSITION('------=_' IN body) > 0 THEN POSITION('------=_' IN body) - 1 ELSE LENGTH(body) END,
+                  CASE WHEN POSITION('------_=' IN body) > 0 THEN POSITION('------_=' IN body) - 1 ELSE LENGTH(body) END,
+                  CASE WHEN POSITION(E'MIME-Version: 1.0' IN body) > 0 THEN POSITION(E'MIME-Version: 1.0' IN body) - 1 ELSE LENGTH(body) END,
+                  CASE WHEN POSITION('Received: from ' IN body) > 0 THEN POSITION('Received: from ' IN body) - 1 ELSE LENGTH(body) END
+                )),
+                -- 2. Strip email transport headers
+                E'(x-forefront-antispam|X-Microsoft-Antispam|x-ms-exchange|X-OriginatorOrg|X-MS-|authentication-results|arc-seal|arc-message-signature|arc-authentication-results|dkim-signature)[^\n]*(\n[ \t][^\n]*)*',
+                '', 'gi'
+              ),
+              -- 3. Strip base64 blocks (60+ contiguous base64 chars)
+              E'[A-Za-z0-9+/]{60,}[A-Za-z0-9+/=]*', '', 'g'
+            ),
+            -- 4. Strip HTML tags (not email addresses in angle brackets)
+            E'</?[a-zA-Z][^@>]*>', '', 'g'
+          ),
+          -- 5. Strip MIME encoded-words (=?charset?Q?...?=)
+          E'=\\?[^?]+\\?[QBqb]\\?[^?]*\\?=', '', 'g'
+        ),
+        -- 6. Strip markdown-style image refs [http://...]
+        E'\\[https?://[^\\]]+\\]', '', 'g'
+      ),
+      -- 7. Strip long tracking/redirect URLs (40+ chars)
+      E'https?://[^\\s)>\"]{40,}', '', 'g'
+    ),
+    -- 8. Collapse excessive whitespace
+    E'[\\s]{3,}', E' ', 'g'
+  ))
+$$;
 
 -- =====================================
 -- 2. LOCATION HIERARCHY
@@ -1908,7 +1981,7 @@ RETURNS TABLE(
 )
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
 -- SECURITY DEFINER: Runs with owner privileges to access mv_unified_items
--- Email filtering enforced via unified_items_secure view using session variables
+-- Email visibility: pre-computed array embedded as literal (avoids per-row function calls)
 DECLARE
     v_sql TEXT;
     v_where TEXT[] := ARRAY[]::TEXT[];
@@ -1924,6 +1997,13 @@ DECLARE
     v_cost_max INTEGER;
     v_location_ids UUID[];
     v_valid_group_fields TEXT[] := ARRAY['project', 'status', 'type', 'priority', 'location', 'cost_group', 'task_type_name', 'customer', 'creator', 'tasklist'];
+    v_emails_included BOOLEAN;
+    v_where_clause TEXT;
+    v_perf_start TIMESTAMPTZ := clock_timestamp();
+    v_perf_rows INTEGER := 0;
+    v_skinny_select TEXT;
+    v_email_vis TEXT;
+    v_visible_emails TEXT[];
 BEGIN
     -- Validate and sanitize sort parameters
     IF p_sort_field NOT IN ('name', 'status', 'project', 'customer', 'due_date', 'created_at', 'updated_at', 'priority', 'progress', 'attachment_count', 'cost_group_code', 'creator', 'location', 'location_path', 'cost_group', 'tasklist', 'conversation_subject', 'file_extension', 'accumulated_estimated_minutes', 'logged_minutes', 'billable_minutes') THEN
@@ -1936,6 +2016,13 @@ BEGIN
         p_group_by := NULL;
     END IF;
     IF p_group_order NOT IN ('asc', 'desc') THEN p_group_order := 'asc'; END IF;
+    
+    -- Pre-compute email visibility array ONCE (critical: embedding as literal avoids
+    -- per-row function calls inside EXECUTE which cost ~500ms)
+    v_emails_included := p_types IS NULL OR 'email' = ANY(p_types);
+    IF v_emails_included THEN
+        v_visible_emails := ARRAY[get_current_user_email()] || get_public_emails();
+    END IF;
     
     -- Pre-compute lookup filters
     IF p_involved_person IS NOT NULL AND TRIM(p_involved_person) != '' THEN
@@ -1952,10 +2039,8 @@ BEGIN
         IF array_length(v_location_ids, 1) IS NULL THEN RETURN; END IF;
     END IF;
     
-    -- Build WHERE conditions dynamically (only add when filter is active)
-    IF p_types IS NOT NULL THEN
-        v_where := array_append(v_where, format('ui.type = ANY(%L::TEXT[])', p_types));
-    END IF;
+    -- Build WHERE conditions dynamically (type filter NOT included — handled in SQL construction)
+    -- This allows the UNION ALL optimization to split non-email/email branches
     IF p_task_types IS NOT NULL THEN
         v_where := array_append(v_where, format('(ui.type != ''task'' OR ui.task_type_id = ANY(%L::UUID[]))', p_task_types));
     END IF;
@@ -2096,8 +2181,7 @@ BEGIN
         v_group_select_outer := format('full_ui.%I::TEXT', p_group_by);
     END IF;
     
-    -- Build ORDER BY expressions (for inner skinny query and outer full query)
-    -- Group ordering comes first, then sort field, then id for deterministic ordering
+    -- Build ORDER BY expressions for: inner (ui.), outer (full_ui.), and combined (no prefix)
     IF p_sort_field = 'cost_group_code' THEN
         v_order_expr := v_group_expr || format('NULLIF(ui.cost_group_code, '''')::INTEGER %s NULLS LAST, ui.id', p_sort_order);
         v_order_expr_outer := v_group_expr_outer || format('NULLIF(full_ui.cost_group_code, '''')::INTEGER %s NULLS LAST, full_ui.id', p_sort_order);
@@ -2106,20 +2190,43 @@ BEGIN
         v_order_expr_outer := v_group_expr_outer || format('full_ui.%I %s NULLS LAST, full_ui.id', p_sort_field, p_sort_order);
     END IF;
     
-    -- Build dynamic SQL using DEFERRED JOIN pattern:
-    -- 1. Inner CTE fetches only IDs (skinny) with sort/limit plus group_value for ordering
-    -- 2. Outer query joins to get full row data for only the needed rows
-    v_sql := 'WITH skinny_ids AS MATERIALIZED (
-        SELECT ui.id, ui.type, ' || v_group_select || ' AS group_value
-        FROM unified_items_secure ui';
-    
-    IF array_length(v_where, 1) > 0 THEN
-        v_sql := v_sql || ' WHERE ' || array_to_string(v_where, ' AND ');
+    -- Build email visibility condition (pre-computed array as literal)
+    IF v_emails_included THEN
+        v_email_vis := format('(ui.type != ''email'' OR ui.involved_emails && %L::TEXT[])', v_visible_emails);
     END IF;
     
-    v_sql := v_sql || ' ORDER BY ' || v_order_expr;
-    v_sql := v_sql || format(' LIMIT %s OFFSET %s', p_limit, p_offset);
-    v_sql := v_sql || ')
+    -- Build WHERE clause string
+    v_where_clause := CASE WHEN array_length(v_where, 1) > 0
+        THEN ' AND ' || array_to_string(v_where, ' AND ') ELSE '' END;
+    v_skinny_select := 'SELECT ui.id, ui.type, ' || v_group_select || ' AS group_value FROM mv_unified_items ui WHERE ';
+    
+    -- Single-scan approach: type filter + email visibility as simple WHERE conditions
+    -- (no UNION ALL needed — the pre-computed email array makes the OR filter near-zero cost)
+    IF v_emails_included AND p_types IS NULL THEN
+        -- All types: just add email visibility filter
+        v_sql := 'WITH skinny_ids AS MATERIALIZED (' || v_skinny_select
+            || v_email_vis
+            || v_where_clause
+            || ' ORDER BY ' || v_order_expr
+            || format(' LIMIT %s OFFSET %s)', p_limit, p_offset);
+    ELSIF v_emails_included THEN
+        -- Specific types including email
+        v_sql := 'WITH skinny_ids AS MATERIALIZED (' || v_skinny_select
+            || format('ui.type = ANY(%L::TEXT[])', p_types) || ' AND ' || v_email_vis
+            || v_where_clause
+            || ' ORDER BY ' || v_order_expr
+            || format(' LIMIT %s OFFSET %s)', p_limit, p_offset);
+    ELSE
+        -- No emails: no visibility check needed
+        v_sql := 'WITH skinny_ids AS MATERIALIZED (' || v_skinny_select
+            || format('ui.type = ANY(%L::TEXT[])', p_types)
+            || v_where_clause
+            || ' ORDER BY ' || v_order_expr
+            || format(' LIMIT %s OFFSET %s)', p_limit, p_offset);
+    END IF;
+    
+    -- Outer query: deferred join to get full row data for matched IDs only
+    v_sql := v_sql || '
     SELECT full_ui.id, full_ui.type, full_ui.name, full_ui.description, full_ui.status, full_ui.project, full_ui.customer,
         full_ui.location, full_ui.location_path, full_ui.cost_group, full_ui.cost_group_code,
         full_ui.due_date, full_ui.created_at, full_ui.updated_at, full_ui.priority, full_ui.progress, full_ui.tasklist,
@@ -2134,6 +2241,24 @@ BEGIN
     ORDER BY ' || v_order_expr_outer;
     
     RETURN QUERY EXECUTE v_sql;
+    GET DIAGNOSTICS v_perf_rows = ROW_COUNT;
+    PERFORM log_query_perf('query_unified_items', v_perf_start, v_perf_rows,
+        jsonb_strip_nulls(jsonb_build_object(
+            'types', p_types, 'task_types', p_task_types, 'text', p_text_search,
+            'person', p_involved_person, 'tag', p_tag_search, 'cost_group', p_cost_group_code,
+            'project', p_project_search, 'location', p_location_search,
+            'name', p_name_contains, 'desc', p_description_contains,
+            'customer', p_customer_contains, 'tasklist', p_tasklist_contains,
+            'creator', p_creator_contains, 'assigned', p_assigned_to_contains,
+            'status_in', p_status_in, 'status_not', p_status_not_in,
+            'priority_in', p_priority_in, 'priority_not', p_priority_not_in,
+            'proj_status_in', p_project_status_in, 'proj_status_not', p_project_status_not_in,
+            'due_min', p_due_date_min, 'due_max', p_due_date_max, 'due_null', p_due_date_is_null,
+            'hide_completed', p_hide_completed_tasks, 'hide_inactive', p_hide_inactive_projects,
+            'file_ignore', p_file_ignore_patterns,
+            'sort', p_sort_field, 'order', p_sort_order,
+            'group', p_group_by, 'limit', p_limit, 'offset', p_offset
+        )), v_sql);
 END;
 $$;
 
@@ -2166,7 +2291,7 @@ CREATE OR REPLACE FUNCTION count_unified_items(
 RETURNS INTEGER
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
 -- SECURITY DEFINER: Runs with owner privileges to access mv_unified_items
--- Email filtering enforced via unified_items_secure view using session variables
+-- Email visibility: pre-computed array embedded as literal
 DECLARE
     v_sql TEXT;
     v_where TEXT[] := ARRAY[]::TEXT[];
@@ -2177,7 +2302,16 @@ DECLARE
     v_cost_max INTEGER;
     v_location_ids UUID[];
     v_count INTEGER;
+    v_emails_included BOOLEAN;
+    v_email_vis TEXT;
+    v_visible_emails TEXT[];
+    v_perf_start TIMESTAMPTZ := clock_timestamp();
 BEGIN
+    v_emails_included := p_types IS NULL OR 'email' = ANY(p_types);
+    IF v_emails_included THEN
+        v_visible_emails := ARRAY[get_current_user_email()] || get_public_emails();
+    END IF;
+    
     -- Pre-compute lookup filters
     IF p_involved_person IS NOT NULL AND TRIM(p_involved_person) != '' THEN
         v_person_ids := find_person_ids_by_search(p_involved_person);
@@ -2193,10 +2327,7 @@ BEGIN
         IF array_length(v_location_ids, 1) IS NULL THEN RETURN 0; END IF;
     END IF;
     
-    -- Build WHERE conditions dynamically
-    IF p_types IS NOT NULL THEN
-        v_where := array_append(v_where, format('ui.type = ANY(%L::TEXT[])', p_types));
-    END IF;
+    -- Build WHERE conditions (type filter NOT included — handled in SQL construction)
     IF p_task_types IS NOT NULL THEN
         v_where := array_append(v_where, format('(ui.type != ''task'' OR ui.task_type_id = ANY(%L::UUID[]))', p_task_types));
     END IF;
@@ -2329,16 +2460,37 @@ BEGIN
         v_where := array_append(v_where, format('ui.billable_minutes <= %s', p_billable_minutes_max));
     END IF;
     
-    -- Build WHERE clause
-    IF array_length(v_where, 1) > 0 THEN
-        v_where_clause := ' WHERE ' || array_to_string(v_where, ' AND ');
-    ELSE
-        v_where_clause := '';
+    -- Build WHERE clause and email visibility
+    v_where_clause := CASE WHEN array_length(v_where, 1) > 0
+        THEN ' AND ' || array_to_string(v_where, ' AND ') ELSE '' END;
+    IF v_emails_included THEN
+        v_email_vis := format('(ui.type != ''email'' OR ui.involved_emails && %L::TEXT[])', v_visible_emails);
     END IF;
     
-    -- Simple COUNT(*)
-    v_sql := 'SELECT COUNT(*)::INTEGER FROM unified_items_secure ui' || v_where_clause;
+    IF v_emails_included AND p_types IS NULL THEN
+        v_sql := 'SELECT COUNT(*)::INTEGER FROM mv_unified_items ui WHERE '
+            || v_email_vis || v_where_clause;
+    ELSIF v_emails_included THEN
+        v_sql := 'SELECT COUNT(*)::INTEGER FROM mv_unified_items ui WHERE '
+            || format('ui.type = ANY(%L::TEXT[])', p_types) || ' AND ' || v_email_vis || v_where_clause;
+    ELSE
+        v_sql := 'SELECT COUNT(*)::INTEGER FROM mv_unified_items ui WHERE '
+            || format('ui.type = ANY(%L::TEXT[])', p_types) || v_where_clause;
+    END IF;
+    
     EXECUTE v_sql INTO v_count;
+    PERFORM log_query_perf('count_unified_items', v_perf_start, v_count,
+        jsonb_strip_nulls(jsonb_build_object(
+            'types', p_types, 'task_types', p_task_types, 'text', p_text_search,
+            'person', p_involved_person, 'tag', p_tag_search, 'cost_group', p_cost_group_code,
+            'project', p_project_search, 'location', p_location_search,
+            'name', p_name_contains, 'desc', p_description_contains,
+            'customer', p_customer_contains, 'tasklist', p_tasklist_contains,
+            'creator', p_creator_contains, 'assigned', p_assigned_to_contains,
+            'status_in', p_status_in, 'status_not', p_status_not_in,
+            'hide_completed', p_hide_completed_tasks, 'hide_inactive', p_hide_inactive_projects,
+            'file_ignore', p_file_ignore_patterns
+        )), v_sql);
     RETURN v_count;
 END;
 $$;
@@ -2382,14 +2534,21 @@ DECLARE
     v_cost_max INTEGER;
     v_location_ids UUID[];
     v_valid_group_fields TEXT[] := ARRAY['project', 'status', 'type', 'priority', 'location', 'cost_group', 'task_type_name', 'customer', 'creator', 'tasklist'];
+    v_emails_included BOOLEAN;
+    v_email_vis TEXT;
+    v_visible_emails TEXT[];
+    v_perf_start TIMESTAMPTZ := clock_timestamp();
+    v_perf_rows INTEGER := 0;
 BEGIN
-    -- Validate group_by parameter (required)
     IF p_group_by IS NULL OR NOT (p_group_by = ANY(v_valid_group_fields)) THEN
         RAISE EXCEPTION 'Invalid p_group_by value. Must be one of: %', array_to_string(v_valid_group_fields, ', ');
     END IF;
     IF p_group_order NOT IN ('asc', 'desc') THEN p_group_order := 'asc'; END IF;
 
-    -- Pre-compute lookup filters
+    v_emails_included := p_types IS NULL OR 'email' = ANY(p_types);
+    IF v_emails_included THEN
+        v_visible_emails := ARRAY[get_current_user_email()] || get_public_emails();
+    END IF;
     IF p_involved_person IS NOT NULL AND TRIM(p_involved_person) != '' THEN
         v_person_ids := find_person_ids_by_search(p_involved_person);
         IF array_length(v_person_ids, 1) IS NULL THEN RETURN; END IF;
@@ -2404,10 +2563,7 @@ BEGIN
         IF array_length(v_location_ids, 1) IS NULL THEN RETURN; END IF;
     END IF;
     
-    -- Build WHERE conditions (same as count_unified_items)
-    IF p_types IS NOT NULL THEN
-        v_where := array_append(v_where, format('ui.type = ANY(%L::TEXT[])', p_types));
-    END IF;
+    -- Build WHERE conditions (type filter NOT included — handled in SQL construction)
     IF p_task_types IS NOT NULL THEN
         v_where := array_append(v_where, format('(ui.type != ''task'' OR ui.task_type_id = ANY(%L::UUID[]))', p_task_types));
     END IF;
@@ -2531,18 +2687,35 @@ BEGIN
         v_where := array_append(v_where, format('ui.billable_minutes <= %s', p_billable_minutes_max));
     END IF;
     
-    -- Build WHERE clause
-    IF array_length(v_where, 1) > 0 THEN
-        v_where_clause := ' WHERE ' || array_to_string(v_where, ' AND ');
-    ELSE
-        v_where_clause := '';
+    -- Build WHERE clause and email visibility
+    v_where_clause := CASE WHEN array_length(v_where, 1) > 0
+        THEN ' AND ' || array_to_string(v_where, ' AND ') ELSE '' END;
+    IF v_emails_included THEN
+        v_email_vis := format('(ui.type != ''email'' OR ui.involved_emails && %L::TEXT[])', v_visible_emails);
     END IF;
     
-    -- GROUP BY query with dynamic column
-    v_sql := format('SELECT ui.%I::TEXT AS group_value, COUNT(*)::INTEGER AS group_count FROM unified_items_secure ui%s GROUP BY ui.%I ORDER BY ui.%I %s NULLS LAST',
-        p_group_by, v_where_clause, p_group_by, p_group_by, p_group_order);
+    IF v_emails_included AND p_types IS NULL THEN
+        v_sql := format('SELECT ui.%I::TEXT AS group_value, COUNT(*)::INTEGER AS group_count FROM mv_unified_items ui WHERE %s%s GROUP BY ui.%I ORDER BY ui.%I %s NULLS LAST',
+            p_group_by, v_email_vis, v_where_clause, p_group_by, p_group_by, p_group_order);
+    ELSIF v_emails_included THEN
+        v_sql := format('SELECT ui.%I::TEXT AS group_value, COUNT(*)::INTEGER AS group_count FROM mv_unified_items ui WHERE %s AND %s%s GROUP BY ui.%I ORDER BY ui.%I %s NULLS LAST',
+            p_group_by, format('ui.type = ANY(%L::TEXT[])', p_types), v_email_vis, v_where_clause, p_group_by, p_group_by, p_group_order);
+    ELSE
+        v_sql := format('SELECT ui.%I::TEXT AS group_value, COUNT(*)::INTEGER AS group_count FROM mv_unified_items ui WHERE %s%s GROUP BY ui.%I ORDER BY ui.%I %s NULLS LAST',
+            p_group_by, format('ui.type = ANY(%L::TEXT[])', p_types), v_where_clause, p_group_by, p_group_by, p_group_order);
+    END IF;
     
     RETURN QUERY EXECUTE v_sql;
+    GET DIAGNOSTICS v_perf_rows = ROW_COUNT;
+    PERFORM log_query_perf('count_unified_items_grouped', v_perf_start, v_perf_rows,
+        jsonb_strip_nulls(jsonb_build_object(
+            'group_by', p_group_by, 'group_order', p_group_order,
+            'types', p_types, 'task_types', p_task_types, 'text', p_text_search,
+            'person', p_involved_person, 'tag', p_tag_search, 'cost_group', p_cost_group_code,
+            'project', p_project_search, 'location', p_location_search,
+            'hide_completed', p_hide_completed_tasks, 'hide_inactive', p_hide_inactive_projects,
+            'file_ignore', p_file_ignore_patterns
+        )), v_sql);
 END;
 $$;
 
@@ -3168,6 +3341,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Processing queue for ThumbnailTextExtractor (atomic claim with FOR UPDATE SKIP LOCKED)
+-- Priority: latest fs_ctime first (most recently modified files), no-file-entry last
 -- SECURITY DEFINER: Runs as owner so tte_fetcher role (with only EXECUTE permission) can use it
 CREATE OR REPLACE FUNCTION claim_pending_file_content(p_limit INTEGER DEFAULT 5)
 RETURNS TABLE (content_hash TEXT, storage_path TEXT, size_bytes BIGINT, try_count INTEGER, full_path TEXT)
@@ -3179,11 +3353,16 @@ BEGIN
     WITH locked_batch AS (
         SELECT fc.content_hash, fc.storage_path, fc.size_bytes, fc.try_count
         FROM file_contents fc
+        LEFT JOIN LATERAL (
+            SELECT MAX(f.fs_ctime) AS latest_ctime
+            FROM files f
+            WHERE f.content_hash = fc.content_hash AND f.deleted_at IS NULL
+        ) fa ON TRUE
         WHERE fc.s3_status = 'uploaded'
           AND fc.processing_status = 'pending'
-        ORDER BY fc.db_created_at ASC
+        ORDER BY fa.latest_ctime IS NULL ASC, fa.latest_ctime DESC
         LIMIT p_limit
-        FOR UPDATE SKIP LOCKED
+        FOR UPDATE OF fc SKIP LOCKED
     ),
     updated AS (
         UPDATE file_contents fc
@@ -4390,6 +4569,30 @@ $$ LANGUAGE plpgsql;
 
 
 -- =====================================
+-- AGENT FEEDBACK
+-- =====================================
+
+CREATE OR REPLACE FUNCTION submit_agent_feedback(
+    p_feedback TEXT,
+    p_category TEXT DEFAULT NULL
+) RETURNS BIGINT
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+    INSERT INTO agent_feedback (feedback, category, context, model, session_id)
+    VALUES (
+        p_feedback,
+        p_category,
+        current_setting('app.agent_context', true),
+        current_setting('app.model_id', true),
+        current_setting('app.session_id', true)::uuid
+    ) RETURNING id;
+$$;
+
+GRANT EXECUTE ON FUNCTION submit_agent_feedback(TEXT, TEXT) TO mcp_readonly;
+
+-- =====================================
 -- SCHEMA DOC COMMENTS
 -- Functions tagged with @schema_doc are included in the generated schema documentation.
 -- =====================================
@@ -4405,3 +4608,4 @@ COMMENT ON FUNCTION query_unified_persons(text, text, boolean, boolean, text, te
 COMMENT ON FUNCTION count_unified_persons(text, text, boolean, boolean) IS '@schema_doc Count results for query_unified_persons';
 COMMENT ON FUNCTION search_items_with_snippets(text, text[], integer, text) IS '@schema_doc Search items with highlighted context snippets';
 COMMENT ON FUNCTION search_chat_history(text, integer, text) IS '@schema_doc Search past chat sessions with context snippets';
+COMMENT ON FUNCTION submit_agent_feedback(text, text) IS '@schema_doc Submit feedback about missing context, unclear docs, or suggestions. Auto-captures context, model, and session.';

@@ -41,10 +41,14 @@ Single-row table. Admin-only settings that affect all users.
 | `public_email_addresses` | string[] | `[]` | Shared email addresses visible to all users (RLS) |
 | `ai_agent_system_prompt` | string | (default template) | System prompt template for AI Email Agent with {variable} placeholders |
 | `chat_models` | ChatModel[] | (fallback to CLAUDE_MODEL env) | Available AI models for the chat service |
+| `default_chat_model_id` | string | `""` | Model ID used as default in chat when none selected |
+| `agent_model_id` | string | `""` | Model ID for the background project activity agent |
+| `vision_fallback_model_id` | string | `""` | Model ID for image description when active model lacks vision |
+| `title_model_id` | string | `""` | Model ID for auto-generating chat session titles |
 
 ### Chat Models Schema
 
-Each entry in `chat_models` defines an available model:
+Each entry in `chat_models` defines an available model endpoint:
 
 ```json
 [
@@ -52,7 +56,6 @@ Each entry in `chat_models` defines an available model:
     "id": "claude-sonnet-4-20250514",
     "provider": "anthropic",
     "name": "Claude Sonnet 4",
-    "default": true,
     "context_window": 200000,
     "supports_vision": true,
     "input_price": 3.0,
@@ -62,7 +65,7 @@ Each entry in `chat_models` defines an available model:
   },
   {
     "id": "moonshotai/Kimi-K2.5",
-    "provider": "nebius",
+    "provider": "openai_compat",
     "base_url": "https://api.tokenfactory.eu-west1.nebius.com/v1/",
     "name": "Kimi K2.5",
     "context_window": 256000,
@@ -72,7 +75,7 @@ Each entry in `chat_models` defines an available model:
   },
   {
     "id": "zai-org/GLM-4.7-FP8",
-    "provider": "nebius",
+    "provider": "openai_compat",
     "base_url": "https://api.tokenfactory.nebius.com/v1/",
     "name": "GLM 4.7",
     "context_window": 200000,
@@ -86,16 +89,18 @@ Each entry in `chat_models` defines an available model:
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `id` | string | yes | Model ID passed to the provider API |
-| `provider` | `"anthropic"` \| `"nebius"` | yes | Which API provider to use |
+| `provider` | `"anthropic"` \| `"openai_compat"` | yes | Which API provider to use |
 | `name` | string | yes | Display name in the UI |
-| `default` | boolean | no | If true, selected by default |
-| `base_url` | string | no | Override base URL (required for nebius, region-specific) |
+| `base_url` | string | no | Override base URL (required for OpenAI-compatible providers) |
 | `context_window` | number | no | Max context tokens |
 | `supports_vision` | boolean | no | Whether model accepts image inputs |
 | `input_price` | number | no | Price per 1M input tokens (USD) |
 | `output_price` | number | no | Price per 1M output tokens (USD) |
 | `cache_read_price` | number | no | Price per 1M cache-read tokens (Anthropic only) |
 | `cache_write_price` | number | no | Price per 1M cache-write tokens (Anthropic only) |
+| `hidden` | boolean | no | If true, excluded from user-facing model picker in chat |
+| `system_prompt_addition` | string | no | Extra text appended to system prompt when this model is active |
+| `auto_execute_code_blocks` | boolean | no | Auto-extract and run Python code blocks from assistant text |
 
 ### AI Agent System Prompt Template Variables
 

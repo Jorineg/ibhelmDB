@@ -557,6 +557,46 @@ COMMENT ON COLUMN chat_files.bucket IS 'Supabase Storage bucket: files (existing
 COMMENT ON COLUMN chat_files.origin IS 'upload: user uploaded, generated: sandbox created, reference: matched existing file_contents';
 
 -- =====================================
+-- AGENT FEEDBACK
+-- =====================================
+CREATE TABLE agent_feedback (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    context VARCHAR(20) NOT NULL,
+    model TEXT,
+    category TEXT,
+    feedback TEXT NOT NULL,
+    session_id UUID REFERENCES chat_sessions(id)
+);
+
+CREATE INDEX idx_agent_feedback_created ON agent_feedback(created_at DESC);
+
+-- =====================================
+-- 15. PROMPT TEMPLATES
+-- =====================================
+
+CREATE TABLE prompt_templates (
+    id TEXT PRIMARY KEY,
+    owner_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    category TEXT NOT NULL CHECK (category IN ('prompt', 'component', 'doc')),
+    content TEXT NOT NULL DEFAULT '',
+    description TEXT,
+    is_system BOOLEAN NOT NULL DEFAULT FALSE,
+    db_created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    db_updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_prompt_templates_category ON prompt_templates(category);
+CREATE INDEX idx_prompt_templates_owner ON prompt_templates(owner_id) WHERE owner_id IS NOT NULL;
+
+COMMENT ON TABLE prompt_templates IS 'Composable prompt templates, reusable components, and reference docs for LLM systems';
+COMMENT ON COLUMN prompt_templates.id IS 'Human-readable slug: chat.system_prompt, tool_doc.read_functions, doc.dashboard_manual';
+COMMENT ON COLUMN prompt_templates.owner_id IS 'NULL = system-owned (admin-managed), UUID = user-owned';
+COMMENT ON COLUMN prompt_templates.category IS 'prompt = full LLM prompts, component = reusable building blocks, doc = reference documentation';
+COMMENT ON COLUMN prompt_templates.is_system IS 'System templates cannot be deleted (but can be edited by admins)';
+
+-- =====================================
 -- MCP READONLY GRANTS
 -- =====================================
 GRANT USAGE ON SCHEMA public TO mcp_readonly;

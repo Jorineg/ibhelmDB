@@ -56,7 +56,7 @@ GRANT USAGE ON SCHEMA public TO tte_uploader;
 GRANT SELECT (content_hash) ON public.file_contents TO tte_uploader;
 GRANT UPDATE (
     processing_status, thumbnail_path, thumbnail_generated_at,
-    extracted_text, try_count, last_status_change, db_updated_at
+    extracted_text, try_count, status_message, last_status_change, db_updated_at
 ) ON public.file_contents TO tte_uploader;
 
 --------------------------------------------------------------------------------

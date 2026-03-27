@@ -280,6 +280,48 @@ FOR DELETE USING (message_id IN (
 ));
 
 -- =====================================
+-- 11. PROMPT TEMPLATES RLS
+-- =====================================
+
+ALTER TABLE prompt_templates ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "prompt_templates_select_all" ON prompt_templates;
+DROP POLICY IF EXISTS "prompt_templates_insert_system" ON prompt_templates;
+DROP POLICY IF EXISTS "prompt_templates_insert_user" ON prompt_templates;
+DROP POLICY IF EXISTS "prompt_templates_update_system" ON prompt_templates;
+DROP POLICY IF EXISTS "prompt_templates_update_user" ON prompt_templates;
+DROP POLICY IF EXISTS "prompt_templates_delete_system" ON prompt_templates;
+DROP POLICY IF EXISTS "prompt_templates_delete_user" ON prompt_templates;
+
+-- Everyone can read all templates
+CREATE POLICY "prompt_templates_select_all" ON prompt_templates
+FOR SELECT USING (true);
+
+-- System templates (owner_id IS NULL): admin only
+CREATE POLICY "prompt_templates_insert_system" ON prompt_templates
+FOR INSERT WITH CHECK (owner_id IS NULL AND is_admin());
+
+-- User templates: anyone, forced to own user
+CREATE POLICY "prompt_templates_insert_user" ON prompt_templates
+FOR INSERT WITH CHECK (owner_id = get_current_user_id());
+
+-- System: admin only
+CREATE POLICY "prompt_templates_update_system" ON prompt_templates
+FOR UPDATE USING (owner_id IS NULL AND is_admin());
+
+-- User: owner only
+CREATE POLICY "prompt_templates_update_user" ON prompt_templates
+FOR UPDATE USING (owner_id = get_current_user_id());
+
+-- System: admin only, not is_system
+CREATE POLICY "prompt_templates_delete_system" ON prompt_templates
+FOR DELETE USING (owner_id IS NULL AND is_admin() AND NOT is_system);
+
+-- User: owner only
+CREATE POLICY "prompt_templates_delete_user" ON prompt_templates
+FOR DELETE USING (owner_id = get_current_user_id());
+
+-- =====================================
 -- Remove legacy auto-RLS trigger (never fired during normal deployment since
 -- Atlas creates tables before rls.sql runs; RLS is enabled explicitly per table above)
 DROP EVENT TRIGGER IF EXISTS auto_rls_trigger;
@@ -351,6 +393,10 @@ GRANT SELECT, UPDATE ON app_settings TO authenticated;
 -- Chat tables: authenticated can CRUD (RLS controls per-user access)
 GRANT SELECT, INSERT, UPDATE, DELETE ON chat_sessions TO authenticated;
 GRANT SELECT, INSERT, DELETE ON chat_messages TO authenticated;
+
+-- Prompt templates: authenticated can CRUD (RLS controls per-user and admin access)
+GRANT SELECT, INSERT, UPDATE, DELETE ON prompt_templates TO authenticated;
+GRANT SELECT ON prompt_templates TO mcp_readonly;
 
 -- Operation runs: authenticated can read all, RLS controls write
 GRANT SELECT, INSERT, UPDATE ON operation_runs TO authenticated;

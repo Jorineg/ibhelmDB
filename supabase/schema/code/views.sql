@@ -171,7 +171,7 @@ SELECT * FROM (
         NULL::INTEGER AS logged_minutes,
         NULL::INTEGER AS billable_minutes,
         -- Pre-computed search text (includes body, recipients, attachments, labels for single-index search)
-        CONCAT_WS(' ', m.subject, m.preview, m.body_plain_text, twp.name, from_contact.name, from_contact.email, conv.subject, cca.comments_text,
+        CONCAT_WS(' ', m.subject, m.preview, strip_email_noise(m.body_plain_text), twp.name, from_contact.name, from_contact.email, conv.subject, cca.comments_text,
             (SELECT string_agg(CONCAT_WS(' ', elem->'contact'->>'name', elem->'contact'->>'email'), ' ') FROM jsonb_array_elements(mra.recipients) elem),
             (SELECT string_agg(elem->>'filename', ' ') FROM jsonb_array_elements(maa.attachments) elem),
             (SELECT string_agg(elem->>'name', ' ') FROM jsonb_array_elements(cla.tags) elem),
@@ -249,7 +249,7 @@ UNION ALL
 -- Files (wrapped for DISTINCT ON)
 SELECT * FROM (
     SELECT DISTINCT ON (f.id)
-        f.id::TEXT AS id, 'file'::TEXT AS type, f.full_path AS name, f.full_path AS description, ''::VARCHAR AS status,
+        f.id::TEXT AS id, 'file'::TEXT AS type, SUBSTRING(f.full_path FROM '[^/]+$') AS name, regexp_replace(f.full_path, '^/data/', '') AS description, ''::VARCHAR AS status,
         COALESCE(twp.name, '') AS project, twp.status AS project_status, ''::TEXT AS customer, l.name AS location, l.search_text AS location_path,
         cg.name AS cost_group, cg.code::TEXT AS cost_group_code, NULL::TIMESTAMP AS due_date,
         f.fs_mtime AS created_at, f.fs_ctime AS updated_at,
@@ -285,6 +285,12 @@ SELECT * FROM (
     LEFT JOIN teamwork.projects twp ON f.project_id = twp.id
     ORDER BY f.id
 ) files;
+
+-- LZ4 TOAST compression for large text columns (faster decompression during search recheck)
+ALTER MATERIALIZED VIEW mv_unified_items ALTER COLUMN search_text SET COMPRESSION lz4;
+ALTER MATERIALIZED VIEW mv_unified_items ALTER COLUMN body SET COMPRESSION lz4;
+ALTER MATERIALIZED VIEW mv_unified_items ALTER COLUMN description SET COMPRESSION lz4;
+ALTER MATERIALIZED VIEW mv_unified_items ALTER COLUMN conversation_comments_text SET COMPRESSION lz4;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_unified_items_id_type ON mv_unified_items(id, type);
 -- Project status for fast filtering (hide inactive projects)

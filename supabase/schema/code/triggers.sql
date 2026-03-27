@@ -356,3 +356,21 @@ DROP TRIGGER IF EXISTS log_file_added ON files;
 CREATE TRIGGER log_file_added AFTER INSERT ON files
     FOR EACH ROW WHEN (NEW.project_id IS NOT NULL)
     EXECUTE FUNCTION log_file_added();
+
+DROP TRIGGER IF EXISTS log_file_linked_to_project ON files;
+CREATE TRIGGER log_file_linked_to_project AFTER UPDATE OF project_id ON files
+    FOR EACH ROW WHEN (OLD.project_id IS NULL AND NEW.project_id IS NOT NULL)
+    EXECUTE FUNCTION log_file_added();
+
+-- =====================================
+-- 8. PROMPT TEMPLATES
+-- =====================================
+
+DROP TRIGGER IF EXISTS update_prompt_templates_updated_at ON prompt_templates;
+CREATE TRIGGER update_prompt_templates_updated_at BEFORE UPDATE ON prompt_templates
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS prompt_templates_notify ON prompt_templates;
+CREATE TRIGGER prompt_templates_notify
+    AFTER INSERT OR UPDATE OR DELETE ON prompt_templates
+    FOR EACH ROW EXECUTE FUNCTION notify_prompt_template_change();

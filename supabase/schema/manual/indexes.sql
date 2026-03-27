@@ -31,6 +31,11 @@ CREATE INDEX IF NOT EXISTS idx_mv_ui_type_updated_at ON mv_unified_items(type, u
 CREATE INDEX IF NOT EXISTS idx_mv_ui_updated_at_lookup ON mv_unified_items(updated_at DESC, type, id);
 CREATE INDEX IF NOT EXISTS idx_mv_ui_created_at_lookup ON mv_unified_items(created_at DESC, type, id);
 
+-- Partial indexes for email-visibility UNION ALL split in query_unified_items
+-- Non-email rows sorted by updated_at: allows instant top-N without seq scan
+CREATE INDEX IF NOT EXISTS idx_mv_ui_non_email_updated ON mv_unified_items(updated_at DESC NULLS LAST, id) WHERE type != 'email';
+CREATE INDEX IF NOT EXISTS idx_mv_ui_non_email_created ON mv_unified_items(created_at DESC NULLS LAST, id) WHERE type != 'email';
+
 -- Note: Trigram indexes for mv_unified_items are in views.sql (recreated with MV)
 
 -- =====================================
