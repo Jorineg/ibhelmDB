@@ -256,6 +256,61 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO tmc_connector;
 ALTER ROLE mcp_readonly WITH LOGIN;
 
 --------------------------------------------------------------------------------
+-- Trigger Functions: SECURITY DEFINER
+-- Trigger functions run as side-effects of authorized table operations.
+-- They must run as the function owner (not the invoking role) because they
+-- call inner functions and write to tables the invoking role may not access.
+-- Without SECURITY DEFINER, any role (e.g. tmc_connector) that INSERTs into
+-- a table with triggers would get "permission denied" on the trigger's
+-- inner function calls.
+--------------------------------------------------------------------------------
+
+-- Timestamp triggers
+ALTER FUNCTION update_updated_at_column() SECURITY DEFINER SET search_path = public;
+
+-- Person auto-linking
+ALTER FUNCTION trigger_link_person_from_missive_contact() SECURITY DEFINER SET search_path = public, missive;
+ALTER FUNCTION trigger_link_person_from_teamwork_user() SECURITY DEFINER SET search_path = public, teamwork;
+
+-- Project-conversation auto-linking
+ALTER FUNCTION trigger_link_projects_on_conversation_insert() SECURITY DEFINER SET search_path = public, missive;
+ALTER FUNCTION trigger_link_projects_on_label_change() SECURITY DEFINER SET search_path = public, missive;
+
+-- Location/cost-group extraction
+ALTER FUNCTION trigger_extract_locations_for_task() SECURITY DEFINER SET search_path = public, teamwork;
+ALTER FUNCTION trigger_extract_locations_for_conversation() SECURITY DEFINER SET search_path = public, missive;
+ALTER FUNCTION trigger_extract_cost_groups_for_task() SECURITY DEFINER SET search_path = public, teamwork;
+ALTER FUNCTION trigger_extract_cost_groups_for_conversation() SECURITY DEFINER SET search_path = public, missive;
+
+-- Task type extraction
+ALTER FUNCTION trigger_extract_task_type() SECURITY DEFINER SET search_path = public, teamwork;
+ALTER FUNCTION trigger_task_tags_extract_type() SECURITY DEFINER SET search_path = public, teamwork;
+
+-- Attachment download queue
+ALTER FUNCTION trigger_queue_attachment_download() SECURITY DEFINER SET search_path = public, missive;
+
+-- AI agent mention detection
+ALTER FUNCTION trigger_check_ai_mention() SECURITY DEFINER SET search_path = public, missive;
+
+-- Hierarchy triggers
+ALTER FUNCTION update_location_hierarchy() SECURITY DEFINER SET search_path = public;
+ALTER FUNCTION update_location_children() SECURITY DEFINER SET search_path = public;
+ALTER FUNCTION update_cost_group_path() SECURITY DEFINER SET search_path = public;
+
+-- Project activity log
+ALTER FUNCTION log_task_created() SECURITY DEFINER SET search_path = public, teamwork;
+ALTER FUNCTION log_task_changed() SECURITY DEFINER SET search_path = public, teamwork;
+ALTER FUNCTION log_task_assignee_change() SECURITY DEFINER SET search_path = public, teamwork;
+ALTER FUNCTION log_task_tag_change() SECURITY DEFINER SET search_path = public, teamwork;
+ALTER FUNCTION log_email_linked() SECURITY DEFINER SET search_path = public, missive;
+ALTER FUNCTION log_craft_doc_linked() SECURITY DEFINER SET search_path = public;
+ALTER FUNCTION log_craft_doc_changed() SECURITY DEFINER SET search_path = public;
+ALTER FUNCTION log_file_added() SECURITY DEFINER SET search_path = public;
+
+-- Prompt template notifications
+ALTER FUNCTION notify_prompt_template_change() SECURITY DEFINER SET search_path = public;
+
+--------------------------------------------------------------------------------
 -- Verification queries (run manually)
 --------------------------------------------------------------------------------
 -- Check role permissions:

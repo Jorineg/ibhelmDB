@@ -580,21 +580,45 @@ CREATE TABLE prompt_templates (
     id TEXT PRIMARY KEY,
     owner_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
     title TEXT NOT NULL,
-    category TEXT NOT NULL CHECK (category IN ('prompt', 'component', 'doc')),
+    category TEXT NOT NULL CHECK (category IN ('prompt', 'skill', 'doc')),
     content TEXT NOT NULL DEFAULT '',
     description TEXT,
+    summary TEXT,
+    hidden BOOLEAN NOT NULL DEFAULT FALSE,
+    tags TEXT[] NOT NULL DEFAULT '{}',
+    prompt_role TEXT CHECK (prompt_role IS NULL OR prompt_role IN ('system', 'user')),
+    db_functions TEXT[] NOT NULL DEFAULT '{}',
+    py_functions TEXT[] NOT NULL DEFAULT '{}',
     is_system BOOLEAN NOT NULL DEFAULT FALSE,
     db_created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    db_updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    db_updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT prompt_role_only_for_prompts CHECK (
+        category = 'prompt' OR prompt_role IS NULL
+    ),
+    CONSTRAINT id_prefix_matches_category CHECK (
+        (category = 'prompt' AND id LIKE 'prompt.%') OR
+        (category = 'skill' AND id LIKE 'skill.%') OR
+        (category = 'doc' AND id LIKE 'doc.%')
+    ),
+    CONSTRAINT functions_only_for_skills CHECK (
+        category = 'skill' OR (db_functions = '{}' AND py_functions = '{}')
+    )
 );
 
 CREATE INDEX idx_prompt_templates_category ON prompt_templates(category);
 CREATE INDEX idx_prompt_templates_owner ON prompt_templates(owner_id) WHERE owner_id IS NOT NULL;
+CREATE INDEX idx_prompt_templates_hidden ON prompt_templates(hidden) WHERE NOT hidden;
 
-COMMENT ON TABLE prompt_templates IS 'Composable prompt templates, reusable components, and reference docs for LLM systems';
-COMMENT ON COLUMN prompt_templates.id IS 'Human-readable slug: chat.system_prompt, tool_doc.read_functions, doc.dashboard_manual';
+COMMENT ON TABLE prompt_templates IS 'Composable prompt templates, skills, and reference docs for LLM systems';
+COMMENT ON COLUMN prompt_templates.id IS 'Slug with category prefix: prompt.chat-system, skill.sandbox-read, doc.project-tiers';
 COMMENT ON COLUMN prompt_templates.owner_id IS 'NULL = system-owned (admin-managed), UUID = user-owned';
-COMMENT ON COLUMN prompt_templates.category IS 'prompt = full LLM prompts, component = reusable building blocks, doc = reference documentation';
+COMMENT ON COLUMN prompt_templates.category IS 'prompt = LLM entry points, skill = actionable capability modules, doc = pure reference information';
+COMMENT ON COLUMN prompt_templates.summary IS 'Short (1-2 line) summary for skill/doc index listings';
+COMMENT ON COLUMN prompt_templates.hidden IS 'Hidden from user-facing indexes; still loadable by ID';
+COMMENT ON COLUMN prompt_templates.tags IS 'Freeform tags for filtering and grouping';
+COMMENT ON COLUMN prompt_templates.prompt_role IS 'For prompts only: system (agent identity) or user (message template)';
+COMMENT ON COLUMN prompt_templates.db_functions IS 'For skills only: PostgreSQL functions documented in this skill';
+COMMENT ON COLUMN prompt_templates.py_functions IS 'For skills only: Python bridge functions documented in this skill';
 COMMENT ON COLUMN prompt_templates.is_system IS 'System templates cannot be deleted (but can be edited by admins)';
 
 -- =====================================

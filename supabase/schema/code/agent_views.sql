@@ -523,7 +523,8 @@ WITH agent_objects(obj_name, obj_type, sort_order, description) AS (
         ('get_public_emails()', 'function', 11, 'Returns text[] of team/public email addresses (e.g. hzb@ibhelm.de, desy@ibhelm.de). Use to identify project-related emails.'),
         ('get_sync_status()', 'function', 12, 'Returns TABLE(source, last_event_time, checkpoint_updated_at, pending_count, processing_count, failed_count, ...). System health: data freshness per source (teamwork/missive/craft/files/thumbnails).'),
         ('get_full_schema()', 'function', 13, 'Returns full database schema as text. Optional param: schema name (missive/public/teamwork). Use when you need tables/columns not covered by agent views.'),
-        ('submit_agent_feedback(feedback, category)', 'function', 14, 'NOT for querying — call this to submit feedback about your environment. Report missing context that should have been provided upfront, missing views/joins that would simplify queries, unclear/confusing documentation, or general suggestions. Category is freeform (e.g. missing_context, missing_view, unclear_docs, suggestion). Context, model, and session are captured automatically. Call via: db("SELECT submit_agent_feedback($1, $2)", feedback_text, category)')
+        ('get_project_context(project_id)', 'function', 14, 'Rich project context as text. Returns Tier 1/2 profiles, Tier 3 activity (10), Tier 4 event histogram, task stats with tasklist breakdown, time tracking (totals + per person + top 5 tasks by effort), overdue tasks (6mo), recent tasks/Anforderungen/Hinweise (10 each), recent emails with body preview (15), Craft docs (15), recent files (15). ~2k-9k tokens. Call: db("SELECT get_project_context($1)", project_id)'),
+        ('submit_agent_feedback(feedback, category)', 'function', 15, 'NOT for querying — call this to submit feedback about your environment. Report missing context that should have been provided upfront, missing views/joins that would simplify queries, unclear/confusing documentation, or general suggestions. Category is freeform (e.g. missing_context, missing_view, unclear_docs, suggestion). Context, model, and session are captured automatically. Call via: db("SELECT submit_agent_feedback($1, $2)", feedback_text, category)')
 ),
 view_columns AS (
     SELECT c.table_name, string_agg(
@@ -563,6 +564,447 @@ COMMENT ON FUNCTION get_agent_schema IS '@schema_doc Compact schema documentatio
 
 
 -- ============================================================================
+-- get_project_context() — Rich, token-efficient project context for LLM
+-- ============================================================================
+
+CREATE OR REPLACE FUNCTION get_project_context(p_project_id INT)
+RETURNS TEXT
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    v_result TEXT := '';
+    v_section TEXT;
+    v_rec RECORD;
+    v_count INT;
+    v_overdue_ids INT[] := ARRAY[]::INT[];
+BEGIN
+    -- ── Header: project basics ──
+    SELECT
+        p.name, p.status, p.description, p.start_date, p.end_date, p.created_at,
+        c.name AS company,
+        client.display_name AS client_name, client.primary_email AS client_email,
+        pe.nas_folder_path, pe.internal_notes,
+        pe.profile_markdown, pe.profile_generated_at,
+        pe.status_markdown, pe.status_generated_at,
+        dl.name AS default_location, dl.search_text AS location_path,
+        dcg.code AS cost_group_code, dcg.name AS cost_group_name
+    INTO v_rec
+    FROM teamwork.projects p
+    LEFT JOIN project_extensions pe ON p.id = pe.tw_project_id
+    LEFT JOIN teamwork.companies c ON p.company_id = c.id
+    LEFT JOIN unified_persons client ON pe.client_person_id = client.id
+    LEFT JOIN locations dl ON pe.default_location_id = dl.id
+    LEFT JOIN cost_groups dcg ON pe.default_cost_group_id = dcg.id
+    WHERE p.id = p_project_id;
+
+    IF NOT FOUND THEN
+        RETURN 'Error: project ' || p_project_id || ' not found';
+    END IF;
+
+    v_result := '# ' || v_rec.name || ' (' || p_project_id || ')' || E'\n';
+
+    -- Compact metadata line — skip nulls
+    v_section := 'status:' || COALESCE(v_rec.status, '?');
+    IF v_rec.company IS NOT NULL THEN
+        v_section := v_section || ' | company:' || v_rec.company;
+    END IF;
+    IF v_rec.client_name IS NOT NULL THEN
+        v_section := v_section || ' | client:' || v_rec.client_name;
+        IF v_rec.client_email IS NOT NULL THEN
+            v_section := v_section || ' (' || v_rec.client_email || ')';
+        END IF;
+    END IF;
+    v_result := v_result || v_section || E'\n';
+
+    v_section := 'created:' || to_char(v_rec.created_at, 'YYYY-MM-DD');
+    IF v_rec.start_date IS NOT NULL THEN
+        v_section := v_section || ' | start:' || v_rec.start_date;
+    END IF;
+    IF v_rec.end_date IS NOT NULL THEN
+        v_section := v_section || ' | end:' || v_rec.end_date;
+    END IF;
+    v_result := v_result || v_section || E'\n';
+
+    IF v_rec.nas_folder_path IS NOT NULL THEN
+        v_result := v_result || 'nas:' || v_rec.nas_folder_path || E'\n';
+    END IF;
+
+    IF v_rec.default_location IS NOT NULL OR v_rec.cost_group_code IS NOT NULL THEN
+        v_section := '';
+        IF v_rec.location_path IS NOT NULL THEN
+            v_section := 'location:' || v_rec.location_path;
+        END IF;
+        IF v_rec.cost_group_code IS NOT NULL THEN
+            IF v_section != '' THEN v_section := v_section || ' | '; END IF;
+            v_section := v_section || 'default_kgr:' || v_rec.cost_group_code || ' ' || v_rec.cost_group_name;
+        END IF;
+        v_result := v_result || v_section || E'\n';
+    END IF;
+
+    IF v_rec.description IS NOT NULL AND LENGTH(v_rec.description) > 0 THEN
+        v_result := v_result || 'desc:' || LEFT(v_rec.description, 300) || E'\n';
+    END IF;
+    IF v_rec.internal_notes IS NOT NULL AND LENGTH(v_rec.internal_notes) > 0 THEN
+        v_result := v_result || 'notes:' || LEFT(v_rec.internal_notes, 300) || E'\n';
+    END IF;
+
+    -- ── Tier 1 — Profile ──
+    IF v_rec.profile_markdown IS NOT NULL AND LENGTH(v_rec.profile_markdown) > 0 THEN
+        v_result := v_result || E'\n## Tier 1 — Profile\n' || v_rec.profile_markdown || E'\n';
+    ELSE
+        v_result := v_result || E'\n## Tier 1 — Profile\n(not yet generated)\n';
+    END IF;
+
+    -- ── Tier 2 — Status ──
+    IF v_rec.status_markdown IS NOT NULL AND LENGTH(v_rec.status_markdown) > 0 THEN
+        v_result := v_result || E'\n## Tier 2 — Status\n' || v_rec.status_markdown || E'\n';
+    ELSE
+        v_result := v_result || E'\n## Tier 2 — Status\n(not yet generated)\n';
+    END IF;
+
+    -- ── Tier 3 — Recent Activity ──
+    SELECT string_agg(line, E'\n' ORDER BY rn) INTO v_section
+    FROM (
+        SELECT ROW_NUMBER() OVER (ORDER BY logged_at DESC) AS rn,
+            '[' || to_char(logged_at, 'YYYY-MM-DD') || '] '
+            || category || ': ' || summary
+            || CASE WHEN kgr_codes IS NOT NULL AND array_length(kgr_codes, 1) > 0
+                    THEN ' {' || array_to_string(kgr_codes, ',') || '}'
+                    ELSE '' END
+            AS line
+        FROM project_activity_log
+        WHERE tw_project_id = p_project_id
+        ORDER BY logged_at DESC LIMIT 10
+    ) sub;
+
+    IF v_section IS NOT NULL THEN
+        v_result := v_result || E'\n## Tier 3 — Activity\n' || v_section || E'\n';
+    END IF;
+
+    -- ── Tier 4 — Event histogram ──
+    SELECT
+        format('7d:%s | 30d:%s | 90d:%s | total:%s',
+            COUNT(*) FILTER (WHERE occurred_at > NOW() - INTERVAL '7 days'),
+            COUNT(*) FILTER (WHERE occurred_at > NOW() - INTERVAL '30 days'),
+            COUNT(*) FILTER (WHERE occurred_at > NOW() - INTERVAL '90 days'),
+            COUNT(*)
+        )
+    INTO v_section
+    FROM project_event_log WHERE tw_project_id = p_project_id;
+
+    IF v_section IS NOT NULL AND v_section NOT LIKE '7d:0 |%total:0' THEN
+        -- Add source breakdown
+        SELECT v_section || E'\n' || string_agg(source_table || ':' || cnt::text, ' | ' ORDER BY cnt DESC)
+        INTO v_section
+        FROM (
+            SELECT source_table, COUNT(*) AS cnt
+            FROM project_event_log WHERE tw_project_id = p_project_id
+            GROUP BY source_table
+        ) src;
+        v_result := v_result || E'\n## Tier 4 — Events\n' || v_section || E'\n';
+    END IF;
+
+    -- ── Task Stats ──
+    WITH task_stats AS (
+        SELECT
+            COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE t.status = 'completed') AS completed,
+            COUNT(*) FILTER (WHERE t.status != 'completed') AS open_cnt,
+            COUNT(*) FILTER (WHERE t.due_date < NOW() AND t.status != 'completed') AS overdue
+        FROM teamwork.tasks t
+        WHERE t.project_id = p_project_id AND t.deleted_at IS NULL
+    ),
+    type_counts AS (
+        SELECT COALESCE(tt.name, 'Untyped') AS type_name, COUNT(*) AS cnt
+        FROM teamwork.tasks t
+        LEFT JOIN task_extensions te ON t.id = te.tw_task_id
+        LEFT JOIN task_types tt ON te.task_type_id = tt.id
+        WHERE t.project_id = p_project_id AND t.deleted_at IS NULL
+        GROUP BY type_name ORDER BY cnt DESC
+    ),
+    tasklist_counts AS (
+        SELECT tl.name, COUNT(*) FILTER (WHERE t.status != 'completed') AS open_cnt, COUNT(*) AS total
+        FROM teamwork.tasks t
+        JOIN teamwork.tasklists tl ON t.tasklist_id = tl.id
+        WHERE t.project_id = p_project_id AND t.deleted_at IS NULL
+        GROUP BY tl.name ORDER BY total DESC
+    )
+    SELECT
+        format('total:%s | completed:%s | open:%s | overdue:%s', s.total, s.completed, s.open_cnt, s.overdue)
+        || E'\n' || (SELECT string_agg(type_name || ':' || cnt, ' | ') FROM type_counts)
+        || E'\n' || (SELECT string_agg(name || '(' || open_cnt || '/' || total || ')', ' | ') FROM tasklist_counts)
+    INTO v_section
+    FROM task_stats s;
+
+    IF v_section IS NOT NULL THEN
+        v_result := v_result || E'\n## Task Stats\n' || v_section || E'\n';
+    END IF;
+
+    -- ── Time Tracking ──
+    WITH time_totals AS (
+        SELECT ROUND(SUM(minutes)/60.0, 1) AS total_h,
+            COALESCE(ROUND(SUM(minutes) FILTER (WHERE time_logged > NOW() - INTERVAL '30 days')/60.0, 1), 0) AS h30,
+            COALESCE(ROUND(SUM(minutes) FILTER (WHERE time_logged > NOW() - INTERVAL '90 days')/60.0, 1), 0) AS h90
+        FROM teamwork.timelogs WHERE project_id = p_project_id AND NOT deleted
+    ),
+    time_by_person AS (
+        SELECT u.first_name AS person, ROUND(SUM(tl.minutes)/60.0, 1) AS hours
+        FROM teamwork.timelogs tl JOIN teamwork.users u ON tl.user_id = u.id
+        WHERE tl.project_id = p_project_id AND NOT tl.deleted
+        GROUP BY u.first_name ORDER BY hours DESC
+    ),
+    time_by_task AS (
+        SELECT t.id AS tid, t.name, ROUND(SUM(tl.minutes)/60.0, 1) AS hours
+        FROM teamwork.timelogs tl JOIN teamwork.tasks t ON tl.task_id = t.id
+        WHERE tl.project_id = p_project_id AND NOT tl.deleted
+          AND tl.time_logged > NOW() - INTERVAL '30 days'
+        GROUP BY t.id, t.name ORDER BY hours DESC LIMIT 5
+    )
+    SELECT format('total:%sh | 30d:%sh | 90d:%sh', tt.total_h, tt.h30, tt.h90)
+        || E'\n' || (SELECT string_agg(person || ':' || hours || 'h', ' | ') FROM time_by_person)
+        || COALESCE(E'\n' || (SELECT string_agg(tid || '|' || name || '|' || hours || 'h', E'\n') FROM time_by_task), '')
+    INTO v_section
+    FROM time_totals tt WHERE tt.total_h > 0;
+
+    IF v_section IS NOT NULL THEN
+        v_result := v_result || E'\n## Time Tracking\n' || v_section || E'\n';
+    END IF;
+
+    -- ── Overdue Tasks ──
+    SELECT array_agg(tid), string_agg(line, E'\n' ORDER BY due_date)
+    INTO v_overdue_ids, v_section
+    FROM (
+        SELECT t.id AS tid,
+            t.id || '|' || t.name
+            || '|due:' || to_char(t.due_date, 'YYYY-MM-DD')
+            || COALESCE('|' || assignee_agg.names, '')
+            || COALESCE('|' || tl.name, '')
+            AS line, t.due_date
+        FROM teamwork.tasks t
+        LEFT JOIN teamwork.tasklists tl ON t.tasklist_id = tl.id
+        LEFT JOIN LATERAL (
+            SELECT string_agg(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,''), ', ') AS names
+            FROM teamwork.task_assignees ta JOIN teamwork.users u ON ta.user_id = u.id
+            WHERE ta.task_id = t.id
+        ) assignee_agg ON TRUE
+        WHERE t.project_id = p_project_id AND t.deleted_at IS NULL
+          AND t.due_date < NOW() AND t.due_date > NOW() - INTERVAL '6 months'
+          AND t.status != 'completed'
+        ORDER BY t.due_date DESC LIMIT 20
+    ) sub;
+
+    v_overdue_ids := COALESCE(v_overdue_ids, ARRAY[]::INT[]);
+
+    IF v_section IS NOT NULL THEN
+        v_result := v_result || E'\n## Overdue Tasks (last 6mo)\n' || v_section || E'\n';
+    END IF;
+
+    -- ── Helper: build task list for a given type slug ──
+    -- Tasks (type slug 'other')
+    SELECT string_agg(line, E'\n' ORDER BY rn) INTO v_section
+    FROM (
+        SELECT ROW_NUMBER() OVER (ORDER BY t.updated_at DESC NULLS LAST) AS rn,
+            t.id || '|' || COALESCE(t.name, '')
+            || '|' || COALESCE(t.status, '')
+            || '|upd:' || to_char(t.updated_at, 'YYYY-MM-DD')
+            || COALESCE('|' || assignee_agg.names, '')
+            || COALESCE('|' || tl.name, '')
+            || CASE WHEN LENGTH(t.description) > 10
+                    THEN '|desc:' || LEFT(REPLACE(REPLACE(t.description, E'\n', '↵'), E'\r', ''), 200)
+                    ELSE '' END
+            AS line
+        FROM teamwork.tasks t
+        LEFT JOIN task_extensions te ON t.id = te.tw_task_id
+        LEFT JOIN task_types tt ON te.task_type_id = tt.id
+        LEFT JOIN teamwork.tasklists tl ON t.tasklist_id = tl.id
+        LEFT JOIN LATERAL (
+            SELECT string_agg(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,''), ', ') AS names
+            FROM teamwork.task_assignees ta JOIN teamwork.users u ON ta.user_id = u.id
+            WHERE ta.task_id = t.id
+        ) assignee_agg ON TRUE
+        WHERE t.project_id = p_project_id AND t.deleted_at IS NULL
+          AND COALESCE(tt.slug, 'other') = 'other'
+          AND t.id != ALL(v_overdue_ids)
+        ORDER BY t.updated_at DESC NULLS LAST LIMIT 10
+    ) sub;
+
+    IF v_section IS NOT NULL THEN
+        v_result := v_result || E'\n## Tasks — Recent 10\n' || v_section || E'\n';
+    END IF;
+
+    -- Anforderungen (type slug 'info')
+    SELECT string_agg(line, E'\n' ORDER BY rn) INTO v_section
+    FROM (
+        SELECT ROW_NUMBER() OVER (ORDER BY t.updated_at DESC NULLS LAST) AS rn,
+            t.id || '|' || COALESCE(t.name, '')
+            || '|' || COALESCE(t.status, '')
+            || '|upd:' || to_char(t.updated_at, 'YYYY-MM-DD')
+            || COALESCE('|' || assignee_agg.names, '')
+            || COALESCE('|' || tl.name, '')
+            || CASE WHEN LENGTH(t.description) > 10
+                    THEN '|desc:' || LEFT(REPLACE(REPLACE(t.description, E'\n', '↵'), E'\r', ''), 200)
+                    ELSE '' END
+            AS line
+        FROM teamwork.tasks t
+        JOIN task_extensions te ON t.id = te.tw_task_id
+        JOIN task_types tt ON te.task_type_id = tt.id
+        LEFT JOIN teamwork.tasklists tl ON t.tasklist_id = tl.id
+        LEFT JOIN LATERAL (
+            SELECT string_agg(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,''), ', ') AS names
+            FROM teamwork.task_assignees ta JOIN teamwork.users u ON ta.user_id = u.id
+            WHERE ta.task_id = t.id
+        ) assignee_agg ON TRUE
+        WHERE t.project_id = p_project_id AND t.deleted_at IS NULL
+          AND tt.slug = 'info'
+          AND t.id != ALL(v_overdue_ids)
+        ORDER BY t.updated_at DESC NULLS LAST LIMIT 10
+    ) sub;
+
+    IF v_section IS NOT NULL THEN
+        v_result := v_result || E'\n## Anforderungen — Recent 10\n' || v_section || E'\n';
+    END IF;
+
+    -- Hinweise (type slug 'todo')
+    SELECT string_agg(line, E'\n' ORDER BY rn) INTO v_section
+    FROM (
+        SELECT ROW_NUMBER() OVER (ORDER BY t.updated_at DESC NULLS LAST) AS rn,
+            t.id || '|' || COALESCE(t.name, '')
+            || '|' || COALESCE(t.status, '')
+            || '|upd:' || to_char(t.updated_at, 'YYYY-MM-DD')
+            || COALESCE('|' || assignee_agg.names, '')
+            || COALESCE('|' || tl.name, '')
+            || CASE WHEN LENGTH(t.description) > 10
+                    THEN '|desc:' || LEFT(REPLACE(REPLACE(t.description, E'\n', '↵'), E'\r', ''), 200)
+                    ELSE '' END
+            AS line
+        FROM teamwork.tasks t
+        JOIN task_extensions te ON t.id = te.tw_task_id
+        JOIN task_types tt ON te.task_type_id = tt.id
+        LEFT JOIN teamwork.tasklists tl ON t.tasklist_id = tl.id
+        LEFT JOIN LATERAL (
+            SELECT string_agg(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,''), ', ') AS names
+            FROM teamwork.task_assignees ta JOIN teamwork.users u ON ta.user_id = u.id
+            WHERE ta.task_id = t.id
+        ) assignee_agg ON TRUE
+        WHERE t.project_id = p_project_id AND t.deleted_at IS NULL
+          AND tt.slug = 'todo'
+          AND t.id != ALL(v_overdue_ids)
+        ORDER BY t.updated_at DESC NULLS LAST LIMIT 10
+    ) sub;
+
+    IF v_section IS NOT NULL THEN
+        v_result := v_result || E'\n## Hinweise — Recent 10\n' || v_section || E'\n';
+    END IF;
+
+    -- ── Emails — Recent 15 ──
+    SELECT string_agg(line, E'\n' ORDER BY rn) INTO v_section
+    FROM (
+        SELECT ROW_NUMBER() OVER (ORDER BY m.delivered_at DESC) AS rn,
+            LEFT(m.id::text, 8) || '…|' || COALESCE(m.subject, '(no subject)')
+            || '|' || COALESCE(sender.name, sender.email::text, '?')
+            || '|' || to_char(m.delivered_at, 'YYYY-MM-DD HH24:MI')
+            || CASE WHEN att_agg.cnt > 0 THEN '|att:' || att_agg.cnt ELSE '' END
+            || CASE WHEN LENGTH(COALESCE(m.body_plain_text, '')) > 10
+                    THEN E'\n  ' || LEFT(REPLACE(REPLACE(
+                        LEFT(m.body_plain_text, LEAST(
+                            NULLIF(strpos(m.body_plain_text, E'\nMit freundlichen Grüßen'), 0),
+                            NULLIF(strpos(m.body_plain_text, E'\r\nMit freundlichen Grüßen'), 0),
+                            NULLIF(strpos(m.body_plain_text, E'\nViele Grüße'), 0),
+                            NULLIF(strpos(m.body_plain_text, E'\nBeste Grüße'), 0),
+                            NULLIF(strpos(m.body_plain_text, E'\nFreundliche Grüße'), 0),
+                            NULLIF(strpos(m.body_plain_text, E'\nBest regards'), 0),
+                            NULLIF(strpos(m.body_plain_text, E'\r\nBest regards'), 0),
+                            NULLIF(strpos(m.body_plain_text, E'\nKind regards'), 0),
+                            NULLIF(strpos(m.body_plain_text, E'\nRegards,'), 0),
+                            NULLIF(strpos(m.body_plain_text, E'\nThanks,'), 0),
+                            NULLIF(strpos(m.body_plain_text, E'\nThank you,'), 0),
+                            NULLIF(strpos(m.body_plain_text, E'\nSent from my'), 0),
+                            NULLIF(strpos(m.body_plain_text, E'\nVon meinem iPhone'), 0),
+                            NULLIF(strpos(m.body_plain_text, E'\nGet Outlook for'), 0),
+                            NULLIF(strpos(m.body_plain_text, E'\n-----Original'), 0),
+                            NULLIF(strpos(m.body_plain_text, E'\n-- \n'), 0),
+                            NULLIF(strpos(m.body_plain_text, E'\n--\n'), 0),
+                            NULLIF(strpos(m.body_plain_text, E'\r\n--\r\n'), 0),
+                            NULLIF(strpos(m.body_plain_text, E'\n________________'), 0),
+                            LENGTH(m.body_plain_text) + 1
+                        ) - 1),
+                        E'\n', ' '), E'\r', ''), 400)
+                    ELSE '' END
+            AS line
+        FROM project_conversations pc
+        JOIN missive.conversations c ON pc.m_conversation_id = c.id
+        JOIN missive.messages m ON m.conversation_id = c.id
+        LEFT JOIN missive.contacts sender ON m.from_contact_id = sender.id
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*)::int AS cnt FROM missive.attachments a WHERE a.message_id = m.id
+        ) att_agg ON TRUE
+        WHERE pc.tw_project_id = p_project_id
+        ORDER BY m.delivered_at DESC LIMIT 15
+    ) sub;
+
+    IF v_section IS NOT NULL THEN
+        v_result := v_result || E'\n## Emails — Recent 15\n' || v_section || E'\n';
+    END IF;
+
+    -- ── Craft Docs ──
+    SELECT string_agg(line, E'\n' ORDER BY rn) INTO v_section
+    FROM (
+        SELECT ROW_NUMBER() OVER (ORDER BY cd.craft_last_modified_at DESC NULLS LAST) AS rn,
+            LEFT(cd.id, 8) || '…|' || cd.title
+            || '|mod:' || COALESCE(to_char(cd.craft_last_modified_at, 'YYYY-MM-DD'), '?')
+            || '|len:' || COALESCE(LENGTH(cd.markdown_content), 0)
+            AS line
+        FROM project_craft_documents pcd
+        JOIN craft_documents cd ON pcd.craft_document_id = cd.id
+        WHERE pcd.tw_project_id = p_project_id AND NOT cd.is_deleted
+        ORDER BY cd.craft_last_modified_at DESC NULLS LAST LIMIT 15
+    ) sub;
+
+    IF v_section IS NOT NULL THEN
+        v_result := v_result || E'\n## Craft Docs\n' || v_section || E'\n';
+    END IF;
+
+    -- ── Recent Files (15, filtered, deduplicated by name) ──
+    SELECT string_agg(line, E'\n' ORDER BY rn) INTO v_section
+    FROM (
+        SELECT ROW_NUMBER() OVER () AS rn, filename || '|' || to_char(latest, 'YYYY-MM-DD') AS line
+        FROM (
+            SELECT DISTINCT ON (SUBSTRING(f.full_path FROM '[^/]+$'))
+                SUBSTRING(f.full_path FROM '[^/]+$') AS filename,
+                GREATEST(f.fs_mtime, f.db_created_at) AS latest
+            FROM files f
+            WHERE f.project_id = p_project_id AND f.deleted_at IS NULL
+              AND COALESCE(LOWER(SUBSTRING(f.full_path FROM '\.([^./]+)$')), '') != ALL(get_file_ignore_extensions())
+              AND NOT EXISTS (SELECT 1 FROM unnest(get_file_ignore_path_patterns()) AS pat WHERE f.full_path ILIKE pat)
+            ORDER BY SUBSTRING(f.full_path FROM '[^/]+$'), GREATEST(f.fs_mtime, f.db_created_at) DESC NULLS LAST
+        ) deduped ORDER BY latest DESC NULLS LAST LIMIT 15
+    ) sub;
+
+    IF v_section IS NOT NULL THEN
+        v_result := v_result || E'\n## Files — Recent 15\n' || v_section || E'\n';
+    END IF;
+
+    -- ── Summary counts (skip zero values) ──
+    SELECT string_agg(part, ' | ' ORDER BY ord) INTO v_section FROM (
+        SELECT 1 AS ord, 'files:' || cnt AS part FROM (SELECT COUNT(*)::int AS cnt FROM files f WHERE f.project_id = p_project_id AND f.deleted_at IS NULL
+            AND COALESCE(LOWER(SUBSTRING(f.full_path FROM '\.([^./]+)$')), '') != ALL(get_file_ignore_extensions())
+            AND NOT EXISTS (SELECT 1 FROM unnest(get_file_ignore_path_patterns()) AS pat WHERE f.full_path ILIKE pat)) x WHERE cnt > 0
+        UNION ALL SELECT 2, 'conversations:' || cnt FROM (SELECT COUNT(*)::int AS cnt FROM project_conversations WHERE tw_project_id = p_project_id) x WHERE cnt > 0
+        UNION ALL SELECT 3, 'craft_docs:' || cnt FROM (SELECT COUNT(*)::int AS cnt FROM project_craft_documents pcd JOIN craft_documents cd ON pcd.craft_document_id = cd.id WHERE pcd.tw_project_id = p_project_id AND NOT cd.is_deleted) x WHERE cnt > 0
+        UNION ALL SELECT 4, 'contractors:' || cnt FROM (SELECT COUNT(*)::int AS cnt FROM project_contractors WHERE tw_project_id = p_project_id) x WHERE cnt > 0
+    ) parts;
+
+    IF v_section IS NOT NULL THEN
+        v_result := v_result || E'\n## Counts\n' || v_section || E'\n';
+    END IF;
+
+    RETURN v_result;
+END;
+$$;
+
+COMMENT ON FUNCTION get_project_context IS '@schema_doc Rich project context for LLM consumption. Returns token-efficient text with Tier 1/2/3/4, recent tasks/emails/craft docs, stats. Use: SELECT get_project_context(project_id)';
+
+
+-- ============================================================================
 -- Grants: allow mcp_readonly to read agent views
 -- ============================================================================
 
@@ -574,5 +1016,7 @@ GRANT SELECT ON v_project_files TO mcp_readonly;
 GRANT SELECT ON v_agent_items TO mcp_readonly;
 GRANT EXECUTE ON FUNCTION get_full_schema TO mcp_readonly;
 GRANT EXECUTE ON FUNCTION get_agent_schema TO mcp_readonly;
+GRANT EXECUTE ON FUNCTION get_project_context TO mcp_readonly;
+GRANT EXECUTE ON FUNCTION get_project_context TO authenticated;
 GRANT EXECUTE ON FUNCTION get_file_ignore_extensions TO mcp_readonly;
 GRANT EXECUTE ON FUNCTION get_file_ignore_path_patterns TO mcp_readonly;

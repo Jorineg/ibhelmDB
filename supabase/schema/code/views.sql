@@ -350,7 +350,8 @@ SELECT
     (SELECT COUNT(*) FROM teamwork.tasks t WHERE t.project_id = twp.id AND t.deleted_at IS NULL) AS task_count,
     (SELECT COUNT(*) FROM teamwork.tasks t WHERE t.project_id = twp.id AND t.deleted_at IS NULL AND t.status = 'completed') AS completed_task_count,
     twp.created_at, twp.updated_at,
-    pe.db_created_at AS extension_created_at, pe.db_updated_at AS extension_updated_at
+    pe.db_created_at AS extension_created_at, pe.db_updated_at AS extension_updated_at,
+    twp.company_id
 FROM teamwork.projects twp
 LEFT JOIN teamwork.companies twc ON twp.company_id = twc.id
 LEFT JOIN project_extensions pe ON twp.id = pe.tw_project_id

@@ -37,13 +37,13 @@ WHERE EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'cleanup_stuck_indexing');
 SELECT cron.unschedule('reset_all_stuck_items') 
 WHERE EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'reset_all_stuck_items');
 
--- Reset ALL stuck items every 5 minutes (30 min threshold)
+-- Reset ALL stuck items every 5 minutes (120 min threshold)
 -- Handles: email_attachment_files (downloading), file_contents (uploading, indexing),
 --          teamworkmissiveconnector.queue_items (processing)
 SELECT cron.schedule(
     'reset_all_stuck_items',
     '*/5 * * * *',
-    $$SELECT reset_all_stuck_items(30)$$
+    $$SELECT reset_all_stuck_items(120)$$
 );
 
 -- Verify

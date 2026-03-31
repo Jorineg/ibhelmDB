@@ -658,7 +658,7 @@ BEGIN
     LOOP
         FOR v_project IN 
             SELECT id, name FROM teamwork.projects
-            WHERE LOWER(name) = LOWER(v_label.label_name)
+            WHERE fold_de_for_match(name) = fold_de_for_match(v_label.label_name)
         LOOP
             SELECT COUNT(*) INTO v_existing_count FROM project_conversations
             WHERE m_conversation_id = p_conversation_id AND tw_project_id = v_project.id;
@@ -933,7 +933,7 @@ END;
 $$ LANGUAGE plpgsql STABLE;
 
 CREATE OR REPLACE FUNCTION rerun_all_task_type_extractions()
-RETURNS UUID AS $$
+RETURNS UUID SECURITY DEFINER SET search_path = public SET statement_timeout = 0 AS $$
 DECLARE
     v_run_id UUID;
     v_total_count INTEGER;
@@ -966,7 +966,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION rerun_all_person_linking()
-RETURNS UUID SECURITY DEFINER SET search_path = public AS $$
+RETURNS UUID SECURITY DEFINER SET search_path = public SET statement_timeout = 0 AS $$
 DECLARE
     v_run_id UUID;
     v_total_count INTEGER;
@@ -1023,7 +1023,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION rerun_all_project_conversation_linking()
-RETURNS UUID SECURITY DEFINER SET search_path = public AS $$
+RETURNS UUID SECURITY DEFINER SET search_path = public SET statement_timeout = 0 AS $$
 DECLARE
     v_run_id UUID;
     v_total_count INTEGER;
@@ -1062,7 +1062,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION rerun_all_cost_group_linking()
-RETURNS UUID SECURITY DEFINER SET search_path = public AS $$
+RETURNS UUID SECURITY DEFINER SET search_path = public SET statement_timeout = 0 AS $$
 DECLARE
     v_run_id UUID;
     v_task_count INTEGER;
@@ -1124,7 +1124,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION rerun_all_location_linking()
-RETURNS UUID SECURITY DEFINER SET search_path = public AS $$
+RETURNS UUID SECURITY DEFINER SET search_path = public SET statement_timeout = 0 AS $$
 DECLARE
     v_run_id UUID;
     v_task_count INTEGER;
@@ -3152,10 +3152,11 @@ RETURNS TEXT
 LANGUAGE sql
 IMMUTABLE
 AS $$
+    -- NFC-normalize first so NFD umlauts (e.g. a + combining diaeresis) equal precomposed ä
     SELECT regexp_replace(
         regexp_replace(
         regexp_replace(
-        regexp_replace(lower(COALESCE(p_text, '')),
+        regexp_replace(lower(normalize(COALESCE(p_text, ''), NFC)),
             'ä', 'ae', 'g'),
             'ö', 'oe', 'g'),
             'ü', 'ue', 'g'),
@@ -3178,7 +3179,7 @@ BEGIN
     CROSS JOIN LATERAL (
         SELECT COALESCE(normalized_nas_folder_segment(pe.nas_folder_path), p.name) AS storage_key
     ) k
-    WHERE v_full_path ILIKE '%' || k.storage_key || '%'
+    WHERE fold_de_for_match(v_full_path) LIKE '%' || fold_de_for_match(k.storage_key) || '%'
     ORDER BY LENGTH(k.storage_key) DESC
     LIMIT 1;
 
@@ -3422,7 +3423,7 @@ $$ LANGUAGE plpgsql;
 
 -- Bulk rerun function for all files
 CREATE OR REPLACE FUNCTION rerun_all_file_linking()
-RETURNS UUID SECURITY DEFINER SET search_path = public AS $$
+RETURNS UUID SECURITY DEFINER SET search_path = public SET statement_timeout = 0 AS $$
 DECLARE
     v_run_id UUID;
     v_total_count INTEGER;
@@ -3612,7 +3613,7 @@ $$ LANGUAGE plpgsql;
 
 -- Bulk rerun function for all craft documents
 CREATE OR REPLACE FUNCTION rerun_all_craft_linking()
-RETURNS TABLE (total INTEGER, linked INTEGER) SECURITY DEFINER SET search_path = public AS $$
+RETURNS TABLE (total INTEGER, linked INTEGER) SECURITY DEFINER SET search_path = public SET statement_timeout = 0 AS $$
 DECLARE
     v_total INTEGER := 0;
     v_linked INTEGER := 0;
@@ -3673,7 +3674,7 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, missive, teamwork
         eaf.sub_type,
         eaf.retry_count,
         p.name AS project_name,
-        COALESCE(normalized_nas_folder_segment(pe.nas_folder_path), p.name) AS storage_folder_name,
+        COALESCE(normalized_nas_folder_segment(normalize(pe.nas_folder_path, NFC)), normalize(p.name, NFC)) AS storage_folder_name,
         msg.delivered_at,
         c.email AS sender_email,
         COALESCE(msg.subject, conv.subject, conv.latest_message_subject) AS email_subject
@@ -3991,9 +3992,9 @@ GRANT EXECUTE ON FUNCTION get_projects_by_ids(INTEGER[]) TO authenticated;
 -- 22. UNIFIED STUCK ITEM RESET (pg_cron)
 -- =====================================
 -- Resets items stuck in intermediate states across all components.
--- Called by pg_cron every 5 minutes. Threshold: 30 minutes.
+-- Called by pg_cron every 5 minutes. Threshold: 120 minutes.
 
-CREATE OR REPLACE FUNCTION reset_all_stuck_items(p_threshold_minutes INTEGER DEFAULT 30)
+CREATE OR REPLACE FUNCTION reset_all_stuck_items(p_threshold_minutes INTEGER DEFAULT 120)
 RETURNS JSONB AS $$
 DECLARE
     v_downloads INTEGER := 0;
@@ -4385,10 +4386,14 @@ RETURNS TRIGGER AS $$
 DECLARE
     v_assignees TEXT[];
     v_tasklist TEXT;
+    v_parent_name TEXT;
 BEGIN
     IF NEW.project_id IS NULL THEN RETURN NEW; END IF;
 
     SELECT name INTO v_tasklist FROM teamwork.tasklists WHERE id = NEW.tasklist_id;
+    IF NEW.parent_task IS NOT NULL THEN
+        SELECT name INTO v_parent_name FROM teamwork.tasks WHERE id = NEW.parent_task;
+    END IF;
     SELECT array_agg(u.first_name || ' ' || u.last_name)
       INTO v_assignees
       FROM teamwork.task_assignees ta
@@ -4399,6 +4404,7 @@ BEGIN
     VALUES (NEW.project_id, 'teamwork.tasks', NEW.id::text, 'created',
         jsonb_build_object(
             'name', NEW.name,
+            'parent_name', v_parent_name,
             'tasklist', COALESCE(v_tasklist, ''),
             'status', COALESCE(NEW.status, 'new'),
             'assignees', COALESCE(v_assignees, ARRAY[]::text[])
@@ -4414,6 +4420,7 @@ DECLARE
     v_changes JSONB := '[]'::jsonb;
     v_has_long_desc BOOLEAN := FALSE;
     v_old_content TEXT;
+    v_parent_name TEXT;
 BEGIN
     IF NEW.project_id IS NULL THEN RETURN NEW; END IF;
 
@@ -4451,9 +4458,13 @@ BEGIN
 
     IF jsonb_array_length(v_changes) = 0 THEN RETURN NEW; END IF;
 
+    IF NEW.parent_task IS NOT NULL THEN
+        SELECT name INTO v_parent_name FROM teamwork.tasks WHERE id = NEW.parent_task;
+    END IF;
+
     INSERT INTO project_event_log (tw_project_id, source_table, source_id, event_type, details, old_content, processed_by_diff)
     VALUES (NEW.project_id, 'teamwork.tasks', NEW.id::text, 'changed',
-        jsonb_build_object('name', NEW.name, 'changes', v_changes),
+        jsonb_build_object('name', NEW.name, 'parent_name', v_parent_name, 'changes', v_changes),
         CASE WHEN v_has_long_desc THEN v_old_content END,
         NOT v_has_long_desc);
     RETURN NEW;
@@ -4466,23 +4477,30 @@ RETURNS TRIGGER AS $$
 DECLARE
     v_task RECORD;
     v_user_name TEXT;
+    v_parent_name TEXT;
 BEGIN
     IF TG_OP = 'INSERT' THEN
-        SELECT t.project_id, t.name INTO v_task FROM teamwork.tasks t WHERE t.id = NEW.task_id;
+        SELECT t.project_id, t.name, t.parent_task INTO v_task FROM teamwork.tasks t WHERE t.id = NEW.task_id;
         IF v_task.project_id IS NULL THEN RETURN NEW; END IF;
+        IF v_task.parent_task IS NOT NULL THEN
+            SELECT name INTO v_parent_name FROM teamwork.tasks WHERE id = v_task.parent_task;
+        END IF;
         SELECT u.first_name || ' ' || u.last_name INTO v_user_name FROM teamwork.users u WHERE u.id = NEW.user_id;
         INSERT INTO project_event_log (tw_project_id, source_table, source_id, event_type, details)
         VALUES (v_task.project_id, 'teamwork.task_assignees', NEW.task_id::text, 'changed',
-            jsonb_build_object('name', v_task.name, 'changes', jsonb_build_array(
+            jsonb_build_object('name', v_task.name, 'parent_name', v_parent_name, 'changes', jsonb_build_array(
                 jsonb_build_object('field', 'assignee_added', 'new', COALESCE(v_user_name, NEW.user_id::text))
             )));
     ELSIF TG_OP = 'DELETE' THEN
-        SELECT t.project_id, t.name INTO v_task FROM teamwork.tasks t WHERE t.id = OLD.task_id;
+        SELECT t.project_id, t.name, t.parent_task INTO v_task FROM teamwork.tasks t WHERE t.id = OLD.task_id;
         IF v_task.project_id IS NULL THEN RETURN OLD; END IF;
+        IF v_task.parent_task IS NOT NULL THEN
+            SELECT name INTO v_parent_name FROM teamwork.tasks WHERE id = v_task.parent_task;
+        END IF;
         SELECT u.first_name || ' ' || u.last_name INTO v_user_name FROM teamwork.users u WHERE u.id = OLD.user_id;
         INSERT INTO project_event_log (tw_project_id, source_table, source_id, event_type, details)
         VALUES (v_task.project_id, 'teamwork.task_assignees', OLD.task_id::text, 'changed',
-            jsonb_build_object('name', v_task.name, 'changes', jsonb_build_array(
+            jsonb_build_object('name', v_task.name, 'parent_name', v_parent_name, 'changes', jsonb_build_array(
                 jsonb_build_object('field', 'assignee_removed', 'old', COALESCE(v_user_name, OLD.user_id::text))
             )));
     END IF;
@@ -4641,21 +4659,140 @@ CREATE OR REPLACE FUNCTION log_file_added()
 RETURNS TRIGGER AS $$
 DECLARE
     v_doc_type TEXT;
+    v_filename TEXT;
+    v_ext TEXT;
 BEGIN
     IF NEW.project_id IS NULL THEN RETURN NEW; END IF;
+
+    v_filename := COALESCE((regexp_match(NEW.full_path, '[^/]+$'))[1], NEW.full_path);
+    v_ext := lower(COALESCE((regexp_match(v_filename, '\.([^.]+)$'))[1], ''));
+
+    IF v_ext = ANY(get_file_ignore_extensions()) THEN RETURN NEW; END IF;
+    IF EXISTS (SELECT 1 FROM unnest(get_file_ignore_path_patterns()) AS pat WHERE NEW.full_path ILIKE pat) THEN RETURN NEW; END IF;
 
     SELECT dt.name INTO v_doc_type FROM document_types dt WHERE dt.id = NEW.document_type_id;
 
     INSERT INTO project_event_log (tw_project_id, source_table, source_id, event_type, details)
     VALUES (NEW.project_id, 'files', NEW.id::text, 'created',
         jsonb_build_object(
-            'filename', COALESCE(
-                (regexp_match(NEW.full_path, '[^/]+$'))[1],
-                NEW.full_path
-            ),
+            'filename', v_filename,
             'path', NEW.full_path,
             'document_type', COALESCE(v_doc_type, '')
         ));
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- =====================================
+-- TIER 3/4 SEARCH
+-- =====================================
+
+CREATE OR REPLACE FUNCTION search_activity_log(
+    p_project_id INT,
+    p_search TEXT DEFAULT NULL,
+    p_categories TEXT[] DEFAULT NULL,
+    p_limit INT DEFAULT 50,
+    p_offset INT DEFAULT 0
+)
+RETURNS SETOF project_activity_log
+LANGUAGE sql STABLE AS $$
+    SELECT *
+    FROM project_activity_log
+    WHERE tw_project_id = p_project_id
+      AND (p_categories IS NULL OR category = ANY(p_categories))
+      AND (p_search IS NULL OR p_search = '' OR (
+        SELECT bool_and(
+            lower(
+                summary || ' ' || category || ' '
+                || COALESCE(array_to_string(kgr_codes, ' '), '') || ' '
+                || COALESCE(array_to_string(involved_persons, ' '), '') || ' '
+                || to_char(logged_at, 'DD.MM.YYYY HH24:MI')
+            ) LIKE '%' || lower(term) || '%'
+        )
+        FROM unnest(string_to_array(trim(p_search), ' ')) AS term
+        WHERE term <> ''
+      ))
+    ORDER BY logged_at DESC
+    LIMIT p_limit OFFSET p_offset;
+$$;
+
+CREATE OR REPLACE FUNCTION search_event_log(
+    p_project_id INT,
+    p_search TEXT DEFAULT NULL,
+    p_source_tables TEXT[] DEFAULT NULL,
+    p_limit INT DEFAULT 50,
+    p_offset INT DEFAULT 0
+)
+RETURNS TABLE(
+    id BIGINT, tw_project_id INT, occurred_at TIMESTAMPTZ,
+    source_table VARCHAR(50), source_id TEXT, event_type VARCHAR(20),
+    details JSONB, content_diff TEXT, db_created_at TIMESTAMPTZ
+)
+LANGUAGE sql STABLE AS $$
+    SELECT id, tw_project_id, occurred_at, source_table, source_id,
+           event_type, details, content_diff, db_created_at
+    FROM project_event_log
+    WHERE tw_project_id = p_project_id
+      AND (p_source_tables IS NULL OR source_table = ANY(p_source_tables))
+      AND (p_search IS NULL OR p_search = '' OR (
+        SELECT bool_and(
+            lower(
+                COALESCE(source_table, '') || ' '
+                || COALESCE(event_type, '') || ' '
+                || COALESCE(details::text, '') || ' '
+                || COALESCE(content_diff, '') || ' '
+                || to_char(occurred_at, 'DD.MM.YYYY HH24:MI')
+            ) LIKE '%' || lower(term) || '%'
+        )
+        FROM unnest(string_to_array(trim(p_search), ' ')) AS term
+        WHERE term <> ''
+      ))
+    ORDER BY occurred_at DESC
+    LIMIT p_limit OFFSET p_offset;
+$$;
+
+GRANT EXECUTE ON FUNCTION search_activity_log(INT, TEXT, TEXT[], INT, INT) TO authenticated;
+GRANT EXECUTE ON FUNCTION search_event_log(INT, TEXT, TEXT[], INT, INT) TO authenticated;
+
+
+-- =====================================
+-- TIER 1/2 CHANGE TRACKING
+-- =====================================
+
+CREATE OR REPLACE FUNCTION log_profile_status_changed()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_field TEXT;
+    v_old_text TEXT;
+    v_new_text TEXT;
+BEGIN
+    IF NEW.tw_project_id IS NULL THEN RETURN NEW; END IF;
+
+    IF OLD.profile_markdown IS DISTINCT FROM NEW.profile_markdown THEN
+        INSERT INTO project_event_log (
+            tw_project_id, source_table, source_id, event_type,
+            details, old_content, processed_by_agent, processed_by_diff
+        ) VALUES (
+            NEW.tw_project_id, 'project_extensions', NEW.tw_project_id::text, 'changed',
+            jsonb_build_object('field', 'profile', 'name', 'Project Profile'),
+            OLD.profile_markdown,
+            TRUE, FALSE
+        );
+    END IF;
+
+    IF OLD.status_markdown IS DISTINCT FROM NEW.status_markdown THEN
+        INSERT INTO project_event_log (
+            tw_project_id, source_table, source_id, event_type,
+            details, old_content, processed_by_agent, processed_by_diff
+        ) VALUES (
+            NEW.tw_project_id, 'project_extensions', NEW.tw_project_id::text, 'changed',
+            jsonb_build_object('field', 'status', 'name', 'Status Snapshot'),
+            OLD.status_markdown,
+            TRUE, FALSE
+        );
+    END IF;
+
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
