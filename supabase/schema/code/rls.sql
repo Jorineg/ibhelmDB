@@ -26,10 +26,11 @@ RETURNS TEXT[] LANGUAGE sql STABLE AS $$
   )
 $$;
 
--- Check if current user is admin (from JWT app_metadata)
+-- Check if current user is admin (from JWT app_metadata or session variable)
 CREATE OR REPLACE FUNCTION is_admin() 
 RETURNS BOOLEAN LANGUAGE sql STABLE AS $$
   SELECT COALESCE(
+    NULLIF(current_setting('app.is_admin', true), '')::BOOLEAN,
     (current_setting('request.jwt.claims', true)::jsonb)->'app_metadata'->>'role' = 'admin',
     FALSE
   )
@@ -46,7 +47,7 @@ $$;
 
 COMMENT ON FUNCTION get_current_user_email() IS '@schema_doc Current user email from JWT or app.user_email setting';
 COMMENT ON FUNCTION get_current_user_id() IS '@schema_doc Current user UUID from JWT or app.user_id setting';
-COMMENT ON FUNCTION is_admin() IS '@schema_doc Check if current user has admin role in JWT app_metadata';
+COMMENT ON FUNCTION is_admin() IS '@schema_doc Check if current user has admin role via app.is_admin setting or JWT app_metadata';
 COMMENT ON FUNCTION get_public_emails() IS '@schema_doc Email addresses visible to all users (from app_settings)';
 
 -- =====================================
@@ -378,7 +379,7 @@ GRANT SELECT, INSERT, UPDATE ON operation_runs TO authenticated;
 
 COMMENT ON FUNCTION get_current_user_email() IS 'Returns current user email from JWT or MCP session variable';
 COMMENT ON FUNCTION get_public_emails() IS 'Returns list of public email addresses from app_settings';
-COMMENT ON FUNCTION is_admin() IS 'Returns true if current user has admin role in JWT app_metadata';
+COMMENT ON FUNCTION is_admin() IS 'Returns true if current user has admin role via app.is_admin or JWT app_metadata';
 COMMENT ON FUNCTION get_current_user_id() IS 'Returns current user UUID from JWT sub claim or session variable';
 
 -- =====================================

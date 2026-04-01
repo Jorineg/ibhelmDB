@@ -582,7 +582,6 @@ CREATE TABLE prompt_templates (
     title TEXT NOT NULL,
     category TEXT NOT NULL CHECK (category IN ('prompt', 'skill', 'doc')),
     content TEXT NOT NULL DEFAULT '',
-    description TEXT,
     summary TEXT,
     hidden BOOLEAN NOT NULL DEFAULT FALSE,
     tags TEXT[] NOT NULL DEFAULT '{}',

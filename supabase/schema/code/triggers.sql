@@ -378,4 +378,4 @@ DROP TRIGGER IF EXISTS update_prompt_templates_updated_at ON prompt_templates;
 CREATE TRIGGER update_prompt_templates_updated_at BEFORE UPDATE ON prompt_templates
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
--- notify + validate triggers live in prompt_templates.sql
+-- validate trigger lives in functions.sql (prompt templates section)

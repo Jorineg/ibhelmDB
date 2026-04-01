@@ -307,9 +307,6 @@ ALTER FUNCTION log_craft_doc_linked() SECURITY DEFINER SET search_path = public;
 ALTER FUNCTION log_craft_doc_changed() SECURITY DEFINER SET search_path = public;
 ALTER FUNCTION log_file_added() SECURITY DEFINER SET search_path = public;
 
--- Prompt template notifications
-ALTER FUNCTION notify_prompt_template_change() SECURITY DEFINER SET search_path = public;
-
 --------------------------------------------------------------------------------
 -- Verification queries (run manually)
 --------------------------------------------------------------------------------
